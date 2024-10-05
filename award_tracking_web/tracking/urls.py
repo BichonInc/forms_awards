@@ -1,0 +1,10 @@
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    path('grants/', views.grant_list, name='grant_list'),
+    path('grants/create/', views.grant_create, name='grant_create'),
+    path('grants/<str:grant_id>/', views.grant_detail, name='grant_detail'),
+]
+
+

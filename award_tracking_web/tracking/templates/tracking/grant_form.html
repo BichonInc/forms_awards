@@ -1,0 +1,145 @@
+{% load custom_filters %}
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{% if form.instance.pk %}Edit Grant{% else %}Create New Grant{% endif %}</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        .container {
+            width: 100%;
+            max-width: 900px; /* Increased the width of the container */
+            margin: auto;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: inline-block;
+            width: 200px;
+            font-weight: bold;
+        }
+        input, select {
+            width: 300px; /* Added width for input and select to match better */
+        }
+        .form-group select, .form-group input[type="text"] {
+            display: inline-block;
+        }
+        .form-group input[type="text"] {
+            display: inline-block; /* Ensure text inputs are displayed */
+            margin-left: 10px;
+        }
+        .buttons {
+            margin-top: 20px;
+        }
+        #save-button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            cursor: pointer;
+        }
+        #back-button {
+            margin-left: 20px;
+            text-decoration: none;
+            padding: 10px 20px;
+            background-color: #008CBA;
+            color: white;
+            border-radius: 5px;
+        }
+
+    </style>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            document.querySelectorAll('select').forEach(selectElement => {
+                selectElement.addEventListener('change', function () {
+                    const inputField = this.nextElementSibling;
+                    if (inputField) { // Ensure the input field exists
+                        const selectedValue = this.value;
+                        if (selectedValue === 'Add New') {
+                            inputField.style.display = 'inline';
+                            inputField.required = true;
+                        } else {
+                            inputField.style.display = 'none';
+                            inputField.required = false;
+                        }
+                    }
+                });
+            });
+        });
+
+    </script>
+</head>
+<body>
+    <div class="container">
+        <h1>{% if form.instance.pk %}Edit Grant{% else %}Create New Grant{% endif %}</h1>
+        <form method="post" action="{% url 'grant_create' %}">
+            {% csrf_token %}
+            <!-- Hidden Grant ID Field -->
+            {{ form.grant_id }}
+
+            <div class="form-group">
+                <label>Program Title:</label>
+                {{ form.program_title }}
+                {{ form.new_program_title }}
+            </div>
+            <div class="form-group">
+                <label>Contracting Agency:</label>
+                {{ form.contracting_agency }}
+                {{ form.new_contracting_agency }}
+            </div>
+            <div class="form-group">
+                <label>Contract Number:</label>
+                {{ form.contract_number }}
+            </div>
+            <div class="form-group">
+                <label>Contract Start Date:</label>
+                {{ form.contract_start_date }}
+            </div>
+            <div class="form-group">
+                <label>Contract End Date:</label>
+                {{ form.contract_end_date }}
+            </div>
+            <div class="form-group">
+                <label>Contract Amount:</label>
+                {{ form.contract_amount }}
+            </div>
+            <div class="form-group">
+                <label>Federal Grantor:</label>
+                {{ form.federal_grantor }}
+                {{ form.new_federal_grantor }}
+            </div>
+            <div class="form-group">
+                <label>Federal ALN:</label>
+                {{ form.federal_aln }}
+                {{ form.new_federal_aln }}
+            </div>
+            <div class="form-group">
+                <label>Internal Award Code:</label>
+                {{ form.internal_award_code }}
+            </div>
+            <div class="form-group">
+                <label>Internal GL Start Date:</label>
+                {{ form.internal_gl_start_date }}
+            </div>
+            <div class="form-group">
+                <label>Internal GL End Date:</label>
+                {{ form.internal_gl_end_date }}
+            </div>
+            <div class="form-group">
+                <label>Status:</label>
+                {{ form.status }}
+            </div>
+            <div class="buttons">
+                <button type="submit" id="save-button">Save</button>
+                <a href="{% url 'grant_list' %}" id="back-button">Back to Grant List</a>
+            </div>
+        </form>
+    </div>
+</body>
+</html>
+
+
+
