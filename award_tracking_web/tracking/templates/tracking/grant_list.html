@@ -1,3 +1,4 @@
+{% load static %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -49,6 +50,12 @@
 <body>
     <h1>Grant List</h1>
     <a href="{% url 'grant_create' %}">Create New Grant</a>
+    <!-- Add the form for refreshing gl_expenditure data here -->
+    <form method="post" action="{% url 'refresh_gl_expenditure' %}" enctype="multipart/form-data">
+    {% csrf_token %}
+    <input type="file" name="gl_expenditure_file">
+    <button type="submit">Refresh GL Expenditure Data</button>
+    </form>
     <div class="table-container">
         <div class="table-body">
             <table id="grantTable" class="display">
@@ -66,6 +73,7 @@
                         <th data-resizable-column-id="internal_award_code">Internal Award Code</th>
                         <th data-resizable-column-id="internal_gl_start_date">Internal GL Start Date</th>
                         <th data-resizable-column-id="internal_gl_end_date">Internal GL End Date</th>
+                        <th>In-Period Expenditure</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
@@ -84,6 +92,13 @@
                         <td>{{ grant.internal_award_code }}</td>
                         <td>{{ grant.internal_gl_start_date|date:"Y-m-d" }}</td>
                         <td>{{ grant.internal_gl_end_date|date:"Y-m-d" }}</td>
+                        <td>
+                            {% if grant.has_difference %}
+                                <img src="{% static 'icons/warning_icon.png' %}" alt="Warning" />
+                            {% else %}
+                                <!-- Leave blank or null -->
+                            {% endif %}
+                        </td>
                         <td>
                             <a href="{% url 'grant_detail' grant.grant_id %}">View/Edit</a>
                         </td>

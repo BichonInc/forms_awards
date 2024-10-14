@@ -1,5 +1,4 @@
 from django.db import models
-from django.db import models
 
 
 class Form1(models.Model):
@@ -19,7 +18,6 @@ class Form1(models.Model):
     class Meta:
         db_table = 'form_1'  # Use the existing table name
 
-
 class GLExpenditure(models.Model):
     effective_date = models.DateField()
     award_code = models.CharField(max_length=10)
@@ -27,9 +25,15 @@ class GLExpenditure(models.Model):
     credit = models.DecimalField(max_digits=10, decimal_places=2)
     net_expenditure = models.DecimalField(max_digits=10, decimal_places=2)
     fiscal_year = models.CharField(max_length=7)
-    grant_id = models.CharField(max_length=10)
-    expenditure_federal = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    expenditure_nonfederal = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    grant_id = models.CharField(max_length=10, null=True, blank=True)  # Allow null values
 
     class Meta:
         db_table = 'gl_expenditure'  # Use the existing table name
+
+class FiscalBreakdown(models.Model):
+    grant_id = models.ForeignKey(Form1, on_delete=models.CASCADE, db_column='grant_id')
+    fiscal_year = models.CharField(max_length=7)  # FY22-23 format
+    federal = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    nonfederal = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    class Meta:
+        db_table = 'fiscal_breakdown'  # Custom table name

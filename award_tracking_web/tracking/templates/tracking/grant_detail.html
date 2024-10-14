@@ -190,29 +190,49 @@
         </form>
 
         <h2>Grant Fiscal Information</h2>
-        <p><strong>Total Expenditure:</strong> {{ total_expenditure|default_if_none:"0.00" }}</p>
-        <p><strong>Expenditure Date:</strong> {{ expenditure_date|default_if_none:"N/A" }}</p>
 
-        <h3>Fiscal Year Breakdown</h3>
-        <table border="1" width="100%">
-            <tr>
-                <th>Fiscal Year</th>
-                <th>Federal</th>
-                <th>Non-Federal</th>
-            </tr>
-            {% for row in fiscal_breakdown %}
-            <tr>
-                <td>{{ row.fiscal_year }}</td>
-                <td>{{ row.expenditure_federal_sum }}</td>
-                <td>{{ row.expenditure_nonfederal_sum }}</td>
-            </tr>
-            {% endfor %}
-        </table>
+        <h3>In-Period Expenditure</h3>
+        <!-- Updated table with input fields for Federal and Non-Federal -->
+<table>
+    <thead>
+        <tr>
+            <th>Fiscal Year</th>
+            <th>Total Expenditure</th>
+            <th>Federal</th>
+            <th>Non-Federal</th>
+            <th>Difference</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in expenditure_breakdown %}
+        <tr>
+            <td>{{ row.fiscal_year }}</td>
+            <td>{{ row.total_expenditure|floatformat:2 }}</td>
+            <td>
+                <input type="number" name="federal_{{ forloop.counter }}" value="{{ row.federal|floatformat:2 }}" step="0.01">
+            </td>
+            <td>
+                <input type="number" name="nonfederal_{{ forloop.counter }}" value="{{ row.nonfederal|floatformat:2 }}" step="0.01">
+            </td>
+            <td>{{ row.total_expenditure|floatformat:2 }} - {{ row.federal|floatformat:2 }} - {{ row.nonfederal|floatformat:2 }}</td>
+
+        </tr>
+        {% endfor %}
+        <tr>
+            <td><strong>Total</strong></td>
+            <td>{{ total_expenditure_sum|floatformat:2 }}</td>
+            <td>{{ total_federal_sum|floatformat:2 }}</td>
+            <td>{{ total_nonfederal_sum|floatformat:2 }}</td>
+            <td>{{ total_difference|floatformat:2 }}</td>
+        </tr>
+    </tbody>
+</table>
+
 
         <div class="buttons">
-            <button type="button" id="refresh-button" disabled onclick="location.reload()">Refresh Data</button>
-
-            <!-- Add the new Back to Grant List Button -->
+            <button type="button" id="edit-button">Edit</button>
+            <button type="button" id="refresh-button" disabled onclick="location.reload()">Refresh</button>
+            <button type="submit" id="save-button" disabled>Save Changes</button>
             <a href="{% url 'grant_list' %}" id="back-button">Back to Grant List</a>
         </div>
 
