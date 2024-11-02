@@ -1,3 +1,4 @@
+{% load humanize %}
 <!DOCTYPE html>
 <html>
 <head>
@@ -33,25 +34,21 @@
         .buttons {
             margin-top: 20px;
         }
-        #save-button, #refresh-button {
+         td.number, input.number-right-align {
+            text-align: right;
+        }
+        #save-button-basic, #refresh-button, #save-button-fiscal, #edit-button-fiscal, #edit-button-basic {
             background-color: #4CAF50;
             color: white;
             border: none;
             padding: 10px 20px;
             cursor: pointer;
-            display: none;
         }
         #save-button:disabled, #refresh-button:disabled {
             background-color: #ccc;
             cursor: not-allowed;
         }
-        #edit-button {
-            background-color: #008CBA;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            cursor: pointer;
-        }
+
         #back-button {
             margin-left: 20px;
             text-decoration: none;
@@ -63,11 +60,11 @@
 
     </style>
     <script>
-        function toggleEditMode() {
+        function toggleEditModeBasic() {
             var viewFields = document.getElementsByClassName('view-field');
             var editFields = document.getElementsByClassName('edit-field');
-            var saveButton = document.getElementById('save-button');
-            var editButton = document.getElementById('edit-button');
+            var saveButtonBasic = document.getElementById('save-button-basic');
+            var editButtonBasic = document.getElementById('edit-button-basic');
 
             for (var i = 0; i < viewFields.length; i++) {
                 viewFields[i].style.display = 'none';
@@ -76,19 +73,22 @@
                 editFields[i].style.display = 'inline';
                 editFields[i].removeAttribute('readonly');
             }
-            saveButton.style.display = 'inline';
-            editButton.style.display = 'none';
+            saveButtonBasic.style.display = 'inline';
+            editButtonBasic.style.display = 'none';
+        }
+        function toggleEditModeFiscal() {
+            var fiscalEditFields = document.getElementsByClassName('fiscal-edit-field');
+            var saveButtonFiscal = document.getElementById('save-button-fiscal');
+            var editButtonFiscal = document.getElementById('edit-button-fiscal');
+
+            for (var i = 0; i < fiscalEditFields.length; i++) {
+                fiscalEditFields[i].removeAttribute('readonly'); // Make fields editable
+            }
+            saveButtonFiscal.style.display = 'inline'; // Show save button
+            editButtonFiscal.style.display = 'none'; // Hide edit button
         }
 
-        function enableSaveButton() {
-            var saveButton = document.getElementById('save-button');
-            saveButton.disabled = false;
-        }
 
-        function enableRefreshButton() {
-            var refreshButton = document.getElementById('refresh-button');
-            refreshButton.disabled = false;
-        }
     </script>
 </head>
 <body>
@@ -107,135 +107,135 @@
                 <input class="edit-field" type="text" value="{{ grant.grant_id }}" readonly>
             </div>
 
+            <!-- Program Title with input for Save -->
             <div class="form-group">
                 <label>Program Title:</label>
                 <span class="view-field">{{ grant.program_title }}</span>
-                <input class="edit-field" type="text" name="program_title" value="{{ grant.program_title }}" oninput="enableSaveButton(); enableRefreshButton();">
+                <input class="edit-field" type="text" name="program_title" value="{{ grant.program_title }}" oninput="enableSaveButton();">
             </div>
 
             <div class="form-group">
                 <label>Contracting Agency:</label>
                 <span class="view-field">{{ grant.contracting_agency }}</span>
-                <input class="edit-field" type="text" name="contracting_agency" value="{{ grant.contracting_agency }}" readonly oninput="enableSaveButton(); enableRefreshButton();">
+                <input class="edit-field" type="text" name="contracting_agency" value="{{ grant.contracting_agency }}" readonly oninput="enableSaveButton();">
             </div>
 
             <div class="form-group">
                 <label>Contract Number:</label>
                 <span class="view-field">{{ grant.contract_number }}</span>
-                <input class="edit-field" type="text" name="contract_number" value="{{ grant.contract_number }}" readonly oninput="enableSaveButton(); enableRefreshButton();">
+                <input class="edit-field" type="text" name="contract_number" value="{{ grant.contract_number }}" readonly oninput="enableSaveButton();">
             </div>
 
             <div class="form-group">
                 <label>Contract Start Date:</label>
                 <span class="view-field">{{ grant.contract_start_date }}</span>
-                <input class="edit-field" type="date" name="contract_start_date" value="{{ grant.contract_start_date|date:'Y-m-d' }}" readonly oninput="enableSaveButton(); enableRefreshButton();">
+                <input class="edit-field" type="date" name="contract_start_date" value="{{ grant.contract_start_date|date:'Y-m-d' }}" readonly oninput="enableSaveButton();">
             </div>
 
             <div class="form-group">
                 <label>Contract End Date:</label>
                 <span class="view-field">{{ grant.contract_end_date }}</span>
-                <input class="edit-field" type="date" name="contract_end_date" value="{{ grant.contract_end_date|date:'Y-m-d' }}" readonly oninput="enableSaveButton(); enableRefreshButton();">
+                <input class="edit-field" type="date" name="contract_end_date" value="{{ grant.contract_end_date|date:'Y-m-d' }}" readonly oninput="enableSaveButton();">
             </div>
 
             <div class="form-group">
                 <label>Contract Amount:</label>
                 <span class="view-field">{{ grant.contract_amount }}</span>
-                <input class="edit-field" type="number" step="0.01" name="contract_amount" value="{{ grant.contract_amount }}" readonly oninput="enableSaveButton(); enableRefreshButton();">
+                <input class="edit-field" type="number" step="0.01" name="contract_amount" value="{{ grant.contract_amount }}" readonly oninput="enableSaveButton();">
             </div>
 
             <div class="form-group">
                 <label>Federal Grantor:</label>
                 <span class="view-field">{{ grant.federal_grantor }}</span>
-                <input class="edit-field" type="text" name="federal_grantor" value="{{ grant.federal_grantor }}" readonly oninput="enableSaveButton(); enableRefreshButton();">
+                <input class="edit-field" type="text" name="federal_grantor" value="{{ grant.federal_grantor }}" readonly oninput="enableSaveButton();">
             </div>
 
             <div class="form-group">
                 <label>Federal ALN:</label>
                 <span class="view-field">{{ grant.federal_aln }}</span>
-                <input class="edit-field" type="text" name="federal_aln" value="{{ grant.federal_aln }}" readonly oninput="enableSaveButton(); enableRefreshButton();">
+                <input class="edit-field" type="text" name="federal_aln" value="{{ grant.federal_aln }}" readonly oninput="enableSaveButton();">
             </div>
 
             <div class="form-group">
                 <label>Internal Award Code:</label>
                 <span class="view-field">{{ grant.internal_award_code }}</span>
-                <input class="edit-field" type="text" name="internal_award_code" value="{{ grant.internal_award_code }}" readonly oninput="enableSaveButton(); enableRefreshButton();">
+                <input class="edit-field" type="text" name="internal_award_code" value="{{ grant.internal_award_code }}" readonly oninput="enableSaveButton();">
             </div>
 
             <div class="form-group">
                 <label>Internal GL Start Date:</label>
                 <span class="view-field">{{ grant.internal_gl_start_date }}</span>
-                <input class="edit-field" type="date" name="internal_gl_start_date" value="{{ grant.internal_gl_start_date|date:'Y-m-d' }}" readonly oninput="enableSaveButton(); enableRefreshButton();">
+                <input class="edit-field" type="date" name="internal_gl_start_date" value="{{ grant.internal_gl_start_date|date:'Y-m-d' }}" readonly oninput="enableSaveButton();">
             </div>
 
             <div class="form-group">
                 <label>Internal GL End Date:</label>
                 <span class="view-field">{{ grant.internal_gl_end_date }}</span>
-                <input class="edit-field" type="date" name="internal_gl_end_date" value="{{ grant.internal_gl_end_date|date:'Y-m-d' }}" readonly oninput="enableSaveButton(); enableRefreshButton();">
+                <input class="edit-field" type="date" name="internal_gl_end_date" value="{{ grant.internal_gl_end_date|date:'Y-m-d' }}" readonly oninput="enableSaveButton();">
             </div>
 
             <div class="form-group">
                 <label>Status:</label>
                 <span class="view-field">{{ grant.status }}</span>
-                <select class="edit-field" name="status" readonly onchange="enableSaveButton(); enableRefreshButton();">
+                <select class="edit-field" name="status" readonly onchange="enableSaveButton();">
                     <option value="active" {% if grant.status == "active" %}selected{% endif %}>Active</option>
                     <option value="inactive" {% if grant.status == "inactive" %}selected{% endif %}>Inactive</option>
                 </select>
             </div>
 
             <div class="buttons">
-                <button type="button" id="edit-button" onclick="toggleEditMode()">Edit</button>
-                <button type="submit" id="save-button" disabled>Save Changes</button>
+                <button type="button" id="edit-button-basic" onclick="toggleEditModeBasic()">Edit</button>
+                <button type="submit" id="save-button-basic" style="display:none;">Save Changes</button>
                 <a href="{% url 'grant_list' %}" id="back-button">Back to Grant List</a>
             </div>
         </form>
 
-        <h2>Grant Fiscal Information</h2>
+        <!-- Fiscal Information Form -->
+        <form method="POST" action="{% url 'grant_detail' grant.grant_id %}">
+            {% csrf_token %}
+            <h2>Grant Fiscal Information</h2>
+            <h3>In-Period Expenditure</h3>
 
-        <h3>In-Period Expenditure</h3>
-        <!-- Updated table with input fields for Federal and Non-Federal -->
-<table>
-    <thead>
-        <tr>
-            <th>Fiscal Year</th>
-            <th>Total Expenditure</th>
-            <th>Federal</th>
-            <th>Non-Federal</th>
-            <th>Difference</th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for row in expenditure_breakdown %}
-        <tr>
-            <td>{{ row.fiscal_year }}</td>
-            <td>{{ row.total_expenditure|floatformat:2 }}</td>
-            <td>
-                <input type="number" name="federal_{{ forloop.counter }}" value="{{ row.federal|floatformat:2 }}" step="0.01">
-            </td>
-            <td>
-                <input type="number" name="nonfederal_{{ forloop.counter }}" value="{{ row.nonfederal|floatformat:2 }}" step="0.01">
-            </td>
-            <td>{{ row.total_expenditure|floatformat:2 }} - {{ row.federal|floatformat:2 }} - {{ row.nonfederal|floatformat:2 }}</td>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Fiscal Year</th>
+                        <th>Total Expenditure</th>
+                        <th>Federal</th>
+                        <th>Non-Federal</th>
+                        <th>Difference</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in fiscal_breakdown %}
+                    <tr>
+                        <td>{{ row.fiscal_year }}</td>
+                        <td class="number">{{ row.total_expenditure|floatformat:2|intcomma }}</td>
+                        <td class="number">
+                            <input type="number" name="federal_{{ forloop.counter }}" value="{{ row.federal|floatformat:2 }}" step="0.01" readonly class="fiscal-edit-field number-right-align">
+                        </td>
+                        <td class="number">
+                            <input type="number" name="nonfederal_{{ forloop.counter }}" value="{{ row.nonfederal|floatformat:2 }}" step="0.01" readonly class="fiscal-edit-field number-right-align">
+                        </td>
+                        <td class="number">{{ row.difference|floatformat:2|intcomma }}</td>
+                    </tr>
+                    {% endfor %}
+                    <tr>
+                        <td><strong>Total</strong></td>
+                        <td class="number">{{ total_expenditure_sum|floatformat:2|intcomma }}</td>
+                        <td class="number">{{ total_federal_sum|floatformat:2|intcomma }}</td>
+                        <td class="number">{{ total_nonfederal_sum|floatformat:2|intcomma }}</td>
+                        <td class="number">{{ total_difference|floatformat:2|intcomma }}</td>
+                    </tr>
+                </tbody>
+            </table>
 
-        </tr>
-        {% endfor %}
-        <tr>
-            <td><strong>Total</strong></td>
-            <td>{{ total_expenditure_sum|floatformat:2 }}</td>
-            <td>{{ total_federal_sum|floatformat:2 }}</td>
-            <td>{{ total_nonfederal_sum|floatformat:2 }}</td>
-            <td>{{ total_difference|floatformat:2 }}</td>
-        </tr>
-    </tbody>
-</table>
-
-
-        <div class="buttons">
-            <button type="button" id="edit-button">Edit</button>
-            <button type="button" id="refresh-button" disabled onclick="location.reload()">Refresh</button>
-            <button type="submit" id="save-button" disabled>Save Changes</button>
-            <a href="{% url 'grant_list' %}" id="back-button">Back to Grant List</a>
-        </div>
-
+            <div class="buttons">
+                <button type="button" id="edit-button-fiscal" onclick="toggleEditModeFiscal()">Edit</button>
+                <button type="submit" id="save-button-fiscal" style="display:none;">Save Changes</button>
+                <a href="{% url 'grant_list' %}" id="back-button">Back to Grant List</a>
+            </div>
+        </form>
     </div>
 </body>
 </html>

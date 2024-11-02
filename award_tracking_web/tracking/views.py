@@ -1,13 +1,13 @@
 
 from django.shortcuts import render, get_object_or_404, redirect
 from django.db.models import Sum, Max
-from .models import GLExpenditure, Form1
+from .models import GLExpenditure, Form1, FiscalBreakdown
 from .forms import GrantForm
 from django.core.files.storage import default_storage
 import pandas as pd
 import sqlite3
 from datetime import datetime, date
-from decimal import Decimal  # Import this to ensure consistent types
+from decimal import Decimal, InvalidOperation # Import this to ensure consistent types
 from django.conf import settings
 import os
 import logging
@@ -28,21 +28,24 @@ def get_fiscal_data(grant_id):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    # Join gl_expenditure with the new fiscal_breakdown table to fetch actual data
+    # Adjusted query to group data by grant_id and fiscal_year, summing the net_expenditure
     query = '''
-        SELECT g.fiscal_year, g.net_expenditure, f.federal, f.nonfederal 
+        SELECT g.fiscal_year, SUM(g.net_expenditure) AS total_expenditure, f.federal, f.nonfederal 
         FROM gl_expenditure g
         LEFT JOIN fiscal_breakdown f ON g.grant_id = f.grant_id AND g.fiscal_year = f.fiscal_year
         WHERE g.grant_id = ?
+        GROUP BY g.fiscal_year
     '''
     cursor.execute(query, (grant_id,))
     fiscal_data = cursor.fetchall()
+    print(fiscal_data)
     conn.close()
 
     fiscal_data_with_difference = []
     for row in fiscal_data:
         fiscal_year, total_expenditure, federal, nonfederal = row
         difference = total_expenditure - (federal or 0) - (nonfederal or 0)
+        difference = round(difference, 2)
         fiscal_data_with_difference.append({
             'fiscal_year': fiscal_year,
             'total_expenditure': total_expenditure,
@@ -50,7 +53,7 @@ def get_fiscal_data(grant_id):
             'nonfederal': nonfederal,
             'difference': difference,
         })
-
+    print(fiscal_data_with_difference)
     return fiscal_data_with_difference
 
 
@@ -67,82 +70,118 @@ def grant_list(request):
 
 
 def grant_detail(request, grant_id):
+    print(f"Grant detail accessed for grant_id: {grant_id}")
+
     # Fetch the grant object from form_1 using grant_id
     grant = get_object_or_404(Form1, grant_id=grant_id)
+    print(f"Grant object fetched: {grant}")
 
+    # Process form submission
     if request.method == 'POST':
-        # Handle form submission for updating grant details
+        print("Form submission detected")
+
+        # Handle the main grant form (if you need to update grant fields)
         form = GrantForm(request.POST, instance=grant)
         if form.is_valid():
             form.save()
+            print("Grant form saved.")
 
-            # Handle user input for federal and non-federal expenditure
-            federal_input = Decimal(request.POST.get('federal_input', '0'))  # Default to '0'
-            nonfederal_input = Decimal(request.POST.get('nonfederal_input', '0'))
+        # Handle user inputs for federal and non-federal in fiscal breakdown
+        gl_expenditures = GLExpenditure.objects.filter(grant_id=grant_id)
+        fiscal_breakdown = gl_expenditures.values('fiscal_year').annotate(
+            total_expenditure=Sum('net_expenditure')
+        ).order_by('fiscal_year')
 
-            # Fetch fiscal breakdown for this grant from gl_expenditure
-            gl_expenditures = GLExpenditure.objects.filter(grant_id=grant_id)
+        # Loop through fiscal breakdown and save/update based on user input
+        for i, breakdown in enumerate(fiscal_breakdown, start=1):
+            fiscal_year = breakdown['fiscal_year']
+            try:
+                federal_input = Decimal(request.POST.get(f'federal_{i}', '0').replace(',', ''))
+            except InvalidOperation:
+                federal_input = Decimal('0')
+                print(f"Invalid input for federal_{i}; defaulting to 0")
 
-            # For each fiscal year, save or update user inputs in FiscalBreakdown
-            fiscal_breakdown = gl_expenditures.values('fiscal_year').annotate(
-                total_expenditure=Sum('net_expenditure')
-            ).order_by('fiscal_year')
+            try:
+                nonfederal_input = Decimal(request.POST.get(f'nonfederal_{i}', '0').replace(',', ''))
+            except InvalidOperation:
+                nonfederal_input = Decimal('0')
+                print(f"Invalid input for nonfederal_{i}; defaulting to 0")
 
-            for breakdown in fiscal_breakdown:
-                fiscal_year = breakdown['fiscal_year']
+            # Fetch or create fiscal breakdown record
+            fiscal_record, created = FiscalBreakdown.objects.get_or_create(
+                grant_id=grant,
+                fiscal_year=fiscal_year,
+                defaults={'federal': federal_input, 'nonfederal': nonfederal_input}
+            )
 
-                # Check if a FiscalBreakdown entry already exists for this fiscal year
-                fiscal_record, created = FiscalBreakdown.objects.get_or_create(
-                    grant_id=grant,
-                    fiscal_year=fiscal_year,
-                    defaults={
-                        'federal': federal_input,
-                        'nonfederal': nonfederal_input
-                    }
-                )
+            # Update if record exists
+            if not created:
+                fiscal_record.federal = federal_input
+                fiscal_record.nonfederal = nonfederal_input
+                fiscal_record.save()
 
-                # If the record already exists, update it
-                if not created:
-                    fiscal_record.federal = federal_input
-                    fiscal_record.nonfederal = nonfederal_input
-                    fiscal_record.save()
+            print(
+                f"Fiscal record for {fiscal_year} - Federal: {fiscal_record.federal}, Nonfederal: {fiscal_record.nonfederal}")
 
-            return redirect('grant_detail', grant_id=grant_id)
-    else:
-        form = GrantForm(instance=grant)
+        return redirect('grant_detail', grant_id=grant_id)
 
-    # Query and aggregate GL expenditures by grant_id
+    # Displaying the grant detail page (GET request)
+    form = GrantForm(instance=grant)
     gl_expenditures = GLExpenditure.objects.filter(grant_id=grant_id)
 
-    # Aggregate total expenditure (net expenditure) from gl_expenditure table
+    # Aggregate total expenditure
     total_expenditure_value = gl_expenditures.aggregate(
         total_sum=Sum('net_expenditure')
     ).get('total_sum') or Decimal('0')
 
-    # Get the latest expenditure date, handle if no expenditures exist
+    # Get the latest expenditure date
     last_expenditure_date = (
         gl_expenditures.latest('effective_date').effective_date
         if gl_expenditures.exists() else None
     )
 
-    # Fiscal year breakdown (grouped by fiscal year, now just using net_expenditure)
+    # Fiscal year breakdown
     fiscal_breakdown = gl_expenditures.values('fiscal_year').annotate(
         total_expenditure=Sum('net_expenditure')
     ).order_by('fiscal_year')
 
-    # Calculate difference for each fiscal year based on user inputs
+    # Calculate totals and differences
+    total_expenditure_sum = Decimal('0')
+    total_federal_sum = Decimal('0')
+    total_nonfederal_sum = Decimal('0')
+    total_difference = Decimal('0')
+
     for breakdown in fiscal_breakdown:
-        breakdown['federal'] = Decimal(request.POST.get('federal_input', '0'))  # User-provided or 0
-        breakdown['nonfederal'] = Decimal(request.POST.get('nonfederal_input', '0'))  # User-provided or 0
-        breakdown['difference'] = breakdown['total_expenditure'] - breakdown['federal'] - breakdown['nonfederal']
+        breakdown_record = FiscalBreakdown.objects.filter(
+            grant_id=grant, fiscal_year=breakdown['fiscal_year']
+        ).first()
+
+        federal = breakdown_record.federal if breakdown_record else Decimal('0')
+        nonfederal = breakdown_record.nonfederal if breakdown_record else Decimal('0')
+
+        breakdown['federal'] = federal
+        breakdown['nonfederal'] = nonfederal
+        breakdown['difference'] = breakdown['total_expenditure'] - federal - nonfederal
+
+        total_expenditure_sum += breakdown['total_expenditure']
+        total_federal_sum += federal
+        total_nonfederal_sum += nonfederal
+        total_difference += breakdown['difference']
 
     return render(request, 'tracking/grant_detail.html', {
         'grant': grant,
         'form': form,
         'total_expenditure_value': total_expenditure_value,
         'last_expenditure_date': last_expenditure_date,
-        'fiscal_breakdown': fiscal_breakdown
+        'fiscal_breakdown': fiscal_breakdown,
+        'total_expenditure_sum': total_expenditure_sum,
+        'total_federal_sum': total_federal_sum,
+        'total_nonfederal_sum': total_nonfederal_sum,
+        'total_difference': total_difference
     })
+
+
+
 
 
 def grant_create(request):
@@ -235,9 +274,6 @@ def grant_delete(request, grant_id):
 
 logger = logging.getLogger(__name__)
 
-
-from datetime import datetime
-
 def refresh_gl_expenditure(request):
     if request.method == 'POST' and request.FILES.get('gl_expenditure_file'):
         # Save the uploaded file to MEDIA_ROOT
@@ -290,62 +326,33 @@ def refresh_gl_expenditure(request):
             GLExpenditure.objects.all().delete()
             logger.info("Cleared existing GLExpenditure records")
 
-            # Insert the updated data into the GLExpenditure table using ORM
+            # Insert data into GLExpenditure table
             for _, row in df.iterrows():
-                expenditure = GLExpenditure(
+                GLExpenditure.objects.create(
                     effective_date=row['effective_date'],
                     award_code=row['award_code'],
                     debit=Decimal(row['debit']),
                     credit=Decimal(row['credit']),
                     net_expenditure=Decimal(row['net_expenditure']),
-                    fiscal_year=row['fiscal_year'],
-                    grant_id=None  # Set to None initially
+                    fiscal_year=row['fiscal_year']
                 )
-                expenditure.save()
-                logger.debug(f"Prepared GLExpenditure: {expenditure}")
 
-            # Fetch grant_id and update gl_expenditure records
-            gl_expenditures = GLExpenditure.objects.all()
-
-            for expenditure in gl_expenditures:
+            # Update grant_id associations based on internal award codes
+            for expenditure in GLExpenditure.objects.all():
                 try:
-                    # Ensure the effective_date is a date for comparison
-                    expenditure_date = expenditure.effective_date.date() if isinstance(expenditure.effective_date,
-                                                                                       datetime) else expenditure.effective_date
-
-                    # Loop over each Form1 entry that matches the internal_award_code
-                    matching_forms = Form1.objects.filter(internal_award_code=expenditure.award_code)
-
-                    for form in matching_forms:
-                        # Ensure internal_gl_start_date and internal_gl_end_date are date objects
-                        start_date = form.internal_gl_start_date.date() if isinstance(form.internal_gl_start_date,
-                                                                                      datetime) else form.internal_gl_start_date
-                        end_date = form.internal_gl_end_date.date() if isinstance(form.internal_gl_end_date,
-                                                                                  datetime) else form.internal_gl_end_date
-
-                        # Check if the expenditure date is within the date range
-                        if start_date <= expenditure_date <= end_date:
-                            expenditure.grant_id = form.grant_id
-                            expenditure.save()
-                            break  # If we find a matching form, no need to check further
-
+                    matching_form = Form1.objects.get(
+                        internal_award_code=expenditure.award_code,
+                        internal_gl_start_date__lte=expenditure.effective_date,
+                        internal_gl_end_date__gte=expenditure.effective_date
+                    )
+                    expenditure.grant_id = matching_form.grant_id
+                    expenditure.save()
                 except Form1.DoesNotExist:
-                    # Handle case where no matching Form1 entry exists
                     expenditure.grant_id = None
                     expenditure.save()
 
-                except Form1.MultipleObjectsReturned:
-                    # Handle case where multiple entries are found
-                    print(
-                        f"Multiple Form1 entries found for award code {expenditure.award_code} and effective date {expenditure.effective_date}")
-                    expenditure.grant_id = None
-                    expenditure.save()
-
-            # Provide feedback to the user (redirect or show a success message)
             logger.info("GL Expenditure data successfully refreshed.")
-            return render(request, 'tracking/grant_list.html', {
-                'message': 'GL Expenditure data successfully refreshed.'
-            })
+            return redirect('grant_list')  # Redirect to refresh Grant List page
 
         except Exception as e:
             logger.error(f"An error occurred while processing the file: {str(e)}")
