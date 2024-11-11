@@ -1,5 +1,5 @@
 from django.db import models
-
+from decimal import Decimal
 
 class Form1(models.Model):
     grant_id = models.CharField(max_length=10, primary_key=True)
@@ -37,3 +37,21 @@ class FiscalBreakdown(models.Model):
     nonfederal = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     class Meta:
         db_table = 'fiscal_breakdown'  # Custom table name
+
+
+
+
+class SubsequentAdjustment(models.Model):
+    effective_date = models.DateField()
+    award_code = models.CharField(max_length=10)
+    debit = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    credit = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    net_expenditure = models.DecimalField(max_digits=10, decimal_places=2)
+    fiscal_year = models.CharField(max_length=10)
+    grant_id = models.ForeignKey(Form1, null=True, blank=True, on_delete=models.SET_NULL, db_column='grant_id')
+
+class SubsequentFiscalBreakdown(models.Model):
+    grant_id = models.ForeignKey(Form1, on_delete=models.CASCADE, db_column='grant_id')
+    fiscal_year = models.CharField(max_length=10)
+    federal = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    nonfederal = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))

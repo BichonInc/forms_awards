@@ -51,10 +51,21 @@
     <h1>Grant List</h1>
     <a href="{% url 'grant_create' %}">Create New Grant</a>
     <!-- Add the form for refreshing gl_expenditure data here -->
-    <form method="post" action="{% url 'refresh_gl_expenditure' %}" enctype="multipart/form-data">
+   <form method="POST" enctype="multipart/form-data" action="{% url 'refresh_gl_expenditure' %}">
     {% csrf_token %}
-    <input type="file" name="gl_expenditure_file">
+    <h3>Upload GL Expenditure File</h3>
+    <input type="file" name="gl_expenditure_file" id="gl_expenditure_file">
     <button type="submit">Refresh GL Expenditure Data</button>
+    </form>
+
+    <hr>
+
+<!-- Subsequent Adjustment File Upload Section -->
+    <form method="POST" enctype="multipart/form-data" action="{% url 'refresh_subsequent_adjustment' %}">
+    {% csrf_token %}
+    <h3>Upload Subsequent Adjustment File</h3>
+    <input type="file" name="sub_adjustment_file" id="sub_adjustment_file">
+    <button type="submit">Refresh Subsequent Adjustment Data</button>
     </form>
     <div class="table-container">
         <div class="table-body">
