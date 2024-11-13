@@ -184,10 +184,11 @@ def grant_detail(request, grant_id):
         total_expenditure=Sum('net_expenditure')
     ).order_by('fiscal_year')
 
-    sub_total_expenditure_sum = Decimal('0')
-    sub_total_federal_sum = Decimal('0')
-    sub_total_nonfederal_sum = Decimal('0')
-    sub_total_difference = Decimal('0')
+    # Calculate totals for Subsequent Adjustment
+    total_adjustment_sum = Decimal('0')
+    total_federal_sub_sum = Decimal('0')
+    total_nonfederal_sub_sum = Decimal('0')
+    total_difference_sub = Decimal('0')
 
     print("Subsequent Adjustment Data:")
     for breakdown in subsequent_breakdown:
@@ -202,10 +203,10 @@ def grant_detail(request, grant_id):
         breakdown['nonfederal'] = nonfederal
         breakdown['difference'] = breakdown['total_expenditure'] - federal - nonfederal
 
-        sub_total_expenditure_sum += breakdown['total_expenditure']
-        sub_total_federal_sum += federal
-        sub_total_nonfederal_sum += nonfederal
-        sub_total_difference += breakdown['difference']
+        total_adjustment_sum += breakdown['total_expenditure']
+        total_federal_sub_sum += breakdown['federal']
+        total_nonfederal_sub_sum += breakdown['nonfederal']
+        total_difference_sub += breakdown['difference']
 
     print("Context for subsequent_breakdown:", subsequent_breakdown)
 
@@ -218,10 +219,10 @@ def grant_detail(request, grant_id):
         'total_nonfederal_sum': total_nonfederal_sum,
         'total_difference': total_difference,
         'subsequent_breakdown': subsequent_breakdown,
-        'sub_total_expenditure_sum': sub_total_expenditure_sum,
-        'sub_total_federal_sum': sub_total_federal_sum,
-        'sub_total_nonfederal_sum': sub_total_nonfederal_sum,
-        'sub_total_difference': sub_total_difference
+        'total_adjustment_sum': total_adjustment_sum,
+        'total_federal_sub_sum': total_federal_sub_sum,
+        'total_nonfederal_sub_sum': total_nonfederal_sub_sum,
+        'total_difference_sub': total_difference_sub,
     })
 
 def grant_create(request):
