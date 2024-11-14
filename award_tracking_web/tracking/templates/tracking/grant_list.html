@@ -18,6 +18,41 @@
 
 
     <style>
+        /* Container for buttons */
+        .button-container {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        /* Base Button Styling */
+        .button-common {
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            cursor: pointer;
+            border-radius: 5px;
+            text-decoration: none;
+            display: inline-block;
+        }
+
+        /* Specific Styling for Create and Download Buttons */
+        #create-button {
+            background-color: #4CAF50;  /* Green color */
+        }
+
+        #download-button {
+            background-color: #008CBA;  /* Blue color */
+        }
+
+        /* Hover Effects */
+        #create-button:hover {
+            background-color: #388E3C;  /* Darker green on hover */
+        }
+
+        #download-button:hover {
+            background-color: #005f8a;  /* Darker blue on hover */
+        }
         .table-container {
             display: flex;
             flex-direction: column;
@@ -49,8 +84,12 @@
 </head>
 <body>
     <h1>Grant List</h1>
+    <!-- grant_list.html -->
+    <div class="button-container">
+       <a href="{% url 'grant_create' %}" id="create-button" class="button-common">Create New Grant</a>
+       <a href="{% url 'download_data_csv' %}" id="download-button" class="button-common">Download CSV</a>
+    </div>
 
-    <a href="{% url 'grant_create' %}">Create New Grant</a>
     <!-- Add the form for refreshing gl_expenditure data here -->
    <form method="POST" enctype="multipart/form-data" action="{% url 'refresh_gl_expenditure' %}">
     {% csrf_token %}

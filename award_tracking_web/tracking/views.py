@@ -11,6 +11,8 @@ from decimal import Decimal, InvalidOperation # Import this to ensure consistent
 from django.conf import settings
 import os
 import logging
+import csv
+from django.http import HttpResponse
 
 # Function to generate new grant_id
 def generate_new_grant_id():
@@ -498,3 +500,91 @@ def refresh_subsequent_adjustment(request):
     return render(request, 'tracking/grant_list.html', {
         'message': 'Please upload a valid Excel file for Subsequent Adjustment.'
     })
+
+
+import csv
+from django.http import HttpResponse
+from django.db.models import Sum
+from .models import Form1, GLExpenditure, SubsequentAdjustment, FiscalBreakdown, SubsequentFiscalBreakdown
+
+def download_data_csv(request):
+    # Create HTTP response with CSV content type
+    response = HttpResponse(content_type='text/csv')
+    response['Content-Disposition'] = 'attachment; filename="grant_data.csv"'
+
+    writer = csv.writer(response)
+
+    # Write the CSV header
+    writer.writerow([
+        'Grant ID', 'Program Title', 'Contracting Agency', 'Contract Number',
+        'Contract Start Date', 'Contract End Date', 'Contract Amount',
+        'Federal Grantor', 'Federal ALN', 'Internal Award Code',
+        'Internal GL Start Date', 'Internal GL End Date', 'Status',
+        'Source', 'Fiscal Year', 'Total Expenditure', 'Federal',
+        'Nonfederal', 'Difference'
+    ])
+
+    # Fetch all Form1 records
+    form1_records = Form1.objects.all().order_by('grant_id')
+
+    # Loop through each Form1 record
+    for form in form1_records:
+        grant_id = form.grant_id
+
+        # Grouped data from GLExpenditure by fiscal_year
+        gl_expenditures = GLExpenditure.objects.filter(grant_id=grant_id).values('fiscal_year').annotate(
+            total_expenditure=Sum('net_expenditure')
+        ).order_by('fiscal_year')
+
+        # Write GL Expenditure grouped data
+        for gl in gl_expenditures:
+            fiscal_year = gl['fiscal_year']
+            total_expenditure = gl['total_expenditure']
+
+            # Fetch federal and nonfederal from FiscalBreakdown
+            fiscal_record = FiscalBreakdown.objects.filter(
+                grant_id=grant_id, fiscal_year=fiscal_year
+            ).first()
+
+            federal = fiscal_record.federal if fiscal_record else 0
+            nonfederal = fiscal_record.nonfederal if fiscal_record else 0
+            difference = total_expenditure - federal - nonfederal
+
+            writer.writerow([
+                grant_id, form.program_title, form.contracting_agency, form.contract_number,
+                form.contract_start_date, form.contract_end_date, form.contract_amount,
+                form.federal_grantor, form.federal_aln, form.internal_award_code,
+                form.internal_gl_start_date, form.internal_gl_end_date, form.status,
+                'GL Expenditure', fiscal_year, total_expenditure, federal,
+                nonfederal, difference
+            ])
+
+        # Grouped data from SubsequentAdjustment by fiscal_year
+        subsequent_adjustments = SubsequentAdjustment.objects.filter(grant_id=grant_id).values('fiscal_year').annotate(
+            total_adjustment=Sum('net_expenditure')
+        ).order_by('fiscal_year')
+
+        # Write Subsequent Adjustment grouped data
+        for sa in subsequent_adjustments:
+            fiscal_year = sa['fiscal_year']
+            total_adjustment = sa['total_adjustment']
+
+            # Fetch federal and nonfederal from SubsequentFiscalBreakdown
+            sub_fiscal_record = SubsequentFiscalBreakdown.objects.filter(
+                grant_id=grant_id, fiscal_year=fiscal_year
+            ).first()
+
+            federal_sub = sub_fiscal_record.federal if sub_fiscal_record else 0
+            nonfederal_sub = sub_fiscal_record.nonfederal if sub_fiscal_record else 0
+            difference_sub = total_adjustment - federal_sub - nonfederal_sub
+
+            writer.writerow([
+                grant_id, form.program_title, form.contracting_agency, form.contract_number,
+                form.contract_start_date, form.contract_end_date, form.contract_amount,
+                form.federal_grantor, form.federal_aln, form.internal_award_code,
+                form.internal_gl_start_date, form.internal_gl_end_date, form.status,
+                'Subsequent Adjustment', fiscal_year, total_adjustment, federal_sub,
+                nonfederal_sub, difference_sub
+            ])
+
+    return response
