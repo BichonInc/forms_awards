@@ -125,6 +125,7 @@
                         <th data-resizable-column-id="internal_gl_start_date">Internal GL Start Date</th>
                         <th data-resizable-column-id="internal_gl_end_date">Internal GL End Date</th>
                         <th>In-Period Expenditure</th>
+                        <th>Subsequent Adjustment</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
@@ -144,10 +145,13 @@
                         <td>{{ grant.internal_gl_start_date|date:"Y-m-d" }}</td>
                         <td>{{ grant.internal_gl_end_date|date:"Y-m-d" }}</td>
                         <td>
-                            {% if grant.has_difference %}
+                            {% if grant.has_in_period_difference %}
                                 <img src="{% static 'icons/warning_icon.png' %}" alt="Warning" />
-                            {% else %}
-                                <!-- Leave blank or null -->
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if grant.has_subsequent_difference %}
+                                <img src="{% static 'icons/warning_icon.png' %}" alt="Warning" />
                             {% endif %}
                         </td>
                         <td>

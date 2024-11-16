@@ -57,18 +57,69 @@ def get_fiscal_data(grant_id):
         })
     print(fiscal_data_with_difference)
     return fiscal_data_with_difference
+def get_subsequent_data(grant_id):
+    db_path = settings.DATABASES['default']['NAME']
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # Query to group data by grant_id and fiscal_year, summing net_expenditure for Subsequent Adjustment
+    query = '''
+        SELECT sa.fiscal_year, SUM(sa.net_expenditure) AS total_adjustment, sf.federal, sf.nonfederal 
+        FROM tracking_subsequentadjustment sa
+        LEFT JOIN tracking_subsequentfiscalbreakdown sf ON sa.grant_id = sf.grant_id AND sa.fiscal_year = sf.fiscal_year
+        WHERE sa.grant_id = ?
+        GROUP BY sa.fiscal_year
+    '''
+    cursor.execute(query, (grant_id,))
+    subsequent_data = cursor.fetchall()
+    print(subsequent_data)
+    conn.close()
+
+    # Calculate the difference and round it to 2 decimal points
+    subsequent_data_with_difference = []
+    for row in subsequent_data:
+        fiscal_year, total_adjustment, federal, nonfederal = row
+        difference = total_adjustment - (federal or 0) - (nonfederal or 0)
+        difference = round(difference, 2)
+        subsequent_data_with_difference.append({
+            'fiscal_year': fiscal_year,
+            'total_adjustment': total_adjustment,
+            'federal': federal,
+            'nonfederal': nonfederal,
+            'difference': difference,
+        })
+    print(subsequent_data_with_difference)
+    return subsequent_data_with_difference
 
 
 
+# In views.py
 def grant_list(request):
-    grants = Form1.objects.all()
+    grants = Form1.objects.all().order_by('grant_id')
 
-    # Loop through each grant and fetch fiscal data to check for non-zero differences
     for grant in grants:
-        fiscal_data = get_fiscal_data(grant.grant_id)  # Fetch fiscal data for the grant
-        grant.has_difference = any(row['difference'] != 0 for row in fiscal_data)  # Add a flag for difference
+        grant_id = grant.grant_id
 
-    return render(request, 'tracking/grant_list.html', {'grants': grants})
+        # Check In-Period Warning
+        in_period_warning = any(
+            row['difference'] != 0 for row in get_fiscal_data(grant_id)
+        )
+
+        # Check Subsequent Adjustment Warning
+        subsequent_warning = any(
+            row['difference'] != 0 for row in get_subsequent_data(grant_id)
+        )
+
+        # Add attributes to the grant object
+        grant.has_in_period_difference = in_period_warning
+        grant.has_subsequent_difference = subsequent_warning
+
+    context = {
+        'grants': grants,
+    }
+    return render(request, 'tracking/grant_list.html', context)
+
+
 
 
 def grant_detail(request, grant_id):
