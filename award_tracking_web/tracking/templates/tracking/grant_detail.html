@@ -194,19 +194,19 @@
 
                 <div class="form-group">
                     <label>Contract Start Date:</label>
-                    <span class="basic-view-field">{{ grant.contract_start_date }}</span>
+                    <span class="basic-view-field">{{ grant.contract_start_date|date:"Y-m-d" }}</span>
                     <input class="basic-edit-field" type="date" name="contract_start_date" value="{{ grant.contract_start_date|date:'Y-m-d' }}" readonly oninput="enableSaveButtonBasic();" style="display:none;">
                 </div>
 
                 <div class="form-group">
                     <label>Contract End Date:</label>
-                    <span class="basic-view-field">{{ grant.contract_end_date }}</span>
+                    <span class="basic-view-field">{{ grant.contract_end_date|date:"Y-m-d" }}</span>
                     <input class="basic-edit-field" type="date" name="contract_end_date" value="{{ grant.contract_end_date|date:'Y-m-d' }}" readonly oninput="enableSaveButtonBasic();" style="display:none;">
                 </div>
 
                 <div class="form-group">
                     <label>Contract Amount:</label>
-                    <span class="basic-view-field">{{ grant.contract_amount }}</span>
+                    <span class="basic-view-field">{{ grant.contract_amount|floatformat:2|intcomma }}</span>
                     <input class="basic-edit-field" type="number" step="0.01" name="contract_amount" value="{{ grant.contract_amount }}" readonly oninput="enableSaveButtonBasic();" style="display:none;">
                 </div>
 
@@ -230,13 +230,13 @@
 
                 <div class="form-group">
                     <label>Internal GL Start Date:</label>
-                    <span class="basic-view-field">{{ grant.internal_gl_start_date }}</span>
+                    <span class="basic-view-field">{{ grant.internal_gl_start_date|date:"Y-m-d" }}</span>
                     <input class="basic-edit-field" type="date" name="internal_gl_start_date" value="{{ grant.internal_gl_start_date|date:'Y-m-d' }}" readonly oninput="enableSaveButtonBasic();" style="display:none;">
                 </div>
 
                 <div class="form-group">
                     <label>Internal GL End Date:</label>
-                    <span class="basic-view-field">{{ grant.internal_gl_end_date }}</span>
+                    <span class="basic-view-field">{{ grant.internal_gl_end_date|date:"Y-m-d" }}</span>
                     <input class="basic-edit-field" type="date" name="internal_gl_end_date" value="{{ grant.internal_gl_end_date|date:'Y-m-d' }}" readonly oninput="enableSaveButtonBasic();" style="display:none;">
                 </div>
 

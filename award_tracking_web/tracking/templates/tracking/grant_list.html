@@ -1,3 +1,4 @@
+{% load humanize %}
 {% load static %}
 <!DOCTYPE html>
 <html lang="en">
@@ -138,7 +139,7 @@
                         <td>{{ grant.contract_number }}</td>
                         <td>{{ grant.contract_start_date|date:"Y-m-d" }}</td>
                         <td>{{ grant.contract_end_date|date:"Y-m-d" }}</td>
-                        <td style="text-align: right;">{{ grant.contract_amount|floatformat:2 }}</td>
+                        <td style="text-align: right;">{{ grant.contract_amount|floatformat:2|intcomma }}</td>
                         <td>{{ grant.federal_grantor }}</td>
                         <td>{{ grant.federal_aln }}</td>
                         <td>{{ grant.internal_award_code }}</td>

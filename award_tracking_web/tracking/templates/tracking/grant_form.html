@@ -49,6 +49,23 @@
             color: white;
             border-radius: 5px;
         }
+        .messages {
+            margin-bottom: 20px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .messages.error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .messages.success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .messages.info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+        }
 
     </style>
     <script>
@@ -75,6 +92,16 @@
 <body>
     <div class="container">
         <h1>{% if form.instance.pk %}Edit Grant{% else %}Create New Grant{% endif %}</h1>
+        {% if messages %}
+            <div class="messages-container">
+                {% for message in messages %}
+                    <div class="messages {{ message.tags }}">
+                        {{ message }}
+                    </div>
+                {% endfor %}
+            </div>
+        {% endif %}
+
         <form method="post" action="{% url 'grant_create' %}">
             {% csrf_token %}
             <!-- Hidden Grant ID Field -->

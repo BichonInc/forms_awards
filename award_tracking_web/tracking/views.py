@@ -15,15 +15,15 @@ import csv
 from django.http import HttpResponse
 
 # Function to generate new grant_id
-def generate_new_grant_id():
-    last_grant = Form1.objects.aggregate(last_id=Max('grant_id'))
-    last_id = last_grant['last_id']
-    if last_id:
-        numeric_part = int(last_id[1:]) + 1
-        new_grant_id = f'A{numeric_part:05d}'
-    else:
-        new_grant_id = 'A00001'
-    return new_grant_id
+#def generate_new_grant_id():
+#   last_grant = Form1.objects.aggregate(last_id=Max('grant_id'))
+#    last_id = last_grant['last_id']
+#    if last_id:
+#       numeric_part = int(last_id[1:]) + 1
+#        new_grant_id = f'A{numeric_part:05d}'
+#    else:
+#        new_grant_id = 'A00001'
+#    return new_grant_id
 
 def get_fiscal_data(grant_id):
     db_path = settings.DATABASES['default']['NAME']
@@ -278,6 +278,9 @@ def grant_detail(request, grant_id):
         'total_difference_sub': total_difference_sub,
     })
 
+from django.db.models import Q
+from django.contrib import messages
+
 def grant_create(request):
     if request.method == 'POST':
         # Create the form without validating it yet
@@ -304,8 +307,31 @@ def grant_create(request):
         # Now validate the form
         if form.is_valid():
             print("Form is valid.")
-            # Save the form
-            form.save()
+
+            # Extract form data for overlap check
+            internal_award_code = form.cleaned_data['internal_award_code']
+            internal_gl_start_date = form.cleaned_data['internal_gl_start_date']
+            internal_gl_end_date = form.cleaned_data['internal_gl_end_date']
+
+            # Check for existing grants with overlapping date ranges
+            overlapping_grants = Form1.objects.filter(
+                internal_award_code=internal_award_code,
+                internal_gl_end_date__gte=internal_gl_start_date,
+                internal_gl_start_date__lte=internal_gl_end_date,
+            ).exclude(grant_id=new_grant_id)
+
+            if overlapping_grants.exists():
+                # Conflict found, inform the user
+                conflict_grant_id = overlapping_grants.first().grant_id
+                conflict_message = (
+                    f"Conflict detected: Overlapping grant found with grant_id {conflict_grant_id}. "
+                    "Please adjust the dates or check the existing records."
+                )
+                messages.error(request, conflict_message)
+                print(conflict_message)
+
+                # Return the form with an error message
+                return render(request, 'tracking/grant_form.html', {'form': form})
 
             # Handle 'Add New' for dropdowns
             if form.cleaned_data['program_title'] == 'Add New':
@@ -330,31 +356,32 @@ def grant_create(request):
     return render(request, 'tracking/grant_form.html', {'form': form})
 
 
-def grant_edit(request, grant_id):
-    grant = get_object_or_404(Form1, grant_id=grant_id)
-    if request.method == 'POST':
-        form = GrantForm(request.POST, instance=grant)
-        if form.is_valid():
+
+#def grant_edit(request, grant_id):
+    #grant = get_object_or_404(Form1, grant_id=grant_id)
+    #if request.method == 'POST':
+        #form = GrantForm(request.POST, instance=grant)
+        #if form.is_valid():
             # Check if the form has new values and update accordingly
-            new_program_title = form.cleaned_data.get('new_program_title')
-            new_contracting_agency = form.cleaned_data.get('new_contracting_agency')
-            new_federal_grantor = form.cleaned_data.get('new_federal_grantor')
-            new_federal_aln = form.cleaned_data.get('new_federal_aln')
+            #new_program_title = form.cleaned_data.get('new_program_title')
+            #new_contracting_agency = form.cleaned_data.get('new_contracting_agency')
+            #new_federal_grantor = form.cleaned_data.get('new_federal_grantor')
+            #new_federal_aln = form.cleaned_data.get('new_federal_aln')
 
-            if new_program_title:
-                form.instance.program_title = new_program_title
-            if new_contracting_agency:
-                form.instance.contracting_agency = new_contracting_agency
-            if new_federal_grantor:
-                form.instance.federal_grantor = new_federal_grantor
-            if new_federal_aln:
-                form.instance.federal_aln = new_federal_aln
+            #if new_program_title:
+                #form.instance.program_title = new_program_title
+            #if new_contracting_agency:
+                #form.instance.contracting_agency = new_contracting_agency
+            #if new_federal_grantor:
+                #form.instance.federal_grantor = new_federal_grantor
+            #if new_federal_aln:
+                #form.instance.federal_aln = new_federal_aln
 
-            form.save()
-            return redirect('grant_detail', grant_id=grant.grant_id)
-    else:
-        form = GrantForm(instance=grant)
-    return render(request, 'tracking/grant_form.html', {'form': form, 'edit': True})
+            #form.save()
+            #return redirect('grant_detail', grant_id=grant.grant_id)
+    #else:
+        #form = GrantForm(instance=grant)
+    #return render(request, 'tracking/grant_form.html', {'form': form, 'edit': True})
 
 
 def grant_delete(request, grant_id):
