@@ -27,17 +27,26 @@ class GrantForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        # Get current choices from the database
-        program_titles = Form1.objects.values_list('program_title', flat=True).distinct()
-        contracting_agencies = Form1.objects.values_list('contracting_agency', flat=True).distinct()
-        federal_grantors = Form1.objects.values_list('federal_grantor', flat=True).distinct()
-        federal_alns = Form1.objects.values_list('federal_aln', flat=True).distinct()
+        # Get current choices from the database and handle None values
+        program_titles = sorted(pt for pt in Form1.objects.values_list('program_title', flat=True).distinct() if pt)
+        contracting_agencies = sorted(
+            ca for ca in Form1.objects.values_list('contracting_agency', flat=True).distinct() if ca)
+        federal_grantors = sorted(fg for fg in Form1.objects.values_list('federal_grantor', flat=True).distinct() if fg)
+        federal_alns = sorted(fa for fa in Form1.objects.values_list('federal_aln', flat=True).distinct() if fa)
 
-        # Set choices dynamically
-        self.fields['program_title'].widget = forms.Select(choices=[('', 'Select')] + [(pt, pt) for pt in program_titles] + [('Add New', 'Add New')])
-        self.fields['contracting_agency'].widget = forms.Select(choices=[('', 'Select')] + [(ca, ca) for ca in contracting_agencies] + [('Add New', 'Add New')])
-        self.fields['federal_grantor'].widget = forms.Select(choices=[('', 'Select')] + [(fg, fg) for fg in federal_grantors] + [('Add New', 'Add New')])
-        self.fields['federal_aln'].widget = forms.Select(choices=[('', 'Select')] + [(fa, fa) for fa in federal_alns] + [('Add New', 'Add New')])
+        # Set choices dynamically with "Select" first, "Add New" second, and sorted values afterward
+        self.fields['program_title'].widget = forms.Select(
+            choices=[('', 'Select'), ('Add New', 'Add New')] + [(pt, pt) for pt in program_titles]
+        )
+        self.fields['contracting_agency'].widget = forms.Select(
+            choices=[('', 'Select'), ('Add New', 'Add New')] + [(ca, ca) for ca in contracting_agencies]
+        )
+        self.fields['federal_grantor'].widget = forms.Select(
+            choices=[('', 'Select'), ('Add New', 'Add New')] + [(fg, fg) for fg in federal_grantors]
+        )
+        self.fields['federal_aln'].widget = forms.Select(
+            choices=[('', 'Select'), ('Add New', 'Add New')] + [(fa, fa) for fa in federal_alns]
+        )
 
     def clean(self):
         cleaned_data = super().clean()

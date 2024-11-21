@@ -321,10 +321,10 @@ def grant_create(request):
             ).exclude(grant_id=new_grant_id)
 
             if overlapping_grants.exists():
-                # Conflict found, inform the user
-                conflict_grant_id = overlapping_grants.first().grant_id
+                # Conflict found, list all conflicting grant IDs
+                conflicting_grant_ids = ', '.join(grant.grant_id for grant in overlapping_grants)
                 conflict_message = (
-                    f"Conflict detected: Overlapping grant found with grant_id {conflict_grant_id}. "
+                    f"Conflict detected: Overlapping grants found with the following grant_ids: {conflicting_grant_ids}. "
                     "Please adjust the dates or check the existing records."
                 )
                 messages.error(request, conflict_message)
@@ -354,6 +354,7 @@ def grant_create(request):
         form = GrantForm()
 
     return render(request, 'tracking/grant_form.html', {'form': form})
+
 
 
 
