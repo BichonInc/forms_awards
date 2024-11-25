@@ -85,6 +85,14 @@
                     }
                 });
             });
+            // Trigger change event to ensure the input is hidden initially
+            document.querySelectorAll('select').forEach(selectElement => {
+                const inputField = selectElement.nextElementSibling;
+                if (inputField && selectElement.value !== 'Add New') {
+                inputField.style.display = 'none';
+                inputField.required = false;
+                }
+            });
         });
 
     </script>
@@ -142,11 +150,28 @@
                 <label>Federal ALN:</label>
                 {{ form.federal_aln }}
                 {{ form.new_federal_aln }}
+                {% if form.federal_aln.errors %}
+                    <div class="error-message">
+                        {{ form.federal_aln.errors }}
+                    </div>
+                {% endif %}
+                {% if form.new_federal_aln.errors %}
+                    <div class="error-message">
+                        {{ form.new_federal_aln.errors }}
+                    </div>
+                {% endif %}
             </div>
+
             <div class="form-group">
                 <label>Internal Award Code:</label>
                 {{ form.internal_award_code }}
+                {% if form.internal_award_code.errors %}
+                    <div class="error-message">
+                        {{ form.internal_award_code.errors }}
+                    </div>
+                {% endif %}
             </div>
+
             <div class="form-group">
                 <label>Internal GL Start Date:</label>
                 {{ form.internal_gl_start_date }}

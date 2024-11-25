@@ -308,6 +308,7 @@ def grant_create(request):
         if form.is_valid():
             print("Form is valid.")
 
+
             # Extract form data for overlap check
             internal_award_code = form.cleaned_data['internal_award_code']
             internal_gl_start_date = form.cleaned_data['internal_gl_start_date']
@@ -342,6 +343,9 @@ def grant_create(request):
                 form.instance.federal_grantor = form.cleaned_data['new_federal_grantor']
             if form.cleaned_data['federal_aln'] == 'Add New':
                 form.instance.federal_aln = form.cleaned_data['new_federal_aln']
+            else:
+                form.instance.federal_aln = form.cleaned_data['federal_aln']
+
 
             # Save the form and redirect
             form.save()

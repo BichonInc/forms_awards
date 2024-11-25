@@ -1,6 +1,7 @@
 from django import forms
 from .models import Form1
-
+from django.core.exceptions import ValidationError
+import re
 class GrantForm(forms.ModelForm):
     # Define extra fields for 'Add New' options
     new_program_title = forms.CharField(required=False, label='New Program Title')
@@ -24,6 +25,32 @@ class GrantForm(forms.ModelForm):
             'internal_gl_end_date': forms.DateInput(attrs={'type': 'date'}),
         }
 
+    def clean_federal_aln(self):
+        federal_aln = self.cleaned_data.get('federal_aln')
+        # Skip validation if 'Add New' is selected
+        if federal_aln == 'Add New':
+            return federal_aln
+        # Validate federal_aln format
+        if federal_aln and not re.match(r'^\d{2}\.\d{3}$', federal_aln):
+            raise forms.ValidationError(
+                "Federal ALN must be in the format 'xx.xxx', where x is a digit."
+            )
+        return federal_aln
+
+    def clean_internal_award_code(self):
+        internal_award_code = self.cleaned_data.get('internal_award_code')
+
+        # Ensure it's an integer before comparison
+        try:
+            internal_award_code_int = int(internal_award_code)
+        except ValueError:
+            raise forms.ValidationError("Internal Award Code must be a number between 100 and 999.")
+
+        # Validate range
+        if internal_award_code_int < 100 or internal_award_code_int > 999:
+            raise forms.ValidationError("Internal Award Code must be between 100 and 999.")
+
+        return internal_award_code
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -51,14 +78,51 @@ class GrantForm(forms.ModelForm):
     def clean(self):
         cleaned_data = super().clean()
 
-        # Handle 'Add New' logic for each field
+        # Handle 'Add New' for Federal ALN
+        federal_aln = cleaned_data.get('federal_aln')  # Get the current value of federal_aln
+        new_federal_aln = cleaned_data.get('new_federal_aln')  # Get the value entered in the 'Add New' textbox
+
+        if federal_aln == 'Add New':
+            # If 'Add New' is selected, validate the 'new_federal_aln' field
+            if not new_federal_aln:
+                self.add_error('new_federal_aln', "You must enter a new Federal ALN when selecting 'Add New'.")
+            elif not re.match(r'^\d{2}\.\d{3}$', new_federal_aln):
+                self.add_error('new_federal_aln', "Federal ALN must be in the format 'xx.xxx', where x is a digit.")
+            else:
+                # Assign the new Federal ALN to the 'federal_aln' field in cleaned_data
+                cleaned_data['federal_aln'] = new_federal_aln
+        elif federal_aln:
+            # Validate existing 'federal_aln' values (not "Add New")
+            if not re.match(r'^\d{2}\.\d{3}$', federal_aln):
+                self.add_error('federal_aln', "Federal ALN must be in the format 'xx.xxx', where x is a digit.")
+
+        # Handle 'Add New' for other fields (Program Title, Contracting Agency, Federal Grantor)
         if cleaned_data.get('program_title') == 'Add New':
-            cleaned_data['program_title'] = cleaned_data.get('new_program_title')
+            new_program_title = cleaned_data.get('new_program_title')
+            if not new_program_title:
+                self.add_error('new_program_title', "You must enter a new Program Title when selecting 'Add New'.")
+            cleaned_data['program_title'] = new_program_title
+
         if cleaned_data.get('contracting_agency') == 'Add New':
-            cleaned_data['contracting_agency'] = cleaned_data.get('new_contracting_agency')
+            new_contracting_agency = cleaned_data.get('new_contracting_agency')
+            if not new_contracting_agency:
+                self.add_error('new_contracting_agency',
+                               "You must enter a new Contracting Agency when selecting 'Add New'.")
+            cleaned_data['contracting_agency'] = new_contracting_agency
+
         if cleaned_data.get('federal_grantor') == 'Add New':
-            cleaned_data['federal_grantor'] = cleaned_data.get('new_federal_grantor')
-        if cleaned_data.get('federal_aln') == 'Add New':
-            cleaned_data['federal_aln'] = cleaned_data.get('new_federal_aln')
+            new_federal_grantor = cleaned_data.get('new_federal_grantor')
+            if not new_federal_grantor:
+                self.add_error('new_federal_grantor', "You must enter a new Federal Grantor when selecting 'Add New'.")
+            cleaned_data['federal_grantor'] = new_federal_grantor
+
+        # Validate Internal Award Code
+        internal_award_code = cleaned_data.get('internal_award_code')
+        if internal_award_code and not re.match(r'^\d{3}$', internal_award_code):
+            self.add_error('internal_award_code', "Internal Award Code must be between 100 and 999.")
 
         return cleaned_data
+
+
+
+

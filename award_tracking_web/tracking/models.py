@@ -1,22 +1,50 @@
 from django.db import models
 from decimal import Decimal
 
+from django.core.validators import RegexValidator, MinValueValidator, MaxValueValidator
+
 class Form1(models.Model):
     grant_id = models.CharField(max_length=10, primary_key=True)
     program_title = models.CharField(max_length=255)
     contracting_agency = models.CharField(max_length=255)
-    contract_number = models.CharField(max_length=50, null= False)
+    contract_number = models.CharField(max_length=50, null=False)
     contract_start_date = models.DateTimeField(null=True, blank=True)
     contract_end_date = models.DateTimeField(null=True, blank=True)
     contract_amount = models.DecimalField(max_digits=10, decimal_places=2)
     federal_grantor = models.CharField(max_length=255, null=True, blank=True)
-    federal_aln = models.CharField(max_length=255, null=True, blank=True)
+    federal_aln = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        validators=[
+            RegexValidator(
+                regex=r'^\d{2}\.\d{3}$',
+                message="Federal ALN must be in the format 'xx.xxx', where x is a digit."
+            )
+        ]
+    )
     internal_award_code = models.CharField(max_length=10)
+    def clean(self):
+        super().clean()
+        if self.internal_award_code:
+            try:
+                internal_award_code_int = int(self.internal_award_code)
+            except ValueError:
+                raise ValidationError("Internal Award Code must be a numeric value.")
+
+            if internal_award_code_int < 100 or internal_award_code_int > 999:
+                raise ValidationError("Internal Award Code must be between 100 and 999.")
+
     internal_gl_start_date = models.DateTimeField(null=True, blank=True)
     internal_gl_end_date = models.DateTimeField(null=True, blank=True)
-    status = models.CharField(max_length=10, choices=[('active', 'Active'), ('inactive', 'Inactive')])
+    status = models.CharField(
+        max_length=10,
+        choices=[('active', 'Active'), ('inactive', 'Inactive')]
+    )
+
     class Meta:
-        db_table = 'form_1'  # Use the existing table name
+        db_table = 'form_1'
+
 
 class GLExpenditure(models.Model):
     effective_date = models.DateField()
