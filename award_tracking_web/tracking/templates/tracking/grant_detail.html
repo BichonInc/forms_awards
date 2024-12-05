@@ -1,259 +1,372 @@
 {% load humanize %}
+{% load custom_filters %}
+
 <!DOCTYPE html>
 <html>
 <head>
     <title>Grant Detail</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 20px;
-        }
+    body {
+        font-family: Arial, sans-serif;
+        margin: 20px;
+    }
 
-        .readonly-field {
-            display: none;
-        }
+    .readonly-field {
+        display: none;
+    }
+    .basic-edit-field {
+    display: none;
+    }
 
-        .container {
-            width: 100%;
-            max-width: 800px;
-            margin: auto;
-        }
+    .basic-view-field {
+    display: inline;
+    }
 
-        .form-group {
-            margin-bottom: 15px;
-        }
+    .container {
+        width: 100%;
+        max-width: 800px;
+        margin: auto;
+    }
 
-        label {
-            display: inline-block;
-            width: 200px;
-            font-weight: bold;
-        }
+    .form-group {
+        margin-bottom: 15px;
+        display: flex; /* Flexbox layout ensures fields stay on the same line */
+        align-items: center; /* Align items vertically in the center */
+    }
 
-        .view-field, .edit-field {
-            margin-left: 10px;
-        }
+    label {
+        display: inline-block;
+        width: 200px;
+        font-weight: bold;
+        margin-right: 10px; /* Add spacing between label and field */
+    }
 
-        .edit-field {
-            display: none;
-            width: 50%;
-        }
+    select, input {
+        flex: 1; /* Distribute available space between elements */
+        max-width: 300px; /* Set a maximum width for dropdowns and input fields */
+        margin-right: 10px; /* Add spacing between dropdown and textbox */
+    }
 
-        .buttons {
-            margin-top: 20px;
-        }
+    input[type="text"] {
+        display: none; /* Hide input boxes by default unless needed */
+    }
 
-        td.number, input.number-right-align {
-            text-align: right;
-        }
+    input.add-new-field {
+        display: inline-block; /* Ensure "Add New" input box aligns with dropdown */
+        max-width: 300px; /* Consistent width with dropdowns */
+    }
 
-         /* Base Button Styling */
-        .button-common {
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            cursor: pointer;
-            border-radius: 5px;
-            display: inline-block;
-        }
+    .buttons {
+        margin-top: 20px;
+    }
 
-        /* Edit, Save, and Refresh Buttons */
-        #edit-button-basic, #edit-button-fiscal, #edit-button-subsequent,
-        #save-button-basic, #save-button-fiscal, #save-button-subsequent,
-        #refresh-button {
-            background-color: #4CAF50;  /* Green color */
-        }
+    td.number, input.number-right-align {
+        text-align: right;
+    }
 
-        /* Back Button Specific Styling */
-        #back-button {
-            background-color: #008CBA;  /* Blue color */
-            margin-left: 20px;
-            text-decoration: none;
-        }
+    /* Base Button Styling */
+    .button-common {
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        cursor: pointer;
+        border-radius: 5px;
+        display: inline-block;
+    }
 
-        /* Hover Effects */
-        #edit-button-basic:hover, #edit-button-fiscal:hover, #edit-button-subsequent:hover,
-        #save-button-basic:hover, #save-button-fiscal:hover, #save-button-subsequent:hover,
-        #refresh-button:hover {
-            background-color: #388E3C;  /* Darker green on hover */
-        }
+    /* Edit, Save, and Refresh Buttons */
+    #edit-button-basic, #edit-button-fiscal, #edit-button-subsequent,
+    #save-button-basic, #save-button-fiscal, #save-button-subsequent,
+    #refresh-button {
+        background-color: #4CAF50; /* Green color */
+    }
 
-        #back-button:hover {
-            background-color: #005f8a;  /* Darker blue on hover */
-        }
+    /* Back Button Specific Styling */
+    #back-button {
+        background-color: #008CBA; /* Blue color */
+        margin-left: 20px;
+        text-decoration: none;
+    }
 
-        /* Disabled State for All Buttons */
-        .button-common:disabled {
-            background-color: #ccc;
-            cursor: not-allowed;
-        }
+    /* Hover Effects */
+    #edit-button-basic:hover, #edit-button-fiscal:hover, #edit-button-subsequent:hover,
+    #save-button-basic:hover, #save-button-fiscal:hover, #save-button-subsequent:hover,
+    #refresh-button:hover {
+        background-color: #388E3C; /* Darker green on hover */
+    }
 
+    #back-button:hover {
+        background-color: #005f8a; /* Darker blue on hover */
+    }
+
+    /* Disabled State for All Buttons */
+    .button-common:disabled {
+        background-color: #ccc;
+        cursor: not-allowed;
+    }
+    .error-message {
+        color: red;
+        font-size: 0.9em;
+        margin-top: 5px;
+    }
+    .messages {
+        margin-bottom: 20px;
+        padding: 10px;
+        border-radius: 5px;
+    }
+
+    .messages.error {
+        background-color: #f8d7da;
+        color: #721c24;
+    }
+
+    .messages.success {
+        background-color: #d4edda;
+        color: #155724;
+    }
+
+    .messages.info {
+        background-color: #d1ecf1;
+        color: #0c5460;
+    }
     </style>
 
+
     <script>
-        // Toggle Edit Mode for Grant Basic Information
-        function toggleEditModeBasic() {
-            const viewFields = document.getElementsByClassName('basic-view-field');
-            const editFields = document.getElementsByClassName('basic-edit-field');
-            const saveButton = document.getElementById('save-button-basic');
-            const editButton = document.getElementById('edit-button-basic');
+    function initializeDropdowns() {
+    document.querySelectorAll('.dropdown-field').forEach(selectElement => {
+        const inputField = selectElement.nextElementSibling;
 
-            // Toggle visibility between view and edit fields
-            for (const field of viewFields) {
-                field.style.display = 'none';
+        // Initialize: Hide input unless "Add New" is selected
+        if (inputField) {
+            if (selectElement.value === 'Add New') {
+                inputField.style.display = 'inline';
+                inputField.required = true;
+            } else {
+                inputField.style.display = 'none';
+                inputField.required = false;
             }
-            for (const field of editFields) {
-                field.style.display = 'inline';
-                field.removeAttribute('readonly');
+        }
+
+        // Add change listener for dynamic behavior
+        selectElement.addEventListener('change', function () {
+            if (inputField) {
+                if (this.value === 'Add New') {
+                    inputField.style.display = 'inline';
+                    inputField.required = true;
+                } else {
+                    inputField.style.display = 'none';
+                    inputField.required = false;
+                }
             }
-            saveButton.style.display = 'inline';
-            editButton.style.display = 'none';
-        }
+        });
+    });
+}
 
-        // Toggle Edit Mode for Grant Fiscal Information
-        function toggleEditModeFiscal() {
-            const editFields = document.getElementsByClassName('fiscal-edit-field');
-            const saveButton = document.getElementById('save-button-fiscal');
-            const editButton = document.getElementById('edit-button-fiscal');
+function toggleEditModeBasic() {
+    const viewFields = document.getElementsByClassName('basic-view-field');
+    const editFields = document.getElementsByClassName('basic-edit-field');
+    const saveButton = document.getElementById('save-button-basic');
+    const editButton = document.getElementById('edit-button-basic');
 
-            // Enable input fields by removing readonly attribute
-            for (const field of editFields) {
-                field.removeAttribute('readonly');
-            }
-            saveButton.style.display = 'inline';
-            editButton.style.display = 'none';
-        }
+    // Toggle visibility between view and edit fields
+    for (const field of viewFields) {
+        field.style.display = 'none';
+    }
+    for (const field of editFields) {
+        field.style.display = 'inline';
+        field.removeAttribute('readonly');
+    }
+    saveButton.style.display = 'inline';
+    editButton.style.display = 'none';
 
-        // Toggle Edit Mode for Subsequent Adjustment
-        function toggleEditModeSubsequent() {
-            const editFields = document.getElementsByClassName('subsequent-edit-field');
-            const saveButton = document.getElementById('save-button-subsequent');
-            const editButton = document.getElementById('edit-button-subsequent');
+    // Initialize dropdowns now that they are visible
+    initializeDropdowns();
+}
 
-            // Enable input fields by removing readonly attribute
-            for (const field of editFields) {
-                field.removeAttribute('readonly');
-            }
-            saveButton.style.display = 'inline';
-            editButton.style.display = 'none';
-        }
-         // Enable Save Changes Button for Grant Basic Information
-        function enableSaveButtonBasic() {
-            const saveButton = document.getElementById('save-button-basic');
-            saveButton.disabled = false;
-        }
+// No need to initialize dropdowns on page load since edit fields are hidden
+document.addEventListener('DOMContentLoaded', function () {
+    // Other initialization code if necessary
+});
 
-        // Enable Save Changes Button for Grant Fiscal Information
-        function enableSaveButtonFiscal() {
-            const saveButton = document.getElementById('save-button-fiscal');
-            saveButton.disabled = false;
-        }
 
-        // Enable Save Changes Button for Subsequent Adjustment
-        function enableSaveButtonSubsequent() {
-            const saveButton = document.getElementById('save-button-subsequent');
-            saveButton.disabled = false;
+    // Toggle Edit Mode for Grant Fiscal Information
+    function toggleEditModeFiscal() {
+        const editFields = document.getElementsByClassName('fiscal-edit-field');
+        const saveButton = document.getElementById('save-button-fiscal');
+        const editButton = document.getElementById('edit-button-fiscal');
+
+        // Enable input fields by removing readonly attribute
+        for (const field of editFields) {
+            field.removeAttribute('readonly');
         }
+        saveButton.style.display = 'inline';
+        editButton.style.display = 'none';
+    }
+
+    // Toggle Edit Mode for Subsequent Adjustment
+    function toggleEditModeSubsequent() {
+        const editFields = document.getElementsByClassName('subsequent-edit-field');
+        const saveButton = document.getElementById('save-button-subsequent');
+        const editButton = document.getElementById('edit-button-subsequent');
+
+        // Enable input fields by removing readonly attribute
+        for (const field of editFields) {
+            field.removeAttribute('readonly');
+        }
+        saveButton.style.display = 'inline';
+        editButton.style.display = 'none';
+    }
+
+    // Enable Save Changes Button for Grant Basic Information
+    function enableSaveButtonBasic() {
+        const saveButton = document.getElementById('save-button-basic');
+        saveButton.disabled = false;
+    }
+
+    // Enable Save Changes Button for Grant Fiscal Information
+    function enableSaveButtonFiscal() {
+        const saveButton = document.getElementById('save-button-fiscal');
+        saveButton.disabled = false;
+    }
+
+    // Enable Save Changes Button for Subsequent Adjustment
+    function enableSaveButtonSubsequent() {
+        const saveButton = document.getElementById('save-button-subsequent');
+        saveButton.disabled = false;
+    }
+
     </script>
+
 
 
 </head>
 <body>
     <div class="container">
         <h1>Grant Detail - {{ grant.program_title }}</h1>
+        {% if messages %}
+            <div class="messages-container">
+                {% for message in messages %}
+                    <div class="messages {{ message.tags }}">
+                        {{ message }}
+                    </div>
+                {% endfor %}
+            </div>
+        {% endif %}
         <a href="{% url 'grant_list' %}" id="back-button" class="button-common">Back to Grant List</a>
             <h2>Grant Basic Information</h2>
             <form method="post" action="{% url 'grant_detail' grant.grant_id %}">
                 {% csrf_token %}
                 <input type="hidden" name="form_type" value="basic">
-                <!-- Hidden field for Grant ID -->
                 <input type="hidden" name="grant_id" value="{{ grant.grant_id }}">
+
                 <div class="form-group">
                     <label>Grant ID:</label>
                     <span class="basic-view-field">{{ grant.grant_id }}</span>
-                    <input class="basic-edit-field" type="text" value="{{ grant.grant_id }}" readonly style="display:none;">
                 </div>
 
-                <!-- Program Title with input for Save -->
+
                 <div class="form-group">
                     <label>Program Title:</label>
                     <span class="basic-view-field">{{ grant.program_title }}</span>
-                    <input class="basic-edit-field" type="text" name="program_title" value="{{ grant.program_title }}" oninput="enableSaveButtonBasic();" style="display:none;">
+                    {{ form.program_title|add_class:"basic-edit-field dropdown-field" }}
+                    <input class="basic-edit-field" type="text" name="new_program_title" placeholder="Enter new Program Title">
                 </div>
+
 
                 <div class="form-group">
                     <label>Contracting Agency:</label>
                     <span class="basic-view-field">{{ grant.contracting_agency }}</span>
-                    <input class="basic-edit-field" type="text" name="contracting_agency" value="{{ grant.contracting_agency }}" readonly oninput="enableSaveButtonBasic();" style="display:none;">
+                    {{ form.contracting_agency|add_class:"basic-edit-field dropdown-field" }}
+                    <input class="basic-edit-field" type="text" name="new_contracting_agency" placeholder="Enter new Contracting Agency">
                 </div>
 
                 <div class="form-group">
                     <label>Contract Number:</label>
                     <span class="basic-view-field">{{ grant.contract_number }}</span>
-                    <input class="basic-edit-field" type="text" name="contract_number" value="{{ grant.contract_number }}" readonly oninput="enableSaveButtonBasic();" style="display:none;">
+                    <input class="basic-edit-field" type="text" name="contract_number" value="{{ grant.contract_number }}" readonly oninput="enableSaveButtonBasic();" >
                 </div>
 
                 <div class="form-group">
                     <label>Contract Start Date:</label>
                     <span class="basic-view-field">{{ grant.contract_start_date|date:"Y-m-d" }}</span>
-                    <input class="basic-edit-field" type="date" name="contract_start_date" value="{{ grant.contract_start_date|date:'Y-m-d' }}" readonly oninput="enableSaveButtonBasic();" style="display:none;">
+                    <input class="basic-edit-field" type="date" name="contract_start_date" value="{{ grant.contract_start_date|date:'Y-m-d' }}" readonly oninput="enableSaveButtonBasic();">
                 </div>
 
                 <div class="form-group">
                     <label>Contract End Date:</label>
                     <span class="basic-view-field">{{ grant.contract_end_date|date:"Y-m-d" }}</span>
-                    <input class="basic-edit-field" type="date" name="contract_end_date" value="{{ grant.contract_end_date|date:'Y-m-d' }}" readonly oninput="enableSaveButtonBasic();" style="display:none;">
+                    <input class="basic-edit-field" type="date" name="contract_end_date" value="{{ grant.contract_end_date|date:'Y-m-d' }}" readonly oninput="enableSaveButtonBasic();">
                 </div>
 
                 <div class="form-group">
                     <label>Contract Amount:</label>
                     <span class="basic-view-field">{{ grant.contract_amount|floatformat:2|intcomma }}</span>
-                    <input class="basic-edit-field" type="number" step="0.01" name="contract_amount" value="{{ grant.contract_amount }}" readonly oninput="enableSaveButtonBasic();" style="display:none;">
+                    <input class="basic-edit-field" type="number" step="0.01" name="contract_amount" value="{{ grant.contract_amount }}" readonly oninput="enableSaveButtonBasic();">
                 </div>
-
                 <div class="form-group">
                     <label>Federal Grantor:</label>
                     <span class="basic-view-field">{{ grant.federal_grantor }}</span>
-                    <input class="basic-edit-field" type="text" name="federal_grantor" value="{{ grant.federal_grantor }}" readonly oninput="enableSaveButtonBasic();" style="display:none;">
+                    {{ form.federal_grantor|add_class:"basic-edit-field dropdown-field" }}
+                    <input class="basic-edit-field" type="text" name="new_federal_grantor" placeholder="Enter new Federal Grantor">
                 </div>
 
                 <div class="form-group">
                     <label>Federal ALN:</label>
                     <span class="basic-view-field">{{ grant.federal_aln }}</span>
-                    <input class="basic-edit-field" type="text" name="federal_aln" value="{{ grant.federal_aln }}" readonly oninput="enableSaveButtonBasic();" style="display:none;">
+                    {{ form.federal_aln|add_class:"basic-edit-field dropdown-field" }}
+                    <input class="basic-edit-field" type="text" name="new_federal_aln" placeholder="Enter new Federal ALN" style="display:none;">
+                    <!-- Error message for Federal ALN -->
+                    {% if form.federal_aln.errors %}
+                        <div class="error-message">
+                            {{ form.federal_aln.errors }}
+                        </div>
+                    {% endif %}
+                    {% if form.new_federal_aln.errors %}
+                        <div class="error-message">
+                            {{ form.new_federal_aln.errors }}
+                        </div>
+                    {% endif %}
                 </div>
+
 
                 <div class="form-group">
                     <label>Internal Award Code:</label>
                     <span class="basic-view-field">{{ grant.internal_award_code }}</span>
-                    <input class="basic-edit-field" type="text" name="internal_award_code" value="{{ grant.internal_award_code }}" readonly oninput="enableSaveButtonBasic();" style="display:none;">
+                    <input class="basic-edit-field" type="text" name="internal_award_code" value="{{ grant.internal_award_code }}" oninput="enableSaveButtonBasic();" style="display:none;">
+                    <!-- Error message for Internal Award Code -->
+                    {% if form.internal_award_code.errors %}
+                        <div class="error-message">
+                            {{ form.internal_award_code.errors }}
+                        </div>
+                    {% endif %}
                 </div>
-
                 <div class="form-group">
                     <label>Internal GL Start Date:</label>
                     <span class="basic-view-field">{{ grant.internal_gl_start_date|date:"Y-m-d" }}</span>
-                    <input class="basic-edit-field" type="date" name="internal_gl_start_date" value="{{ grant.internal_gl_start_date|date:'Y-m-d' }}" readonly oninput="enableSaveButtonBasic();" style="display:none;">
+                    <input class="basic-edit-field" type="date" name="internal_gl_start_date" value="{{ grant.internal_gl_start_date|date:'Y-m-d' }}" readonly oninput="enableSaveButtonBasic();">
                 </div>
 
                 <div class="form-group">
                     <label>Internal GL End Date:</label>
                     <span class="basic-view-field">{{ grant.internal_gl_end_date|date:"Y-m-d" }}</span>
-                    <input class="basic-edit-field" type="date" name="internal_gl_end_date" value="{{ grant.internal_gl_end_date|date:'Y-m-d' }}" readonly oninput="enableSaveButtonBasic();" style="display:none;">
+                    <input class="basic-edit-field" type="date" name="internal_gl_end_date" value="{{ grant.internal_gl_end_date|date:'Y-m-d' }}" readonly oninput="enableSaveButtonBasic();">
                 </div>
 
                 <div class="form-group">
                     <label>Status:</label>
                     <span class="basic-view-field">{{ grant.status }}</span>
-                    <select class="basic-edit-field" name="status" readonly onchange="enableSaveButtonBasic();" style="display:none;">
+                    <select class="basic-edit-field" name="status" readonly onchange="enableSaveButtonBasic();">
                         <option value="active" {% if grant.status == "active" %}selected{% endif %}>Active</option>
                         <option value="inactive" {% if grant.status == "inactive" %}selected{% endif %}>Inactive</option>
                     </select>
                 </div>
-
                 <div class="buttons">
                     <button type="button" id="edit-button-basic" class="button-common" onclick="toggleEditModeBasic()">Edit</button>
                     <button type="submit" id="save-button-basic" class="button-common" style="display:none;">Save Changes</button>
                 </div>
             </form>
+
 
             <!-- Fiscal Information Form -->
             <h2>Grant Fiscal Information</h2>

@@ -120,26 +120,65 @@ def grant_list(request):
     return render(request, 'tracking/grant_list.html', context)
 
 
-
-
 def grant_detail(request, grant_id):
     print(f"Grant detail accessed for grant_id: {grant_id}")
 
-    # Fetch the grant object from form_1 using grant_id
+    # Fetch the grant object
     grant = get_object_or_404(Form1, grant_id=grant_id)
     print(f"Grant object fetched: {grant}")
 
+
     if request.method == 'POST':
-        form_type = request.POST.get('form_type')
-        if form_type == 'basic':
+        form = GrantForm(request.POST, instance=grant)
+        form_type = request.POST.get('form_type')  # Check which part of the form is being submitted
+
+        print(f"Form data received: {form.data}")
+
+        if form_type == 'basic':  # Handle Basic Information Form
             print("Basic form submission detected")
-            form = GrantForm(request.POST, instance=grant)
             if form.is_valid():
-                form.save()
-                print("Grant Basic Information saved.")
-        elif form_type == 'fiscal':
+                # Handle 'Add New' for dropdowns
+                if form.cleaned_data['program_title'] == 'Add New':
+                    form.instance.program_title = form.cleaned_data['new_program_title']
+                if form.cleaned_data['contracting_agency'] == 'Add New':
+                    form.instance.contracting_agency = form.cleaned_data['new_contracting_agency']
+                if form.cleaned_data['federal_grantor'] == 'Add New':
+                    form.instance.federal_grantor = form.cleaned_data['new_federal_grantor']
+                if form.cleaned_data['federal_aln'] == 'Add New':
+                    form.instance.federal_aln = form.cleaned_data['new_federal_aln']
+                else:
+                    form.instance.federal_aln = form.cleaned_data['federal_aln']
+
+                # Check for overlapping grants
+                internal_award_code = form.cleaned_data['internal_award_code']
+                internal_gl_start_date = form.cleaned_data['internal_gl_start_date']
+                internal_gl_end_date = form.cleaned_data['internal_gl_end_date']
+
+                overlapping_grants = Form1.objects.filter(
+                    internal_award_code=internal_award_code,
+                    internal_gl_end_date__gte=internal_gl_start_date,
+                    internal_gl_start_date__lte=internal_gl_end_date,
+                ).exclude(grant_id=grant_id)
+
+                if overlapping_grants.exists():
+                    conflicting_grant_ids = ', '.join(grant.grant_id for grant in overlapping_grants)
+                    conflict_message = (
+                        f"Conflict detected: Overlapping grants found with the following grant_ids: {conflicting_grant_ids}. "
+                        "Please adjust the dates or check the existing records."
+                    )
+                    messages.error(request, conflict_message)
+                    print(conflict_message)
+                else:
+                    form.save()
+                    print("Grant Basic Information saved.")
+                    messages.success(request, "Changes to the grant have been saved successfully.")
+            else:
+                print(f"Form is not valid. Errors: {form.errors}")
+                messages.error(request, "There was an error in your submission. Please fix the issues below.")
+            return render(request, 'tracking/grant_detail.html', {'grant': grant, 'form': form})
+
+        elif form_type == 'fiscal':  # Handle Fiscal Information
             print("Fiscal form submission detected")
-            # Handle user inputs for In-Period Expenditure section
             gl_expenditures = GLExpenditure.objects.filter(grant_id=grant_id)
             fiscal_breakdown = gl_expenditures.values('fiscal_year').annotate(
                 total_expenditure=Sum('net_expenditure')
@@ -149,27 +188,22 @@ def grant_detail(request, grant_id):
                 fiscal_year = breakdown['fiscal_year']
                 try:
                     federal_input = Decimal(request.POST.get(f'federal_{i}', '0').replace(',', ''))
-                except InvalidOperation:
-                    federal_input = Decimal('0')
-
-                try:
                     nonfederal_input = Decimal(request.POST.get(f'nonfederal_{i}', '0').replace(',', ''))
                 except InvalidOperation:
-                    nonfederal_input = Decimal('0')
+                    federal_input, nonfederal_input = Decimal('0'), Decimal('0')
 
                 fiscal_record, created = FiscalBreakdown.objects.get_or_create(
                     grant_id=grant,
                     fiscal_year=fiscal_year,
                     defaults={'federal': federal_input, 'nonfederal': nonfederal_input}
                 )
-
                 if not created:
                     fiscal_record.federal = federal_input
                     fiscal_record.nonfederal = nonfederal_input
                     fiscal_record.save()
-        elif form_type == 'subsequent':
+
+        elif form_type == 'subsequent':  # Handle Subsequent Adjustment
             print("Subsequent Adjustment form submission detected")
-            # Handle user inputs for Subsequent Adjustment section
             subsequent_adjustments = SubsequentAdjustment.objects.filter(grant_id=grant_id)
             subsequent_breakdown = subsequent_adjustments.values('fiscal_year').annotate(
                 total_expenditure=Sum('net_expenditure')
@@ -179,28 +213,21 @@ def grant_detail(request, grant_id):
                 fiscal_year = breakdown['fiscal_year']
                 try:
                     federal_input = Decimal(request.POST.get(f'federal_subsequent_{i}', '0').replace(',', ''))
-                except InvalidOperation:
-                    federal_input = Decimal('0')
-
-                try:
                     nonfederal_input = Decimal(request.POST.get(f'nonfederal_subsequent_{i}', '0').replace(',', ''))
                 except InvalidOperation:
-                    nonfederal_input = Decimal('0')
+                    federal_input, nonfederal_input = Decimal('0'), Decimal('0')
 
                 subsequent_record, created = SubsequentFiscalBreakdown.objects.get_or_create(
                     grant_id=grant,
                     fiscal_year=fiscal_year,
                     defaults={'federal': federal_input, 'nonfederal': nonfederal_input}
                 )
-
                 if not created:
                     subsequent_record.federal = federal_input
                     subsequent_record.nonfederal = nonfederal_input
                     subsequent_record.save()
 
-            return redirect('grant_detail', grant_id=grant_id)
-
-    # Displaying the grant detail page (GET request)
+    # GET request or POST data handling complete
     form = GrantForm(instance=grant)
 
     # Fetch fiscal year breakdown for GL Expenditure
@@ -261,9 +288,7 @@ def grant_detail(request, grant_id):
         total_nonfederal_sub_sum += breakdown['nonfederal']
         total_difference_sub += breakdown['difference']
 
-    print("Context for subsequent_breakdown:", subsequent_breakdown)
-
-    return render(request, 'tracking/grant_detail.html', {
+    context = {
         'grant': grant,
         'form': form,
         'fiscal_breakdown': fiscal_breakdown,
@@ -276,7 +301,11 @@ def grant_detail(request, grant_id):
         'total_federal_sub_sum': total_federal_sub_sum,
         'total_nonfederal_sub_sum': total_nonfederal_sub_sum,
         'total_difference_sub': total_difference_sub,
-    })
+    }
+
+    return render(request, 'tracking/grant_detail.html', context)
+
+
 
 from django.db.models import Q
 from django.contrib import messages
