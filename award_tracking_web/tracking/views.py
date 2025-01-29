@@ -619,6 +619,7 @@ from django.http import HttpResponse
 from django.db.models import Sum
 from .models import Form1, GLExpenditure, SubsequentAdjustment, FiscalBreakdown, SubsequentFiscalBreakdown
 
+
 def download_data_csv(request):
     # Create HTTP response with CSV content type
     response = HttpResponse(content_type='text/csv')
@@ -648,27 +649,36 @@ def download_data_csv(request):
             total_expenditure=Sum('net_expenditure')
         ).order_by('fiscal_year')
 
-        # Write GL Expenditure grouped data
-        for gl in gl_expenditures:
-            fiscal_year = gl['fiscal_year']
-            total_expenditure = gl['total_expenditure']
+        if gl_expenditures.exists():
+            for gl in gl_expenditures:
+                fiscal_year = gl['fiscal_year']
+                total_expenditure = gl['total_expenditure']
 
-            # Fetch federal and nonfederal from FiscalBreakdown
-            fiscal_record = FiscalBreakdown.objects.filter(
-                grant_id=grant_id, fiscal_year=fiscal_year
-            ).first()
+                # Fetch federal and nonfederal from FiscalBreakdown
+                fiscal_record = FiscalBreakdown.objects.filter(
+                    grant_id=grant_id, fiscal_year=fiscal_year
+                ).first()
 
-            federal = fiscal_record.federal if fiscal_record else 0
-            nonfederal = fiscal_record.nonfederal if fiscal_record else 0
-            difference = total_expenditure - federal - nonfederal
+                federal = fiscal_record.federal if fiscal_record else 0
+                nonfederal = fiscal_record.nonfederal if fiscal_record else 0
+                difference = total_expenditure - federal - nonfederal
 
+                writer.writerow([
+                    grant_id, form.program_title, form.contracting_agency, form.contract_number,
+                    form.contract_start_date, form.contract_end_date, form.contract_amount,
+                    form.federal_grantor, form.federal_aln, form.internal_award_code,
+                    form.internal_gl_start_date, form.internal_gl_end_date, form.status,
+                    'GL Expenditure', fiscal_year, total_expenditure, federal,
+                    nonfederal, difference
+                ])
+        else:
+            # Write a row for the grant even if no GLExpenditure data exists
             writer.writerow([
                 grant_id, form.program_title, form.contracting_agency, form.contract_number,
                 form.contract_start_date, form.contract_end_date, form.contract_amount,
                 form.federal_grantor, form.federal_aln, form.internal_award_code,
                 form.internal_gl_start_date, form.internal_gl_end_date, form.status,
-                'GL Expenditure', fiscal_year, total_expenditure, federal,
-                nonfederal, difference
+                'No Current Expenditure', '', '', '', '', ''
             ])
 
         # Grouped data from SubsequentAdjustment by fiscal_year
@@ -676,27 +686,36 @@ def download_data_csv(request):
             total_adjustment=Sum('net_expenditure')
         ).order_by('fiscal_year')
 
-        # Write Subsequent Adjustment grouped data
-        for sa in subsequent_adjustments:
-            fiscal_year = sa['fiscal_year']
-            total_adjustment = sa['total_adjustment']
+        if subsequent_adjustments.exists():
+            for sa in subsequent_adjustments:
+                fiscal_year = sa['fiscal_year']
+                total_adjustment = sa['total_adjustment']
 
-            # Fetch federal and nonfederal from SubsequentFiscalBreakdown
-            sub_fiscal_record = SubsequentFiscalBreakdown.objects.filter(
-                grant_id=grant_id, fiscal_year=fiscal_year
-            ).first()
+                # Fetch federal and nonfederal from SubsequentFiscalBreakdown
+                sub_fiscal_record = SubsequentFiscalBreakdown.objects.filter(
+                    grant_id=grant_id, fiscal_year=fiscal_year
+                ).first()
 
-            federal_sub = sub_fiscal_record.federal if sub_fiscal_record else 0
-            nonfederal_sub = sub_fiscal_record.nonfederal if sub_fiscal_record else 0
-            difference_sub = total_adjustment - federal_sub - nonfederal_sub
+                federal_sub = sub_fiscal_record.federal if sub_fiscal_record else 0
+                nonfederal_sub = sub_fiscal_record.nonfederal if sub_fiscal_record else 0
+                difference_sub = total_adjustment - federal_sub - nonfederal_sub
 
+                writer.writerow([
+                    grant_id, form.program_title, form.contracting_agency, form.contract_number,
+                    form.contract_start_date, form.contract_end_date, form.contract_amount,
+                    form.federal_grantor, form.federal_aln, form.internal_award_code,
+                    form.internal_gl_start_date, form.internal_gl_end_date, form.status,
+                    'Subsequent Adjustment', fiscal_year, total_adjustment, federal_sub,
+                    nonfederal_sub, difference_sub
+                ])
+        else:
+            # Write a row for the grant even if no SubsequentAdjustment data exists
             writer.writerow([
                 grant_id, form.program_title, form.contracting_agency, form.contract_number,
                 form.contract_start_date, form.contract_end_date, form.contract_amount,
                 form.federal_grantor, form.federal_aln, form.internal_award_code,
                 form.internal_gl_start_date, form.internal_gl_end_date, form.status,
-                'Subsequent Adjustment', fiscal_year, total_adjustment, federal_sub,
-                nonfederal_sub, difference_sub
+                'No Subsequent Adjustment', '', '', '', '', ''
             ])
 
     return response

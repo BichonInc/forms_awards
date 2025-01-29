@@ -297,6 +297,11 @@ document.addEventListener('DOMContentLoaded', function () {
                     <label>Contract End Date:</label>
                     <span class="basic-view-field">{{ grant.contract_end_date|date:"Y-m-d" }}</span>
                     <input class="basic-edit-field" type="date" name="contract_end_date" value="{{ grant.contract_end_date|date:'Y-m-d' }}" readonly oninput="enableSaveButtonBasic();">
+                    {% if form.contract_end_date.errors %}
+                        <div class="error-message">
+                            {{ form.contract_end_date.errors }}
+                        </div>
+                    {% endif %}
                 </div>
 
                 <div class="form-group">
@@ -351,6 +356,11 @@ document.addEventListener('DOMContentLoaded', function () {
                     <label>Internal GL End Date:</label>
                     <span class="basic-view-field">{{ grant.internal_gl_end_date|date:"Y-m-d" }}</span>
                     <input class="basic-edit-field" type="date" name="internal_gl_end_date" value="{{ grant.internal_gl_end_date|date:'Y-m-d' }}" readonly oninput="enableSaveButtonBasic();">
+                    {% if form.internal_gl_end_date.errors %}
+                        <div class="error-message">
+                            {{ form.internal_gl_end_date.errors }}
+                        </div>
+                    {% endif %}
                 </div>
 
                 <div class="form-group">

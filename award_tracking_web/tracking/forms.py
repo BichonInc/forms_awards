@@ -30,6 +30,9 @@ class GrantForm(forms.ModelForm):
         # Skip validation if 'Add New' is selected
         if federal_aln == 'Add New':
             return federal_aln
+        # Allow "None" as a valid value
+        if federal_aln == "None":
+            return None
         # Validate federal_aln format
         if federal_aln and not re.match(r'^\d{2}\.\d{3}$', federal_aln):
             raise forms.ValidationError(
@@ -51,6 +54,7 @@ class GrantForm(forms.ModelForm):
             raise forms.ValidationError("Internal Award Code must be between 100 and 999.")
 
         return internal_award_code
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -76,14 +80,38 @@ class GrantForm(forms.ModelForm):
         )
 
     def clean(self):
+        print("Clean method executed")  # Debugging
+
         cleaned_data = super().clean()
 
-        # Handle 'Add New' for Federal ALN
+        # === Date Validation ===
+        contract_start_date = cleaned_data.get('contract_start_date')
+        contract_end_date = cleaned_data.get('contract_end_date')
+        internal_gl_start_date = cleaned_data.get('internal_gl_start_date')
+        internal_gl_end_date = cleaned_data.get('internal_gl_end_date')
+
+        # Debugging prints for dates
+        print(f"Contract Start Date: {contract_start_date}")
+        print(f"Contract End Date: {contract_end_date}")
+        print(f"Internal GL Start Date: {internal_gl_start_date}")
+        print(f"Internal GL End Date: {internal_gl_end_date}")
+
+        # Contract dates validation
+        if contract_start_date and contract_end_date and contract_end_date < contract_start_date:
+            print("Validation failed: Contract end date is earlier than start date")
+            self.add_error('contract_end_date', "Contract end date must be on or after contract start date.")
+
+        # Internal GL dates validation
+        if internal_gl_start_date and internal_gl_end_date and internal_gl_end_date < internal_gl_start_date:
+            print("Validation failed: Internal GL end date is earlier than start date")
+            self.add_error('internal_gl_end_date', "Internal GL end date must be on or after internal GL start date.")
+
+        # === "Add New" Handling ===
         federal_aln = cleaned_data.get('federal_aln')  # Get the current value of federal_aln
-        new_federal_aln = cleaned_data.get('new_federal_aln')  # Get the value entered in the 'Add New' textbox
+        new_federal_aln = cleaned_data.get('new_federal_aln')  # Get the value entered in the "Add New" textbox
 
         if federal_aln == 'Add New':
-            # If 'Add New' is selected, validate the 'new_federal_aln' field
+            # Validate the "new_federal_aln" field
             if not new_federal_aln:
                 self.add_error('new_federal_aln', "You must enter a new Federal ALN when selecting 'Add New'.")
             elif not re.match(r'^\d{2}\.\d{3}$', new_federal_aln):
@@ -96,7 +124,7 @@ class GrantForm(forms.ModelForm):
             if not re.match(r'^\d{2}\.\d{3}$', federal_aln):
                 self.add_error('federal_aln', "Federal ALN must be in the format 'xx.xxx', where x is a digit.")
 
-        # Handle 'Add New' for other fields (Program Title, Contracting Agency, Federal Grantor)
+        # Handle "Add New" for other fields (Program Title, Contracting Agency, Federal Grantor)
         if cleaned_data.get('program_title') == 'Add New':
             new_program_title = cleaned_data.get('new_program_title')
             if not new_program_title:
@@ -122,6 +150,7 @@ class GrantForm(forms.ModelForm):
             self.add_error('internal_award_code', "Internal Award Code must be between 100 and 999.")
 
         return cleaned_data
+
 
 
 
