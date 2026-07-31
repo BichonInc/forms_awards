@@ -1,13 +1,29 @@
-from django.conf import settings
-from django.db import models
+import uuid
 from decimal import Decimal
 
+from django.conf import settings
+from django.core.validators import (
+    FileExtensionValidator,
+    MaxValueValidator,
+    MinValueValidator,
+    RegexValidator,
+)
+from django.db import models
 
-from django.core.validators import RegexValidator, MinValueValidator, MaxValueValidator
-
+GRANT_ID_VALIDATOR = RegexValidator(
+    regex=r"^[A-Z]\d{5}$",
+    message=(
+        "Grant ID must contain one capital letter "
+        "followed by five digits."
+    ),
+)
 
 class Form1(models.Model):
-    grant_id = models.CharField(max_length=10, primary_key=True)
+    grant_id = models.CharField(
+        max_length=10,
+        primary_key=True,
+        validators=[GRANT_ID_VALIDATOR],
+    )
     program_title = models.CharField(max_length=255)
     contracting_agency = models.CharField(max_length=255)
     contract_number = models.CharField(max_length=50, null=False)
@@ -99,7 +115,10 @@ class ChangeRequest(models.Model):
         DENIED = "DENIED", "Denied"
         APPROVED = "APPROVED", "Approved"
 
-    grant_id = models.CharField(max_length=10)
+    grant_id = models.CharField(
+        max_length=10,
+        validators=[GRANT_ID_VALIDATOR],
+    )
     request_type = models.CharField(
         max_length=20,
         choices=RequestType.choices,
@@ -226,4 +245,310 @@ class ChangeNote(models.Model):
         return (
             f"Request {self.change_request_id}, "
             f"revision {self.revision_no}: {preview}"
+        )
+
+
+def grant_document_upload_path(instance, filename):
+    return (
+        f"grant_documents/{instance.grant_id}/"
+        f"{uuid.uuid4().hex}.pdf"
+    )
+
+
+class GrantDocument(models.Model):
+    class DocumentType(models.TextChoices):
+        CONTRACT_AMENDMENT = (
+            "CONTRACT_AMENDMENT",
+            "Contract/Amendment",
+        )
+        CORRESPONDENCE = (
+            "CORRESPONDENCE",
+            "Correspondence",
+        )
+
+    class Status(models.TextChoices):
+        ACTIVE = "ACTIVE", "Active"
+        REPLACED = "REPLACED", "Replaced"
+        DELETED = "DELETED", "Deleted"
+
+    grant_id = models.CharField(
+        max_length=10,
+        db_index=True,
+        validators=[GRANT_ID_VALIDATOR],
+    )
+
+    change_request = models.ForeignKey(
+        ChangeRequest,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="documents",
+    )
+
+    document_type = models.CharField(
+        max_length=25,
+        choices=DocumentType.choices,
+    )
+
+    amendment_no = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[
+            MinValueValidator(0),
+            MaxValueValidator(99),
+        ],
+    )
+
+    correspondence_date = models.DateField(
+        null=True,
+        blank=True,
+    )
+
+    correspondence_sequence = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[
+            MinValueValidator(1),
+            MaxValueValidator(99),
+        ],
+    )
+
+    file = models.FileField(
+        upload_to=grant_document_upload_path,
+        validators=[
+            FileExtensionValidator(
+                allowed_extensions=["pdf"],
+            )
+        ],
+        max_length=500,
+        blank=True,
+    )
+
+    original_filename = models.CharField(max_length=255)
+    file_size = models.PositiveBigIntegerField()
+
+    status = models.CharField(
+        max_length=10,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+    )
+
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="uploaded_grant_documents",
+    )
+
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    replaces_document = models.OneToOneField(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="replacement_document",
+    )
+
+    replaced_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="replaced_grant_documents",
+    )
+
+    replaced_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="deleted_grant_documents",
+    )
+
+    deleted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    purged_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        db_table = "grant_document"
+        ordering = ["grant_id", "document_type", "uploaded_at"]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                        models.Q(
+                            document_type="CONTRACT_AMENDMENT",
+                            amendment_no__isnull=False,
+                            amendment_no__gte=0,
+                            amendment_no__lte=99,
+                            correspondence_date__isnull=True,
+                            correspondence_sequence__isnull=True,
+                        )
+                        |
+                        models.Q(
+                            document_type="CORRESPONDENCE",
+                            amendment_no__isnull=True,
+                            correspondence_date__isnull=False,
+                            correspondence_sequence__isnull=False,
+                            correspondence_sequence__gte=1,
+                            correspondence_sequence__lte=99,
+                        )
+                ),
+                name="valid_grant_document_metadata",
+            ),
+            models.CheckConstraint(
+                condition=(
+                        models.Q(
+                            status="ACTIVE",
+                            replaced_by__isnull=True,
+                            replaced_at__isnull=True,
+                            deleted_by__isnull=True,
+                            deleted_at__isnull=True,
+                            purged_at__isnull=True,
+                        )
+                        |
+                        models.Q(
+                            status="REPLACED",
+                            replaced_by__isnull=False,
+                            replaced_at__isnull=False,
+                            deleted_by__isnull=True,
+                            deleted_at__isnull=True,
+                        )
+                        |
+                        models.Q(
+                            status="DELETED",
+                            replaced_by__isnull=True,
+                            replaced_at__isnull=True,
+                            deleted_by__isnull=False,
+                            deleted_at__isnull=False,
+                        )
+                ),
+                name="valid_grant_document_status_metadata",
+            ),
+            models.UniqueConstraint(
+                fields=[
+                    "grant_id",
+                    "amendment_no",
+                ],
+                condition=models.Q(
+                    status="ACTIVE",
+                    document_type="CONTRACT_AMENDMENT",
+                ),
+                name="unique_active_contract_amendment",
+            ),
+            models.UniqueConstraint(
+                fields=[
+                    "grant_id",
+                    "correspondence_date",
+                    "correspondence_sequence",
+                ],
+                condition=models.Q(
+                    status="ACTIVE",
+                    document_type="CORRESPONDENCE",
+                ),
+                name="unique_active_correspondence",
+            ),
+        ]
+
+    @property
+    def display_filename(self):
+        if self.document_type == self.DocumentType.CONTRACT_AMENDMENT:
+            return (
+                f"{self.grant_id}-A-"
+                f"{self.amendment_no:02d}.pdf"
+            )
+
+        return (
+            f"{self.grant_id}-B-"
+            f"{self.correspondence_date:%Y-%m-%d}-"
+            f"{self.correspondence_sequence:02d}.pdf"
+        )
+
+    def __str__(self):
+        return self.display_filename
+
+
+class GrantDocumentAction(models.Model):
+    class Action(models.TextChoices):
+        UPLOAD = "UPLOAD", "Upload"
+        EDIT_METADATA = "EDIT_METADATA", "Edit Metadata"
+        REPLACE_FILE = "REPLACE_FILE", "Replace File"
+        DELETE = "DELETE", "Delete"
+        PURGE = "PURGE", "Purge Physical File"
+
+    document = models.ForeignKey(
+        GrantDocument,
+        on_delete=models.PROTECT,
+        related_name="action_history",
+    )
+
+    action = models.CharField(
+        max_length=20,
+        choices=Action.choices,
+    )
+
+    acted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="grant_document_actions",
+    )
+
+    acted_at = models.DateTimeField(auto_now_add=True)
+
+    reason = models.TextField(
+        blank=True,
+        default="",
+        max_length=500,
+    )
+
+    details = models.TextField(
+        blank=True,
+        default="",
+        max_length=1000,
+    )
+
+    class Meta:
+        db_table = "grant_document_action"
+        ordering = ["acted_at", "id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                        models.Q(action="PURGE")
+                        |
+                        models.Q(acted_by__isnull=False)
+                ),
+                name="document_action_actor_required",
+            ),
+        ]
+
+    @property
+    def actor_display(self):
+        if self.acted_by:
+            return (
+                self.acted_by.get_full_name()
+                or self.acted_by.username
+            )
+
+        if self.action == self.Action.PURGE:
+            return "System Purge"
+
+        return "System"
+
+    def __str__(self):
+        return (
+            f"{self.get_action_display()} for "
+            f"{self.document.display_filename} "
+            f"by {self.actor_display}"
         )
