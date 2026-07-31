@@ -620,6 +620,13 @@ from django.db.models import Sum
 from .models import Form1, GLExpenditure, SubsequentAdjustment, FiscalBreakdown, SubsequentFiscalBreakdown
 
 
+def format_date_for_csv(value):
+    if value is None:
+        return ""
+
+    return value.strftime("%Y-%m-%d")
+
+
 def download_data_csv(request):
     # Create HTTP response with CSV content type
     response = HttpResponse(content_type='text/csv')
@@ -665,9 +672,13 @@ def download_data_csv(request):
 
                 writer.writerow([
                     grant_id, form.program_title, form.contracting_agency, form.contract_number,
-                    form.contract_start_date, form.contract_end_date, form.contract_amount,
+                    format_date_for_csv(form.contract_start_date),
+                    format_date_for_csv(form.contract_end_date),
+                    form.contract_amount,
                     form.federal_grantor, form.federal_aln, form.internal_award_code,
-                    form.internal_gl_start_date, form.internal_gl_end_date, form.status,
+                    format_date_for_csv(form.internal_gl_start_date),
+                    format_date_for_csv(form.internal_gl_end_date),
+                    form.status,
                     'GL Expenditure', fiscal_year, total_expenditure, federal,
                     nonfederal, difference
                 ])
@@ -675,9 +686,13 @@ def download_data_csv(request):
             # Write a row for the grant even if no GLExpenditure data exists
             writer.writerow([
                 grant_id, form.program_title, form.contracting_agency, form.contract_number,
-                form.contract_start_date, form.contract_end_date, form.contract_amount,
+                format_date_for_csv(form.contract_start_date),
+                format_date_for_csv(form.contract_end_date),
+                form.contract_amount,
                 form.federal_grantor, form.federal_aln, form.internal_award_code,
-                form.internal_gl_start_date, form.internal_gl_end_date, form.status,
+                format_date_for_csv(form.internal_gl_start_date),
+                format_date_for_csv(form.internal_gl_end_date),
+                form.status,
                 'No Current Expenditure', '', '', '', '', ''
             ])
 
@@ -702,9 +717,13 @@ def download_data_csv(request):
 
                 writer.writerow([
                     grant_id, form.program_title, form.contracting_agency, form.contract_number,
-                    form.contract_start_date, form.contract_end_date, form.contract_amount,
+                    format_date_for_csv(form.contract_start_date),
+                    format_date_for_csv(form.contract_end_date),
+                    form.contract_amount,
                     form.federal_grantor, form.federal_aln, form.internal_award_code,
-                    form.internal_gl_start_date, form.internal_gl_end_date, form.status,
+                    format_date_for_csv(form.internal_gl_start_date),
+                    format_date_for_csv(form.internal_gl_end_date),
+                    form.status,
                     'Subsequent Adjustment', fiscal_year, total_adjustment, federal_sub,
                     nonfederal_sub, difference_sub
                 ])
@@ -712,9 +731,13 @@ def download_data_csv(request):
             # Write a row for the grant even if no SubsequentAdjustment data exists
             writer.writerow([
                 grant_id, form.program_title, form.contracting_agency, form.contract_number,
-                form.contract_start_date, form.contract_end_date, form.contract_amount,
+                format_date_for_csv(form.contract_start_date),
+                format_date_for_csv(form.contract_end_date),
+                form.contract_amount,
                 form.federal_grantor, form.federal_aln, form.internal_award_code,
-                form.internal_gl_start_date, form.internal_gl_end_date, form.status,
+                format_date_for_csv(form.internal_gl_start_date),
+                format_date_for_csv(form.internal_gl_end_date),
+                form.status,
                 'No Subsequent Adjustment', '', '', '', '', ''
             ])
 
