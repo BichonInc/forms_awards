@@ -1,4 +1,5 @@
 
+from django.contrib.auth.decorators import login_required
 from django.shortcuts import render, get_object_or_404, redirect
 from django.db.models import Sum, Max
 from .models import Form1, GLExpenditure, FiscalBreakdown, SubsequentAdjustment, SubsequentFiscalBreakdown
@@ -94,6 +95,7 @@ def get_subsequent_data(grant_id):
 
 
 # In views.py
+@login_required
 def grant_list(request):
     grants = Form1.objects.all().order_by('grant_id')
 
@@ -120,6 +122,7 @@ def grant_list(request):
     return render(request, 'tracking/grant_list.html', context)
 
 
+@login_required
 def grant_detail(request, grant_id):
     print(f"Grant detail accessed for grant_id: {grant_id}")
 
@@ -310,6 +313,7 @@ def grant_detail(request, grant_id):
 from django.db.models import Q
 from django.contrib import messages
 
+@login_required
 def grant_create(request):
     if request.method == 'POST':
         # Create the form without validating it yet
@@ -418,6 +422,7 @@ def grant_create(request):
     #return render(request, 'tracking/grant_form.html', {'form': form, 'edit': True})
 
 
+@login_required
 def grant_delete(request, grant_id):
     grant = get_object_or_404(Form1, grant_id=grant_id)
     if request.method == 'POST':
@@ -429,6 +434,7 @@ def grant_delete(request, grant_id):
 
 logger = logging.getLogger(__name__)
 
+@login_required
 def refresh_gl_expenditure(request):
     if request.method == 'POST' and request.FILES.get('gl_expenditure_file'):
         # Save the uploaded file to MEDIA_ROOT
@@ -521,6 +527,7 @@ def refresh_gl_expenditure(request):
     })
 
 
+@login_required
 def refresh_subsequent_adjustment(request):
     if request.method == 'POST' and request.FILES.get('sub_adjustment_file'):
         # Save the uploaded file to MEDIA_ROOT
@@ -627,6 +634,7 @@ def format_date_for_csv(value):
     return value.strftime("%Y-%m-%d")
 
 
+@login_required
 def download_data_csv(request):
     # Create HTTP response with CSV content type
     response = HttpResponse(content_type='text/csv')

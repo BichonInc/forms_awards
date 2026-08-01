@@ -17,13 +17,26 @@ Including another URLconf
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
-from django.urls import path, include
-from django.shortcuts import redirect  # Import redirect
+from django.contrib.auth import views as auth_views
+from django.shortcuts import redirect
+from django.urls import include, path
 
 urlpatterns = [
-    path('admin/', admin.site.urls),
-    path('tracking/', include('tracking.urls')),
-    path('', lambda request: redirect('grant_list')),  # Redirect root URL to grant list
+    path("admin/", admin.site.urls),
+
+    path(
+        "accounts/login/",
+        auth_views.LoginView.as_view(),
+        name="login",
+    ),
+    path(
+        "accounts/logout/",
+        auth_views.LogoutView.as_view(),
+        name="logout",
+    ),
+
+    path("tracking/", include("tracking.urls")),
+    path("", lambda request: redirect("grant_list")),
 ]
 
 if settings.DEBUG:
