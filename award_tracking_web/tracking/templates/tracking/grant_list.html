@@ -119,7 +119,12 @@
                 {{ user.get_full_name|default:user.username }}
             </strong>
         </div>
-
+        {% if user_roles %}
+            <div>
+                Role{{ user_roles|length|pluralize }}:
+                <strong>{{ user_roles|join:", " }}</strong>
+            </div>
+        {% endif %}
         <form
             method="post"
             action="{% url 'logout' %}"
@@ -136,27 +141,35 @@
     <h1>Grant List</h1>
     <!-- grant_list.html -->
     <div class="button-container">
-       <a href="{% url 'grant_create' %}" id="create-button" class="button-common">Create New Grant</a>
-       <a href="{% url 'download_data_csv' %}" id="download-button" class="button-common">Download CSV</a>
+       {% if can_create_grant %}
+            <a href="{% url 'grant_create' %}"
+            id="create-button"
+            class="button-common">
+                Create New Grant
+            </a>
+        {% endif %}
+        <a href="{% url 'download_data_csv' %}" id="download-button" class="button-common">Download CSV</a>
     </div>
 
-    <!-- Add the form for refreshing gl_expenditure data here -->
-   <form method="POST" enctype="multipart/form-data" action="{% url 'refresh_gl_expenditure' %}">
-    {% csrf_token %}
-    <h3>Upload GL Expenditure File</h3>
-    <input type="file" name="gl_expenditure_file" id="gl_expenditure_file">
-    <button type="submit">Refresh GL Expenditure Data</button>
-    </form>
+    {% if can_refresh_financial_data %}
+        <!-- Add the form for refreshing gl_expenditure data here -->
+        <form method="POST" enctype="multipart/form-data" action="{% url 'refresh_gl_expenditure' %}">
+        {% csrf_token %}
+        <h3>Upload GL Expenditure File</h3>
+        <input type="file" name="gl_expenditure_file" id="gl_expenditure_file">
+        <button type="submit">Refresh GL Expenditure Data</button>
+        </form>
 
-    <hr>
+        <hr>
 
-<!-- Subsequent Adjustment File Upload Section -->
-    <form method="POST" enctype="multipart/form-data" action="{% url 'refresh_subsequent_adjustment' %}">
-    {% csrf_token %}
-    <h3>Upload Subsequent Adjustment File</h3>
-    <input type="file" name="sub_adjustment_file" id="sub_adjustment_file">
-    <button type="submit">Refresh Subsequent Adjustment Data</button>
-    </form>
+        <!-- Subsequent Adjustment File Upload Section -->
+        <form method="POST" enctype="multipart/form-data" action="{% url 'refresh_subsequent_adjustment' %}">
+        {% csrf_token %}
+        <h3>Upload Subsequent Adjustment File</h3>
+        <input type="file" name="sub_adjustment_file" id="sub_adjustment_file">
+        <button type="submit">Refresh Subsequent Adjustment Data</button>
+        </form>
+   {% endif %}
     <div class="table-container">
         <div class="table-body">
             <table id="grantTable" class="display">

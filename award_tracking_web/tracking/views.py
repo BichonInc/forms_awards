@@ -3,6 +3,13 @@ from django.contrib.auth.decorators import login_required
 from django.shortcuts import render, get_object_or_404, redirect
 from django.db.models import Sum, Max
 from .models import Form1, GLExpenditure, FiscalBreakdown, SubsequentAdjustment, SubsequentFiscalBreakdown
+from .permissions import (
+    ROLE_ACCOUNTANT,
+    ROLE_ADMINISTRATOR,
+    ROLE_EDITOR,
+    role_required,
+    user_has_any_role,
+)
 from .forms import GrantForm
 from django.core.files.storage import default_storage
 import pandas as pd
@@ -116,8 +123,24 @@ def grant_list(request):
         grant.has_in_period_difference = in_period_warning
         grant.has_subsequent_difference = subsequent_warning
 
+    user_roles = list(
+        request.user.groups.order_by("name").values_list(
+            "name",
+            flat=True,
+        )
+    )
+
     context = {
         'grants': grants,
+        "can_create_grant": user_has_any_role(
+            request.user,
+            ROLE_EDITOR,
+        ),
+        "can_refresh_financial_data": user_has_any_role(
+            request.user,
+            ROLE_ACCOUNTANT,
+        ),
+        "user_roles": user_roles,
     }
     return render(request, 'tracking/grant_list.html', context)
 
@@ -313,7 +336,7 @@ def grant_detail(request, grant_id):
 from django.db.models import Q
 from django.contrib import messages
 
-@login_required
+@role_required(ROLE_EDITOR)
 def grant_create(request):
     if request.method == 'POST':
         # Create the form without validating it yet
@@ -422,7 +445,7 @@ def grant_create(request):
     #return render(request, 'tracking/grant_form.html', {'form': form, 'edit': True})
 
 
-@login_required
+@role_required(ROLE_ADMINISTRATOR)
 def grant_delete(request, grant_id):
     grant = get_object_or_404(Form1, grant_id=grant_id)
     if request.method == 'POST':
@@ -434,7 +457,7 @@ def grant_delete(request, grant_id):
 
 logger = logging.getLogger(__name__)
 
-@login_required
+@role_required(ROLE_ACCOUNTANT)
 def refresh_gl_expenditure(request):
     if request.method == 'POST' and request.FILES.get('gl_expenditure_file'):
         # Save the uploaded file to MEDIA_ROOT
@@ -527,7 +550,7 @@ def refresh_gl_expenditure(request):
     })
 
 
-@login_required
+@role_required(ROLE_ACCOUNTANT)
 def refresh_subsequent_adjustment(request):
     if request.method == 'POST' and request.FILES.get('sub_adjustment_file'):
         # Save the uploaded file to MEDIA_ROOT
