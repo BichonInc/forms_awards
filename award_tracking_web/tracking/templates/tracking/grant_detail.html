@@ -129,6 +129,30 @@
         background-color: #d1ecf1;
         color: #0c5460;
     }
+
+    .access-notice {
+    margin: 20px 0;
+    padding: 14px 18px;
+    border-radius: 5px;
+    line-height: 1.5;
+    }
+
+    .access-notice strong {
+    display: block;
+    margin-bottom: 4px;
+    }
+
+    .workflow-notice {
+    border-left: 5px solid #2f6fad;
+    background-color: #eaf3fb;
+    color: #173f63;
+    }
+
+    .read-only-notice {
+    border-left: 5px solid #b7791f;
+    background-color: #fff8e6;
+    color: #6b4608;
+    }
     </style>
 
 
@@ -254,6 +278,20 @@ document.addEventListener('DOMContentLoaded', function () {
             </div>
         {% endif %}
         <a href="{% url 'grant_list' %}" id="back-button" class="button-common">Back to Grant List</a>
+
+        {% if can_request_change %}
+            <div class="access-notice workflow-notice">
+                <strong>Basic Information Changes</strong>
+                Changes to Grant Basic Information must be submitted
+                through the change-request workflow.
+            </div>
+        {% else %}
+            <div class="access-notice read-only-notice">
+                <strong>Read-Only Access</strong>
+                Grant Basic Information is read-only for your role.
+            </div>
+        {% endif %}
+
             <h2>Grant Basic Information</h2>
             <form method="post" action="{% url 'grant_detail' grant.grant_id %}">
                 {% csrf_token %}
@@ -371,10 +409,6 @@ document.addEventListener('DOMContentLoaded', function () {
                         <option value="inactive" {% if grant.status == "inactive" %}selected{% endif %}>Inactive</option>
                     </select>
                 </div>
-                <div class="buttons">
-                    <button type="button" id="edit-button-basic" class="button-common" onclick="toggleEditModeBasic()">Edit</button>
-                    <button type="submit" id="save-button-basic" class="button-common" style="display:none;">Save Changes</button>
-                </div>
             </form>
 
 
@@ -418,10 +452,23 @@ document.addEventListener('DOMContentLoaded', function () {
                     </tbody>
                 </table>
 
-                <div class="buttons">
-                    <button type="button" id="edit-button-fiscal" class="button-common" onclick="toggleEditModeFiscal()">Edit</button>
-                    <button type="submit" id="save-button-fiscal" class="button-common" style="display:none;">Save Changes</button>
-                </div>
+                {% if can_edit_fiscal_data %}
+                    <div class="buttons">
+                        <button type="button"
+                                id="edit-button-fiscal"
+                                class="button-common"
+                                onclick="toggleEditModeFiscal()">
+                            Edit
+                        </button>
+
+                        <button type="submit"
+                                id="save-button-fiscal"
+                                class="button-common"
+                                style="display:none;">
+                            Save Changes
+                        </button>
+                    </div>
+                {% endif %}
             </form>
             <!-- Subsequent Adjustment Subsection -->
             <h3>Subsequent Adjustment</h3>
@@ -462,10 +509,23 @@ document.addEventListener('DOMContentLoaded', function () {
 
                     </tbody>
                 </table>
-                <div class="buttons">
-                    <button type="button" id="edit-button-subsequent" class="button-common" onclick="toggleEditModeSubsequent()">Edit</button>
-                    <button type="submit" id="save-button-subsequent" class="button-common" style="display:none;">Save Changes</button>
-                </div>
+                {% if can_edit_fiscal_data %}
+                    <div class="buttons">
+                        <button type="button"
+                                id="edit-button-subsequent"
+                                class="button-common"
+                                onclick="toggleEditModeSubsequent()">
+                            Edit
+                        </button>
+
+                        <button type="submit"
+                                id="save-button-subsequent"
+                                class="button-common"
+                                style="display:none;">
+                            Save Changes
+                        </button>
+                    </div>
+                {% endif %}
             </form>
     </div>
 </body>

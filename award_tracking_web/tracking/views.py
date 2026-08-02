@@ -1,4 +1,4 @@
-
+from django.core.exceptions import PermissionDenied
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import render, get_object_or_404, redirect
 from django.db.models import Sum, Max
@@ -153,58 +153,43 @@ def grant_detail(request, grant_id):
     grant = get_object_or_404(Form1, grant_id=grant_id)
     print(f"Grant object fetched: {grant}")
 
+    can_request_change = user_has_any_role(
+        request.user,
+        ROLE_EDITOR,
+    )
+
+    can_edit_fiscal_data = user_has_any_role(
+        request.user,
+        ROLE_ACCOUNTANT,
+    )
 
     if request.method == 'POST':
-        form = GrantForm(request.POST, instance=grant)
-        form_type = request.POST.get('form_type')  # Check which part of the form is being submitted
+        form_type = request.POST.get("form_type")
 
-        print(f"Form data received: {form.data}")
+        print(f"Form type received: {form_type}")
 
-        if form_type == 'basic':  # Handle Basic Information Form
-            print("Basic form submission detected")
-            if form.is_valid():
-                # Handle 'Add New' for dropdowns
-                if form.cleaned_data['program_title'] == 'Add New':
-                    form.instance.program_title = form.cleaned_data['new_program_title']
-                if form.cleaned_data['contracting_agency'] == 'Add New':
-                    form.instance.contracting_agency = form.cleaned_data['new_contracting_agency']
-                if form.cleaned_data['federal_grantor'] == 'Add New':
-                    form.instance.federal_grantor = form.cleaned_data['new_federal_grantor']
-                if form.cleaned_data['federal_aln'] == 'Add New':
-                    form.instance.federal_aln = form.cleaned_data['new_federal_aln']
-                else:
-                    form.instance.federal_aln = form.cleaned_data['federal_aln']
+        if form_type == "basic":
+            if not can_request_change:
+                raise PermissionDenied
 
-                # Check for overlapping grants
-                internal_award_code = form.cleaned_data['internal_award_code']
-                internal_gl_start_date = form.cleaned_data['internal_gl_start_date']
-                internal_gl_end_date = form.cleaned_data['internal_gl_end_date']
-
-                overlapping_grants = Form1.objects.filter(
-                    internal_award_code=internal_award_code,
-                    internal_gl_end_date__gte=internal_gl_start_date,
-                    internal_gl_start_date__lte=internal_gl_end_date,
-                ).exclude(grant_id=grant_id)
-
-                if overlapping_grants.exists():
-                    conflicting_grant_ids = ', '.join(grant.grant_id for grant in overlapping_grants)
-                    conflict_message = (
-                        f"Conflict detected: Overlapping grants found with the following grant_ids: {conflicting_grant_ids}. "
-                        "Please adjust the dates or check the existing records."
-                    )
-                    messages.error(request, conflict_message)
-                    print(conflict_message)
-                else:
-                    form.save()
-                    print("Grant Basic Information saved.")
-                    messages.success(request, "Changes to the grant have been saved successfully.")
-            else:
-                print(f"Form is not valid. Errors: {form.errors}")
-                messages.error(request, "There was an error in your submission. Please fix the issues below.")
-            return render(request, 'tracking/grant_detail.html', {'grant': grant, 'form': form})
-
-        elif form_type == 'fiscal':  # Handle Fiscal Information
+            messages.info(
+                request,
+                (
+                    "Direct changes to Grant Basic Information "
+                    "are no longer permitted. Basic Information "
+                    "changes must be submitted through the "
+                    "change-request workflow."
+                ),
+            )
+            return redirect(
+                "grant_detail",
+                grant_id=grant_id,
+            )
+        elif form_type == "fiscal":
+            if not can_edit_fiscal_data:
+                raise PermissionDenied
             print("Fiscal form submission detected")
+
             gl_expenditures = GLExpenditure.objects.filter(grant_id=grant_id)
             fiscal_breakdown = gl_expenditures.values('fiscal_year').annotate(
                 total_expenditure=Sum('net_expenditure')
@@ -228,7 +213,17 @@ def grant_detail(request, grant_id):
                     fiscal_record.nonfederal = nonfederal_input
                     fiscal_record.save()
 
-        elif form_type == 'subsequent':  # Handle Subsequent Adjustment
+            messages.success(
+                request,
+                "Grant Fiscal Information was saved successfully.",
+            )
+            return redirect(
+                "grant_detail",
+                grant_id=grant_id,
+            )
+        elif form_type == "subsequent":
+            if not can_edit_fiscal_data:
+                raise PermissionDenied
             print("Subsequent Adjustment form submission detected")
             subsequent_adjustments = SubsequentAdjustment.objects.filter(grant_id=grant_id)
             subsequent_breakdown = subsequent_adjustments.values('fiscal_year').annotate(
@@ -253,6 +248,27 @@ def grant_detail(request, grant_id):
                     subsequent_record.nonfederal = nonfederal_input
                     subsequent_record.save()
 
+            messages.success(
+                request,
+                (
+                    "Subsequent Adjustment information "
+                    "was saved successfully."
+                ),
+            )
+            return redirect(
+                "grant_detail",
+                grant_id=grant_id,
+            )
+
+        else:
+            messages.error(
+                request,
+                "The submitted form type was not recognized.",
+            )
+            return redirect(
+                "grant_detail",
+                grant_id=grant_id,
+            )
     # GET request or POST data handling complete
     form = GrantForm(instance=grant)
 
@@ -317,6 +333,8 @@ def grant_detail(request, grant_id):
     context = {
         'grant': grant,
         'form': form,
+        "can_request_change": can_request_change,
+        "can_edit_fiscal_data": can_edit_fiscal_data,
         'fiscal_breakdown': fiscal_breakdown,
         'total_expenditure_sum': total_expenditure_sum,
         'total_federal_sum': total_federal_sum,
