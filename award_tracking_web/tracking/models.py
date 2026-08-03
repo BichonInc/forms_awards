@@ -2,6 +2,7 @@ import uuid
 from decimal import Decimal
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import (
     FileExtensionValidator,
     MaxValueValidator,
@@ -19,6 +20,23 @@ GRANT_ID_VALIDATOR = RegexValidator(
 )
 
 class Form1(models.Model):
+    class FederalInformationStatus(models.TextChoices):
+        NOT_APPLICABLE = (
+            "NOT_APPLICABLE",
+            "Not Applicable — No Federal Funding",
+        )
+        PENDING = (
+            "PENDING",
+            "Pending Federal Information",
+        )
+        COMPLETE = (
+            "COMPLETE",
+            "Federal Information Complete",
+        )
+        NO_ALN = (
+            "NO_ALN",
+            "Federal Funding with No ALN",
+        )
     grant_id = models.CharField(
         max_length=10,
         primary_key=True,
@@ -27,9 +45,26 @@ class Form1(models.Model):
     program_title = models.CharField(max_length=255)
     contracting_agency = models.CharField(max_length=255)
     contract_number = models.CharField(max_length=50, null=False)
+    amendment_no = models.PositiveSmallIntegerField(
+        default=0,
+        validators=[
+            MinValueValidator(0),
+            MaxValueValidator(99),
+        ],
+    )
     contract_start_date = models.DateTimeField(null=True, blank=True)
     contract_end_date = models.DateTimeField(null=True, blank=True)
     contract_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    federal_funding_included = models.BooleanField(
+        null=True,
+        blank=True,
+    )
+    federal_information_status = models.CharField(
+        max_length=20,
+        choices=FederalInformationStatus.choices,
+        null=True,
+        blank=True,
+    )
     federal_grantor = models.CharField(max_length=255, null=True, blank=True)
     federal_aln = models.CharField(
         max_length=255,
