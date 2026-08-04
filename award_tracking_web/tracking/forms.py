@@ -8,21 +8,70 @@ class GrantForm(forms.ModelForm):
     new_contracting_agency = forms.CharField(required=False, label='New Contracting Agency')
     new_federal_grantor = forms.CharField(required=False, label='New Federal Grantor')
     new_federal_aln = forms.CharField(required=False, label='New Federal ALN')
+    federal_funding_included = forms.TypedChoiceField(
+        choices=[
+            ("", "Select"),
+            ("True", "Yes"),
+            ("False", "No"),
+        ],
+        coerce=lambda value: value == "True",
+        empty_value=None,
+        required=True,
+        label="Federal Funding Included",
+    )
+
+    federal_information_status = forms.ChoiceField(
+        choices=[
+            ("", "Select"),
+            *Form1.FederalInformationStatus.choices,
+        ],
+        required=False,
+        label="Federal Information Status",
+    )
 
     class Meta:
         model = Form1
         fields = [
-            'grant_id', 'program_title', 'contracting_agency', 'contract_number',
-            'contract_start_date', 'contract_end_date', 'contract_amount',
-            'federal_grantor', 'federal_aln', 'internal_award_code',
-            'internal_gl_start_date', 'internal_gl_end_date', 'status'
+            "grant_id",
+            "program_title",
+            "contracting_agency",
+            "contract_number",
+            "amendment_no",
+            "contract_start_date",
+            "contract_end_date",
+            "contract_amount",
+            "federal_funding_included",
+            "federal_information_status",
+            "federal_grantor",
+            "federal_aln",
+            "internal_award_code",
+            "internal_gl_start_date",
+            "internal_gl_end_date",
+            "status",
         ]
+
         widgets = {
-            'grant_id': forms.HiddenInput(),  # Keep grant_id hidden and non-editable
-            'contract_start_date': forms.DateInput(attrs={'type': 'date'}),  # Use HTML5 date input
-            'contract_end_date': forms.DateInput(attrs={'type': 'date'}),
-            'internal_gl_start_date': forms.DateInput(attrs={'type': 'date'}),
-            'internal_gl_end_date': forms.DateInput(attrs={'type': 'date'}),
+            "grant_id": forms.HiddenInput(),
+            "amendment_no": forms.NumberInput(
+                attrs={
+                    "min": "0",
+                    "max": "99",
+                    "step": "1",
+                }
+            ),
+            "contract_start_date": forms.DateInput(
+                attrs={"type": "date"}
+            ),
+            "contract_end_date": forms.DateInput(
+                attrs={"type": "date"}
+            ),
+            "internal_gl_start_date": forms.DateInput(
+                attrs={"type": "date"}
+            ),
+            "internal_gl_end_date": forms.DateInput(
+                attrs={"type": "date"}
+            ),
+            "status": forms.HiddenInput(),
         }
 
     def clean_federal_aln(self):
@@ -30,9 +79,7 @@ class GrantForm(forms.ModelForm):
         # Skip validation if 'Add New' is selected
         if federal_aln == 'Add New':
             return federal_aln
-        # Allow "None" as a valid value
-        if federal_aln == "None":
-            return None
+
         # Validate federal_aln format
         if federal_aln and not re.match(r'^\d{2}\.\d{3}$', federal_aln):
             raise forms.ValidationError(
@@ -57,7 +104,9 @@ class GrantForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
+        if not self.is_bound and not self.instance.pk:
+            self.fields["amendment_no"].initial = 0
+            self.fields["status"].initial = "active"
         # Get current choices from the database and handle None values
         program_titles = sorted(pt for pt in Form1.objects.values_list('program_title', flat=True).distinct() if pt)
         contracting_agencies = sorted(
@@ -144,10 +193,101 @@ class GrantForm(forms.ModelForm):
                 self.add_error('new_federal_grantor', "You must enter a new Federal Grantor when selecting 'Add New'.")
             cleaned_data['federal_grantor'] = new_federal_grantor
 
+        # === Federal Information Validation ===
+        federal_funding_included = cleaned_data.get(
+            "federal_funding_included"
+        )
+        federal_information_status = cleaned_data.get(
+            "federal_information_status"
+        )
+        federal_grantor = cleaned_data.get("federal_grantor")
+        federal_aln = cleaned_data.get("federal_aln")
+
+        if federal_funding_included is False:
+            cleaned_data["federal_information_status"] = (
+                Form1.FederalInformationStatus.NOT_APPLICABLE
+            )
+            cleaned_data["federal_grantor"] = None
+            cleaned_data["federal_aln"] = None
+            cleaned_data["new_federal_grantor"] = ""
+            cleaned_data["new_federal_aln"] = ""
+
+        elif federal_funding_included is True:
+            if not federal_information_status:
+                self.add_error(
+                    "federal_information_status",
+                    (
+                        "Select the current status of the "
+                        "federal funding information."
+                    ),
+                )
+
+            elif (
+                    federal_information_status
+                    == Form1.FederalInformationStatus.NOT_APPLICABLE
+            ):
+                self.add_error(
+                    "federal_information_status",
+                    (
+                        "Not Applicable may be selected only when "
+                        "Federal Funding Included is No."
+                    ),
+                )
+
+            elif (
+                    federal_information_status
+                    == Form1.FederalInformationStatus.COMPLETE
+            ):
+                if not federal_grantor:
+                    self.add_error(
+                        "federal_grantor",
+                        (
+                            "Federal Grantor is required when "
+                            "federal information is Complete."
+                        ),
+                    )
+
+                if not federal_aln:
+                    self.add_error(
+                        "federal_aln",
+                        (
+                            "Federal ALN is required when "
+                            "federal information is Complete."
+                        ),
+                    )
+
+            elif (
+                    federal_information_status
+                    == Form1.FederalInformationStatus.NO_ALN
+            ):
+                if not federal_grantor:
+                    self.add_error(
+                        "federal_grantor",
+                        (
+                            "Federal Grantor is required for "
+                            "Federal Funding with No ALN."
+                        ),
+                    )
+
+                if federal_aln:
+                    self.add_error(
+                        "federal_aln",
+                        (
+                            "Federal ALN must be blank when the "
+                            "status is Federal Funding with No ALN."
+                        ),
+                    )
+
         # Validate Internal Award Code
         internal_award_code = cleaned_data.get('internal_award_code')
         if internal_award_code and not re.match(r'^\d{3}$', internal_award_code):
             self.add_error('internal_award_code', "Internal Award Code must be between 100 and 999.")
+
+        # Temporary until the obsolete Form1.status field is removed.
+        if self.instance.pk:
+            cleaned_data["status"] = self.instance.status
+        else:
+            cleaned_data["status"] = "active"
 
         return cleaned_data
 

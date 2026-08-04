@@ -74,33 +74,239 @@
 
     </style>
     <script>
-        document.addEventListener('DOMContentLoaded', function () {
-            document.querySelectorAll('select').forEach(selectElement => {
-                selectElement.addEventListener('change', function () {
-                    const inputField = this.nextElementSibling;
-                    if (inputField) { // Ensure the input field exists
-                        const selectedValue = this.value;
-                        if (selectedValue === 'Add New') {
-                            inputField.style.display = 'inline';
-                            inputField.required = true;
-                        } else {
-                            inputField.style.display = 'none';
-                            inputField.required = false;
-                        }
-                    }
-                });
-            });
-            // Trigger change event to ensure the input is hidden initially
-            document.querySelectorAll('select').forEach(selectElement => {
-                const inputField = selectElement.nextElementSibling;
-                if (inputField && selectElement.value !== 'Add New') {
-                inputField.style.display = 'none';
-                inputField.required = false;
+    document.addEventListener("DOMContentLoaded", function () {
+        const addNewPairs = [
+            ["id_program_title", "id_new_program_title"],
+            ["id_contracting_agency", "id_new_contracting_agency"],
+            ["id_federal_grantor", "id_new_federal_grantor"],
+            ["id_federal_aln", "id_new_federal_aln"],
+        ];
+
+        function configureAddNewField(selectId, inputId) {
+            const selectElement = document.getElementById(selectId);
+            const inputElement = document.getElementById(inputId);
+
+            if (!selectElement || !inputElement) {
+                return;
+            }
+
+            function updateAddNewField() {
+                const showInput = selectElement.value === "Add New";
+
+                inputElement.style.display = showInput
+                    ? "inline-block"
+                    : "none";
+
+                inputElement.required = showInput;
+
+                if (!showInput) {
+                    inputElement.value = "";
                 }
-            });
+            }
+
+            selectElement.addEventListener(
+                "change",
+                updateAddNewField
+            );
+
+            updateAddNewField();
+        }
+
+        addNewPairs.forEach(function (pair) {
+            configureAddNewField(pair[0], pair[1]);
         });
 
-    </script>
+        const fundingField = document.getElementById(
+            "id_federal_funding_included"
+        );
+        const statusField = document.getElementById(
+            "id_federal_information_status"
+        );
+
+        const statusGroup = document.getElementById(
+            "federal-status-group"
+        );
+        const grantorGroup = document.getElementById(
+            "federal-grantor-group"
+        );
+        const alnGroup = document.getElementById(
+            "federal-aln-group"
+        );
+
+        const grantorField = document.getElementById(
+            "id_federal_grantor"
+        );
+        const newGrantorField = document.getElementById(
+            "id_new_federal_grantor"
+        );
+        const alnField = document.getElementById(
+            "id_federal_aln"
+        );
+        const newAlnField = document.getElementById(
+            "id_new_federal_aln"
+        );
+
+        function hasServerError(group) {
+            return (
+                group &&
+                group.querySelector(
+                    ".error-message, .errorlist"
+                )
+            );
+        }
+
+        function setGroupVisibility(group, visible) {
+            if (!group) {
+                return;
+            }
+
+            group.style.display = (
+                visible || hasServerError(group)
+            )
+                ? "block"
+                : "none";
+        }
+
+        function setFieldsDisabled(fields, disabled) {
+            fields.forEach(function (field) {
+                if (field) {
+                    field.disabled = disabled;
+                }
+            });
+        }
+
+        function clearFields(fields) {
+            fields.forEach(function (field) {
+                if (field) {
+                    field.value = "";
+                }
+            });
+        }
+
+        function updateFederalFields() {
+            if (!fundingField || !statusField) {
+                return;
+            }
+
+            const fundingValue = fundingField.value;
+
+            if (fundingValue === "") {
+                statusField.value = "";
+
+                setGroupVisibility(statusGroup, false);
+                setGroupVisibility(grantorGroup, false);
+                setGroupVisibility(alnGroup, false);
+
+                setFieldsDisabled([
+                    grantorField,
+                    newGrantorField,
+                    alnField,
+                    newAlnField,
+                ], true);
+
+                return;
+            }
+
+            if (fundingValue === "False") {
+                statusField.value = "NOT_APPLICABLE";
+
+                setGroupVisibility(statusGroup, false);
+                setGroupVisibility(grantorGroup, false);
+                setGroupVisibility(alnGroup, false);
+
+                clearFields([
+                    grantorField,
+                    newGrantorField,
+                    alnField,
+                    newAlnField,
+                ]);
+
+                setFieldsDisabled([
+                    grantorField,
+                    newGrantorField,
+                    alnField,
+                    newAlnField,
+                ], true);
+
+                return;
+            }
+
+            setGroupVisibility(statusGroup, true);
+
+            setFieldsDisabled([
+                grantorField,
+                newGrantorField,
+                alnField,
+                newAlnField,
+            ], false);
+
+            const federalStatus = statusField.value;
+
+            if (federalStatus === "NO_ALN") {
+                setGroupVisibility(grantorGroup, true);
+                setGroupVisibility(alnGroup, false);
+
+                if (!hasServerError(alnGroup)) {
+                    clearFields([
+                        alnField,
+                        newAlnField,
+                    ]);
+
+                    setFieldsDisabled([
+                        alnField,
+                        newAlnField,
+                    ], true);
+                }
+            } else if (
+                federalStatus === "PENDING" ||
+                federalStatus === "COMPLETE"
+            ) {
+                setGroupVisibility(grantorGroup, true);
+                setGroupVisibility(alnGroup, true);
+            } else {
+                setGroupVisibility(grantorGroup, false);
+                setGroupVisibility(alnGroup, false);
+            }
+        }
+
+        if (fundingField) {
+            fundingField.addEventListener(
+                "change",
+                updateFederalFields
+            );
+        }
+
+        if (statusField) {
+            statusField.addEventListener(
+                "change",
+                updateFederalFields
+            );
+        }
+
+        updateFederalFields();
+        const grantForm = document.getElementById(
+            "grant-create-form"
+        );
+        const saveButton = document.getElementById(
+            "save-button"
+        );
+
+        let formIsSubmitting = false;
+
+        if (grantForm && saveButton) {
+            grantForm.addEventListener("submit", function (event) {
+                if (formIsSubmitting) {
+                    event.preventDefault();
+                    return;
+                }
+
+                formIsSubmitting = true;
+                saveButton.disabled = true;
+                saveButton.textContent = "Saving...";
+            });
+        }
+    });
+</script>
 </head>
 <body>
     <div class="container">
@@ -115,10 +321,22 @@
             </div>
         {% endif %}
 
-        <form method="post" action="{% url 'grant_create' %}">
+        <form
+            method="post"
+            action="{% url 'grant_create' %}"
+            id="grant-create-form"
+        >
             {% csrf_token %}
+            {% if form.non_field_errors %}
+                <div class="error-message">
+                    {{ form.non_field_errors }}
+                </div>
+            {% endif %}
             <!-- Hidden Grant ID Field -->
             {{ form.grant_id }}
+
+            <!-- Temporary hidden legacy Status field -->
+            {{ form.status }}
 
             <div class="form-group">
                 <label>Program Title:</label>
@@ -133,6 +351,18 @@
             <div class="form-group">
                 <label>Contract Number:</label>
                 {{ form.contract_number }}
+            </div>
+            <div class="form-group">
+                <label>Amendment Number:</label>
+                {{ form.amendment_no }}
+                {% if form.amendment_no.errors %}
+                    <div class="error-message">
+                        {{ form.amendment_no.errors }}
+                    </div>
+                {% endif %}
+                <div class="help-text">
+                    Enter 0 for the original contract.
+                </div>
             </div>
             <div class="form-group">
                 <label>Contract Start Date:</label>
@@ -152,11 +382,43 @@
                 {{ form.contract_amount }}
             </div>
             <div class="form-group">
+                <label>Federal Funding Included:</label>
+                {{ form.federal_funding_included }}
+                {% if form.federal_funding_included.errors %}
+                    <div class="error-message">
+                        {{ form.federal_funding_included.errors }}
+                    </div>
+                {% endif %}
+            </div>
+
+            <div class="form-group" id="federal-status-group">
+                <label>Federal Information Status:</label>
+                {{ form.federal_information_status }}
+                {% if form.federal_information_status.errors %}
+                    <div class="error-message">
+                        {{ form.federal_information_status.errors }}
+                    </div>
+                {% endif %}
+            </div>
+            <div class="form-group" id="federal-grantor-group">
                 <label>Federal Grantor:</label>
                 {{ form.federal_grantor }}
                 {{ form.new_federal_grantor }}
+
+                {% if form.federal_grantor.errors %}
+                    <div class="error-message">
+                        {{ form.federal_grantor.errors }}
+                    </div>
+                {% endif %}
+
+                {% if form.new_federal_grantor.errors %}
+                    <div class="error-message">
+                        {{ form.new_federal_grantor.errors }}
+                    </div>
+                {% endif %}
             </div>
-            <div class="form-group">
+
+            <div class="form-group" id="federal-aln-group">
                 <label>Federal ALN:</label>
                 {{ form.federal_aln }}
                 {{ form.new_federal_aln }}
@@ -195,10 +457,7 @@
                     </div>
                 {% endif %}
             </div>
-            <div class="form-group">
-                <label>Status:</label>
-                {{ form.status }}
-            </div>
+
             <div class="buttons">
                 <button type="submit" id="save-button">Save</button>
                 <a href="{% url 'grant_list' %}" id="back-button">Back to Grant List</a>
