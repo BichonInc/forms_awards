@@ -37,6 +37,15 @@ class Form1(models.Model):
             "NO_ALN",
             "Federal Funding with No ALN",
         )
+
+    class FundingSource(models.TextChoices):
+        FEDERAL = "FEDERAL", "100% Federal"
+        NONFEDERAL = "NONFEDERAL", "100% Non-federal"
+        BOTH = "BOTH", "Both Federal and Non-federal"
+        REVIEW_REQUIRED = (
+            "REVIEW_REQUIRED",
+            "Needs Review — Funding Source Undetermined",
+        )
     grant_id = models.CharField(
         max_length=10,
         primary_key=True,
@@ -56,6 +65,12 @@ class Form1(models.Model):
     contract_end_date = models.DateTimeField(null=True, blank=True)
     contract_amount = models.DecimalField(max_digits=10, decimal_places=2)
     federal_funding_included = models.BooleanField(
+        null=True,
+        blank=True,
+    )
+    funding_sources = models.CharField(
+        max_length=20,
+        choices=FundingSource.choices,
         null=True,
         blank=True,
     )
