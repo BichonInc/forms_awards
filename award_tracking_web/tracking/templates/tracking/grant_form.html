@@ -117,11 +117,16 @@
         });
 
         const fundingField = document.getElementById(
-            "id_federal_funding_included"
+            "id_funding_sources"
         );
         const statusField = document.getElementById(
             "id_federal_information_status"
         );
+        const notApplicableOption = statusField
+            ? statusField.querySelector(
+                'option[value="NOT_APPLICABLE"]'
+            )
+            : null;
 
         const statusGroup = document.getElementById(
             "federal-status-group"
@@ -191,6 +196,10 @@
             const fundingValue = fundingField.value;
 
             if (fundingValue === "") {
+                if (notApplicableOption) {
+                    notApplicableOption.disabled = true;
+                    notApplicableOption.hidden = true;
+                }
                 statusField.value = "";
 
                 setGroupVisibility(statusGroup, false);
@@ -207,7 +216,11 @@
                 return;
             }
 
-            if (fundingValue === "False") {
+            if (fundingValue === "NONFEDERAL") {
+                if (notApplicableOption) {
+                    notApplicableOption.disabled = false;
+                    notApplicableOption.hidden = false;
+                }
                 statusField.value = "NOT_APPLICABLE";
 
                 setGroupVisibility(statusGroup, false);
@@ -229,6 +242,21 @@
                 ], true);
 
                 return;
+            }
+            if (notApplicableOption) {
+                notApplicableOption.disabled = true;
+                notApplicableOption.hidden = true;
+            }
+            /*
+            * FEDERAL, BOTH, and REVIEW_REQUIRED all use
+            * Federal Information Status.
+            *
+            * If the user changes from NONFEDERAL to one
+            * of these choices, clear the automatically
+            * assigned NOT_APPLICABLE status.
+            */
+            if (statusField.value === "NOT_APPLICABLE") {
+                statusField.value = "";
             }
 
             setGroupVisibility(statusGroup, true);
@@ -257,12 +285,14 @@
                         newAlnField,
                     ], true);
                 }
+
             } else if (
                 federalStatus === "PENDING" ||
                 federalStatus === "COMPLETE"
             ) {
                 setGroupVisibility(grantorGroup, true);
                 setGroupVisibility(alnGroup, true);
+
             } else {
                 setGroupVisibility(grantorGroup, false);
                 setGroupVisibility(alnGroup, false);
@@ -382,15 +412,14 @@
                 {{ form.contract_amount }}
             </div>
             <div class="form-group">
-                <label>Federal Funding Included:</label>
-                {{ form.federal_funding_included }}
-                {% if form.federal_funding_included.errors %}
+                <label>Funding Sources:</label>
+                {{ form.funding_sources }}
+                {% if form.funding_sources.errors %}
                     <div class="error-message">
-                        {{ form.federal_funding_included.errors }}
+                        {{ form.funding_sources.errors }}
                     </div>
                 {% endif %}
             </div>
-
             <div class="form-group" id="federal-status-group">
                 <label>Federal Information Status:</label>
                 {{ form.federal_information_status }}

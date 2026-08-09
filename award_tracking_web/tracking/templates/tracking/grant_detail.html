@@ -348,6 +348,19 @@ document.addEventListener('DOMContentLoaded', function () {
                     <input class="basic-edit-field" type="number" step="0.01" name="contract_amount" value="{{ grant.contract_amount }}" readonly oninput="enableSaveButtonBasic();">
                 </div>
                 <div class="form-group">
+                    <label>Funding Sources:</label>
+                    <span class="basic-view-field">
+                        {{ grant.get_funding_sources_display }}
+                    </span>
+                </div>
+
+                <div class="form-group">
+                    <label>Federal Information Status:</label>
+                    <span class="basic-view-field">
+                        {{ grant.get_federal_information_status_display }}
+                    </span>
+                </div>
+                <div class="form-group">
                     <label>Federal Grantor:</label>
                     <span class="basic-view-field">{{ grant.federal_grantor }}</span>
                     {{ form.federal_grantor|add_class:"basic-edit-field dropdown-field" }}

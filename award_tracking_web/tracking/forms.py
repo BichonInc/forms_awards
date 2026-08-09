@@ -8,16 +8,13 @@ class GrantForm(forms.ModelForm):
     new_contracting_agency = forms.CharField(required=False, label='New Contracting Agency')
     new_federal_grantor = forms.CharField(required=False, label='New Federal Grantor')
     new_federal_aln = forms.CharField(required=False, label='New Federal ALN')
-    federal_funding_included = forms.TypedChoiceField(
+    funding_sources = forms.ChoiceField(
         choices=[
             ("", "Select"),
-            ("True", "Yes"),
-            ("False", "No"),
+            *Form1.FundingSource.choices,
         ],
-        coerce=lambda value: value == "True",
-        empty_value=None,
         required=True,
-        label="Federal Funding Included",
+        label="Funding Sources",
     )
 
     federal_information_status = forms.ChoiceField(
@@ -40,7 +37,7 @@ class GrantForm(forms.ModelForm):
             "contract_start_date",
             "contract_end_date",
             "contract_amount",
-            "federal_funding_included",
+            "funding_sources",
             "federal_information_status",
             "federal_grantor",
             "federal_aln",
@@ -194,16 +191,20 @@ class GrantForm(forms.ModelForm):
             cleaned_data['federal_grantor'] = new_federal_grantor
 
         # === Federal Information Validation ===
-        federal_funding_included = cleaned_data.get(
-            "federal_funding_included"
+        funding_sources = cleaned_data.get(
+            "funding_sources"
         )
         federal_information_status = cleaned_data.get(
             "federal_information_status"
         )
-        federal_grantor = cleaned_data.get("federal_grantor")
-        federal_aln = cleaned_data.get("federal_aln")
+        federal_grantor = cleaned_data.get(
+            "federal_grantor"
+        )
+        federal_aln = cleaned_data.get(
+            "federal_aln"
+        )
 
-        if federal_funding_included is False:
+        if funding_sources == Form1.FundingSource.NONFEDERAL:
             cleaned_data["federal_information_status"] = (
                 Form1.FederalInformationStatus.NOT_APPLICABLE
             )
@@ -212,7 +213,11 @@ class GrantForm(forms.ModelForm):
             cleaned_data["new_federal_grantor"] = ""
             cleaned_data["new_federal_aln"] = ""
 
-        elif federal_funding_included is True:
+        elif funding_sources in {
+            Form1.FundingSource.FEDERAL,
+            Form1.FundingSource.BOTH,
+            Form1.FundingSource.REVIEW_REQUIRED,
+        }:
             if not federal_information_status:
                 self.add_error(
                     "federal_information_status",
@@ -230,7 +235,7 @@ class GrantForm(forms.ModelForm):
                     "federal_information_status",
                     (
                         "Not Applicable may be selected only when "
-                        "Federal Funding Included is No."
+                        "Funding Sources is 100% Non-federal."
                     ),
                 )
 
