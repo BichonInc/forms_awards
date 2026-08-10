@@ -129,10 +129,28 @@ class GLExpenditure(models.Model):
 
 
 class FiscalBreakdown(models.Model):
-    grant_id = models.ForeignKey(Form1, on_delete=models.CASCADE, db_column='grant_id')
-    fiscal_year = models.CharField(max_length=7)  # FY22-23 format
-    federal = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    nonfederal = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    grant_id = models.ForeignKey(
+        Form1,
+        on_delete=models.CASCADE,
+        db_column='grant_id',
+    )
+    fiscal_year = models.CharField(max_length=7)
+    federal = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+    )
+    nonfederal = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+    )
+    reviewed_total_allowed_expenditure = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
     class Meta:
         db_table = 'fiscal_breakdown'  # Custom table name
 
@@ -148,10 +166,28 @@ class SubsequentAdjustment(models.Model):
 
 
 class SubsequentFiscalBreakdown(models.Model):
-    grant_id = models.ForeignKey(Form1, on_delete=models.CASCADE, db_column='grant_id')
+    grant_id = models.ForeignKey(
+        Form1,
+        on_delete=models.CASCADE,
+        db_column='grant_id',
+    )
     fiscal_year = models.CharField(max_length=10)
-    federal = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
-    nonfederal = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    federal = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal('0.00'),
+    )
+    nonfederal = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal('0.00'),
+    )
+    reviewed_total_subsequent_adjustment = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
 
 
 class ChangeRequest(models.Model):
