@@ -46,6 +46,29 @@ class Form1(models.Model):
             "REVIEW_REQUIRED",
             "Needs Review — Funding Source Undetermined",
         )
+
+    class ProgramIncomeTreatment(models.TextChoices):
+        NOT_RESEARCHED = (
+            "NOT_RESEARCHED",
+            "Not Researched",
+        )
+        DEDUCTIVE = (
+            "DEDUCTIVE",
+            "Deductive",
+        )
+        ADDITIVE = (
+            "ADDITIVE",
+            "Additive",
+        )
+        COST_SHARING = (
+            "COST_SHARING",
+            "Cost Sharing / Matching",
+        )
+        OTHER = (
+            "OTHER",
+            "Other / Contract-Specific Treatment",
+        )
+
     grant_id = models.CharField(
         max_length=10,
         primary_key=True,
@@ -64,6 +87,11 @@ class Form1(models.Model):
     contract_start_date = models.DateTimeField(null=True, blank=True)
     contract_end_date = models.DateTimeField(null=True, blank=True)
     contract_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    program_income_treatment = models.CharField(
+        max_length=20,
+        choices=ProgramIncomeTreatment.choices,
+        default=ProgramIncomeTreatment.NOT_RESEARCHED,
+    )
     federal_funding_included = models.BooleanField(
         null=True,
         blank=True,
@@ -188,6 +216,107 @@ class SubsequentFiscalBreakdown(models.Model):
         null=True,
         blank=True,
     )
+
+
+class ProgramIncome(models.Model):
+    grant = models.ForeignKey(
+        Form1,
+        on_delete=models.CASCADE,
+        db_column="grant_id",
+        related_name="program_income_entries",
+    )
+    fiscal_year = models.CharField(
+        max_length=10,
+    )
+    amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+
+    class Meta:
+        db_table = "program_income"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["grant", "fiscal_year"],
+                name="unique_program_income_grant_fiscal_year",
+            )
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.grant_id} "
+            f"{self.fiscal_year}: "
+            f"{self.amount}"
+        )
+
+
+class GrantFiscalExceptionReview(models.Model):
+    class ExceptionType(models.TextChoices):
+        NEGATIVE_CONTRACT_BALANCE = (
+            "NEGATIVE_CONTRACT_BALANCE",
+            "Negative Contract Balance",
+        )
+
+    grant = models.ForeignKey(
+        Form1,
+        on_delete=models.PROTECT,
+        db_column="grant_id",
+        related_name="fiscal_exception_reviews",
+    )
+    exception_type = models.CharField(
+        max_length=40,
+        choices=ExceptionType.choices,
+        default=ExceptionType.NEGATIVE_CONTRACT_BALANCE,
+    )
+    reviewed_contract_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+    )
+    reviewed_total_allowed_expenditure = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+    )
+    reviewed_program_income = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+    )
+    reviewed_program_income_treatment = models.CharField(
+        max_length=20,
+        choices=Form1.ProgramIncomeTreatment.choices,
+    )
+    reviewed_contract_balance = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+    )
+    explanation = models.TextField()
+    accepted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="accepted_fiscal_exception_reviews",
+    )
+    accepted_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    class Meta:
+        db_table = "grant_fiscal_exception_review"
+        ordering = [
+            "-accepted_at",
+            "-id",
+        ]
+
+    def __str__(self):
+        accepted_date = (
+            self.accepted_at.strftime("%Y-%m-%d")
+            if self.accepted_at
+            else "not yet accepted"
+        )
+        return (
+            f"{self.grant_id}: "
+            f"{self.get_exception_type_display()} "
+            f"accepted {accepted_date}"
+        )
 
 
 class ChangeRequest(models.Model):
