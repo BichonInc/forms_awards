@@ -1,8 +1,17 @@
 from django.core.exceptions import PermissionDenied
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import render, get_object_or_404, redirect
+from django.db import transaction
 from django.db.models import Sum, Max
-from .models import Form1, GLExpenditure, FiscalBreakdown, SubsequentAdjustment, SubsequentFiscalBreakdown
+
+from .models import (
+    Form1,
+    GLExpenditure,
+    FiscalBreakdown,
+    SubsequentAdjustment,
+    SubsequentFiscalBreakdown,
+    ProgramIncome,
+)
 from .permissions import (
     ROLE_ACCOUNTANT,
     ROLE_ADMINISTRATOR,
@@ -163,6 +172,45 @@ def grant_detail(request, grant_id):
         ROLE_ACCOUNTANT,
     )
 
+    program_income_fiscal_years = sorted(
+        set(
+            GLExpenditure.objects.filter(
+                grant_id=grant_id
+            ).exclude(
+                fiscal_year__isnull=True
+            ).exclude(
+                fiscal_year=""
+            ).values_list(
+                "fiscal_year",
+                flat=True,
+            )
+        )
+        | set(
+            SubsequentAdjustment.objects.filter(
+                grant_id=grant_id
+            ).exclude(
+                fiscal_year__isnull=True
+            ).exclude(
+                fiscal_year=""
+            ).values_list(
+                "fiscal_year",
+                flat=True,
+            )
+        )
+        | set(
+            ProgramIncome.objects.filter(
+                grant=grant
+            ).exclude(
+                fiscal_year__isnull=True
+            ).exclude(
+                fiscal_year=""
+            ).values_list(
+                "fiscal_year",
+                flat=True,
+            )
+        )
+    )
+
     if request.method == 'POST':
         form_type = request.POST.get("form_type")
 
@@ -185,6 +233,110 @@ def grant_detail(request, grant_id):
                 "grant_detail",
                 grant_id=grant_id,
             )
+
+        elif form_type == "program_income":
+            if not can_edit_fiscal_data:
+                raise PermissionDenied
+
+            print("Program Income form submission detected")
+
+            treatment = request.POST.get(
+                "program_income_treatment",
+                "",
+            ).strip()
+
+            valid_treatments = {
+                value
+                for value, label
+                in Form1.ProgramIncomeTreatment.choices
+            }
+
+            if treatment not in valid_treatments:
+                messages.error(
+                    request,
+                    "Please select a valid Program Income Treatment.",
+                )
+                return redirect(
+                    "grant_detail",
+                    grant_id=grant_id,
+                )
+
+            parsed_amounts = []
+
+            try:
+                for i, fiscal_year in enumerate(
+                    program_income_fiscal_years,
+                    start=1,
+                ):
+                    raw_amount = request.POST.get(
+                        f"program_income_{i}",
+                        "",
+                    ).replace(
+                        ",",
+                        "",
+                    ).strip()
+
+                    amount = (
+                        Decimal(raw_amount)
+                        if raw_amount
+                        else Decimal("0.00")
+                    )
+
+                    if not amount.is_finite():
+                        raise InvalidOperation
+
+                    parsed_amounts.append(
+                        (
+                            fiscal_year,
+                            amount,
+                        )
+                    )
+
+            except InvalidOperation:
+                messages.error(
+                    request,
+                    (
+                        "Program Income amounts must "
+                        "be valid numbers."
+                    ),
+                )
+                return redirect(
+                    "grant_detail",
+                    grant_id=grant_id,
+                )
+
+            with transaction.atomic():
+                grant.program_income_treatment = treatment
+                grant.save(
+                    update_fields=[
+                        "program_income_treatment",
+                    ]
+                )
+
+                for fiscal_year, amount in parsed_amounts:
+                    if amount == Decimal("0.00"):
+                        ProgramIncome.objects.filter(
+                            grant=grant,
+                            fiscal_year=fiscal_year,
+                        ).delete()
+                    else:
+                        ProgramIncome.objects.update_or_create(
+                            grant=grant,
+                            fiscal_year=fiscal_year,
+                            defaults={
+                                "amount": amount,
+                            },
+                        )
+
+            messages.success(
+                request,
+                "Program Income information was saved successfully.",
+            )
+            return redirect(
+                "grant_detail",
+                grant_id=grant_id,
+            )
+
         elif form_type == "fiscal":
             if not can_edit_fiscal_data:
                 raise PermissionDenied
@@ -330,6 +482,53 @@ def grant_detail(request, grant_id):
         total_nonfederal_sub_sum += breakdown['nonfederal']
         total_difference_sub += breakdown['difference']
 
+    program_income_records = {
+        record.fiscal_year: record.amount
+        for record in ProgramIncome.objects.filter(
+            grant=grant
+        )
+    }
+
+    program_income_rows = []
+    total_program_income = Decimal("0.00")
+
+    for fiscal_year in program_income_fiscal_years:
+        amount = program_income_records.get(
+            fiscal_year,
+            Decimal("0.00"),
+        )
+
+        program_income_rows.append(
+            {
+                "fiscal_year": fiscal_year,
+                "amount": amount,
+            }
+        )
+
+        total_program_income += amount
+
+    contract_total_allowed_expenditure = (
+        total_expenditure_sum
+        + total_adjustment_sum
+    )
+
+    if (
+        grant.program_income_treatment
+        == Form1.ProgramIncomeTreatment.ADDITIVE
+    ):
+        contract_balance = (
+            grant.contract_amount
+            + total_program_income
+            - contract_total_allowed_expenditure
+        )
+    else:
+        contract_balance = (
+            grant.contract_amount
+            - contract_total_allowed_expenditure
+        )
+
+    contract_balance_abs = abs(contract_balance)
+
     context = {
         'grant': grant,
         'form': form,
@@ -345,6 +544,16 @@ def grant_detail(request, grant_id):
         'total_federal_sub_sum': total_federal_sub_sum,
         'total_nonfederal_sub_sum': total_nonfederal_sub_sum,
         'total_difference_sub': total_difference_sub,
+        "program_income_rows": program_income_rows,
+        "total_program_income": total_program_income,
+        "program_income_treatment_choices": (
+            Form1.ProgramIncomeTreatment.choices
+        ),
+        "contract_total_allowed_expenditure": (
+            contract_total_allowed_expenditure
+        ),
+        "contract_balance": contract_balance,
+        "contract_balance_abs": contract_balance_abs,
     }
 
     return render(request, 'tracking/grant_detail.html', context)

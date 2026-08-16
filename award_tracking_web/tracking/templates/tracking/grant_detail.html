@@ -75,10 +75,16 @@
     }
 
     /* Edit, Save, and Refresh Buttons */
-    #edit-button-basic, #edit-button-fiscal, #edit-button-subsequent,
-    #save-button-basic, #save-button-fiscal, #save-button-subsequent,
+    #edit-button-basic,
+    #edit-button-fiscal,
+    #edit-button-subsequent,
+    #edit-button-program-income,
+    #save-button-basic,
+    #save-button-fiscal,
+    #save-button-subsequent,
+    #save-button-program-income,
     #refresh-button {
-        background-color: #4CAF50; /* Green color */
+        background-color: #4CAF50;
     }
 
     /* Back Button Specific Styling */
@@ -87,12 +93,24 @@
         margin-left: 20px;
         text-decoration: none;
     }
+    .cancel-button {
+        background-color: #777;
+    }
 
+    .cancel-button:hover {
+        background-color: #5f5f5f;
+    }
     /* Hover Effects */
-    #edit-button-basic:hover, #edit-button-fiscal:hover, #edit-button-subsequent:hover,
-    #save-button-basic:hover, #save-button-fiscal:hover, #save-button-subsequent:hover,
+    #edit-button-basic:hover,
+    #edit-button-fiscal:hover,
+    #edit-button-subsequent:hover,
+    #edit-button-program-income:hover,
+    #save-button-basic:hover,
+    #save-button-fiscal:hover,
+    #save-button-subsequent:hover,
+    #save-button-program-income:hover,
     #refresh-button:hover {
-        background-color: #388E3C; /* Darker green on hover */
+        background-color: #388E3C;
     }
 
     #back-button:hover {
@@ -213,18 +231,67 @@ document.addEventListener('DOMContentLoaded', function () {
     // Other initialization code if necessary
 });
 
+    // Toggle Edit Mode for Program Income
+    function toggleEditModeProgramIncome() {
+        const treatmentView = document.getElementById(
+            'program-income-treatment-view'
+        );
+
+        const treatmentEdit = document.getElementById(
+            'program-income-treatment-edit'
+        );
+
+        const amountFields = document.getElementsByClassName(
+            'program-income-edit-field'
+        );
+
+        const saveButton = document.getElementById(
+            'save-button-program-income'
+        );
+
+        const editButton = document.getElementById(
+            'edit-button-program-income'
+        );
+        const cancelButton = document.getElementById(
+            'cancel-button-program-income'
+        );
+        treatmentView.style.display = 'none';
+        treatmentEdit.style.display = 'inline-block';
+
+        for (const field of amountFields) {
+            field.removeAttribute('readonly');
+        }
+
+        saveButton.style.display = 'inline';
+        cancelButton.style.display = 'inline';
+        editButton.style.display = 'none';
+    }
+
+
+    // Enable Save Changes Button for Program Income
+    function enableSaveButtonProgramIncome() {
+        const saveButton = document.getElementById(
+            'save-button-program-income'
+        );
+
+        saveButton.disabled = false;
+    }
 
     // Toggle Edit Mode for Grant Fiscal Information
     function toggleEditModeFiscal() {
         const editFields = document.getElementsByClassName('fiscal-edit-field');
         const saveButton = document.getElementById('save-button-fiscal');
         const editButton = document.getElementById('edit-button-fiscal');
+        const cancelButton = document.getElementById(
+            'cancel-button-fiscal'
+        );
 
         // Enable input fields by removing readonly attribute
         for (const field of editFields) {
             field.removeAttribute('readonly');
         }
         saveButton.style.display = 'inline';
+        cancelButton.style.display = 'inline';
         editButton.style.display = 'none';
     }
 
@@ -233,12 +300,15 @@ document.addEventListener('DOMContentLoaded', function () {
         const editFields = document.getElementsByClassName('subsequent-edit-field');
         const saveButton = document.getElementById('save-button-subsequent');
         const editButton = document.getElementById('edit-button-subsequent');
-
+        const cancelButton = document.getElementById(
+            'cancel-button-subsequent'
+        );
         // Enable input fields by removing readonly attribute
         for (const field of editFields) {
             field.removeAttribute('readonly');
         }
         saveButton.style.display = 'inline';
+        cancelButton.style.display = 'inline';
         editButton.style.display = 'none';
     }
 
@@ -258,6 +328,113 @@ document.addEventListener('DOMContentLoaded', function () {
     function enableSaveButtonSubsequent() {
         const saveButton = document.getElementById('save-button-subsequent');
         saveButton.disabled = false;
+    }
+
+    function cancelEditProgramIncome() {
+        const form = document.getElementById(
+            'program-income-form'
+        );
+
+        const treatmentView = document.getElementById(
+            'program-income-treatment-view'
+        );
+
+        const treatmentEdit = document.getElementById(
+            'program-income-treatment-edit'
+        );
+
+        const amountFields = document.getElementsByClassName(
+            'program-income-edit-field'
+        );
+
+        const saveButton = document.getElementById(
+            'save-button-program-income'
+        );
+
+        const cancelButton = document.getElementById(
+            'cancel-button-program-income'
+        );
+
+        const editButton = document.getElementById(
+            'edit-button-program-income'
+        );
+
+        form.reset();
+
+        treatmentView.style.display = 'inline';
+        treatmentEdit.style.display = 'none';
+
+        for (const field of amountFields) {
+            field.setAttribute('readonly', true);
+        }
+
+        saveButton.style.display = 'none';
+        cancelButton.style.display = 'none';
+        editButton.style.display = 'inline-block';
+    }
+
+    function cancelEditFiscal() {
+        const form = document.getElementById(
+            'fiscal-form'
+        );
+
+        const editFields = document.getElementsByClassName(
+            'fiscal-edit-field'
+        );
+
+        const saveButton = document.getElementById(
+            'save-button-fiscal'
+        );
+
+        const cancelButton = document.getElementById(
+            'cancel-button-fiscal'
+        );
+
+        const editButton = document.getElementById(
+            'edit-button-fiscal'
+        );
+
+        form.reset();
+
+        for (const field of editFields) {
+            field.setAttribute('readonly', true);
+        }
+
+        saveButton.style.display = 'none';
+        cancelButton.style.display = 'none';
+        editButton.style.display = 'inline-block';
+    }
+
+    function cancelEditSubsequent() {
+        const form = document.getElementById(
+            'subsequent-form'
+        );
+
+        const editFields = document.getElementsByClassName(
+            'subsequent-edit-field'
+        );
+
+        const saveButton = document.getElementById(
+            'save-button-subsequent'
+        );
+
+        const cancelButton = document.getElementById(
+            'cancel-button-subsequent'
+        );
+
+        const editButton = document.getElementById(
+            'edit-button-subsequent'
+        );
+
+        form.reset();
+
+        for (const field of editFields) {
+            field.setAttribute('readonly', true);
+        }
+
+        saveButton.style.display = 'none';
+        cancelButton.style.display = 'none';
+        editButton.style.display = 'inline-block';
     }
 
     </script>
@@ -427,8 +604,166 @@ document.addEventListener('DOMContentLoaded', function () {
 
             <!-- Fiscal Information Form -->
             <h2>Grant Fiscal Information</h2>
+            <h3>Contract Fiscal Summary</h3>
+
+            <form
+                id="program-income-form"
+                method="POST"
+                action="{% url 'grant_detail' grant.grant_id %}"
+            >
+                {% csrf_token %}
+                <input type="hidden" name="form_type" value="program_income">
+
+                <table>
+                    <tbody>
+                        <tr>
+                            <td><strong>Program Income Treatment</strong></td>
+                            <td>
+                                <span id="program-income-treatment-view">
+                                    {{ grant.get_program_income_treatment_display }}
+                                </span>
+
+                                <select
+                                    id="program-income-treatment-edit"
+                                    name="program_income_treatment"
+                                    style="display:none;"
+                                    onchange="enableSaveButtonProgramIncome();"
+                                >
+                                    {% for value, label in program_income_treatment_choices %}
+                                        <option value="{{ value }}"
+                                            {% if grant.program_income_treatment == value %}
+                                                selected
+                                            {% endif %}
+                                        >
+                                            {{ label }}
+                                        </option>
+                                    {% endfor %}
+                                </select>
+                            </td>
+                        </tr>
+
+                        <tr>
+                            <td><strong>Total Program Income</strong></td>
+                            <td class="number">
+                                {{ total_program_income|floatformat:2|intcomma }}
+                            </td>
+                        </tr>
+
+                        <tr>
+                            <td><strong>Contract Amount</strong></td>
+                            <td class="number">
+                                {{ grant.contract_amount|floatformat:2|intcomma }}
+                            </td>
+                        </tr>
+
+                        <tr>
+                            <td><strong>Contract Total Allowed Expenditure</strong></td>
+                            <td class="number">
+                                {{ contract_total_allowed_expenditure|floatformat:2|intcomma }}
+                            </td>
+                        </tr>
+
+                        <tr>
+                            <td><strong>Contract Balance</strong></td>
+                            <td class="number">
+                                {% if contract_balance < 0 %}
+                                    ({{ contract_balance_abs|floatformat:2|intcomma }})
+                                {% else %}
+                                    {{ contract_balance|floatformat:2|intcomma }}
+                                {% endif %}
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+
+
+                <h4>Program Income Detail</h4>
+
+                {% if program_income_rows %}
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Fiscal Year</th>
+                                <th>Program Income</th>
+                            </tr>
+                        </thead>
+
+                        <tbody>
+                            {% for row in program_income_rows %}
+                                <tr>
+                                    <td>{{ row.fiscal_year }}</td>
+
+                                    <td class="number">
+                                        <input
+                                            type="number"
+                                            name="program_income_{{ forloop.counter }}"
+                                            value="{{ row.amount|floatformat:2 }}"
+                                            step="0.01"
+                                            readonly
+                                            class="program-income-edit-field number-right-align"
+                                            oninput="enableSaveButtonProgramIncome();"
+                                        >
+                                    </td>
+                                </tr>
+                            {% endfor %}
+
+                            <tr>
+                                <td><strong>Total</strong></td>
+                                <td class="number">
+                                    <strong>
+                                        {{ total_program_income|floatformat:2|intcomma }}
+                                    </strong>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                {% else %}
+                    <p>
+                        No fiscal years are currently available for Program Income.
+                    </p>
+                {% endif %}
+
+
+                {% if can_edit_fiscal_data %}
+                    <div class="buttons">
+                        <button
+                            type="button"
+                            id="edit-button-program-income"
+                            class="button-common"
+                            onclick="toggleEditModeProgramIncome();"
+                        >
+                            Edit
+                        </button>
+
+                        <button
+                            type="submit"
+                            id="save-button-program-income"
+                            class="button-common"
+                            style="display:none;"
+                        >
+                            Save Changes
+                        </button>
+
+                        <button
+                            type="button"
+                            id="cancel-button-program-income"
+                            class="button-common cancel-button"
+                            style="display:none;"
+                            onclick="cancelEditProgramIncome();"
+                        >
+                            Cancel
+                        </button>
+
+                    </div>
+                {% endif %}
+            </form>
+
             <h3>In-Period Expenditure</h3>
-            <form method="POST" action="{% url 'grant_detail' grant.grant_id %}">
+            <form
+                id="fiscal-form"
+                method="POST"
+                action="{% url 'grant_detail' grant.grant_id %}"
+            >
                {% csrf_token %}
                 <input type="hidden" name="form_type" value="fiscal">
                 <table>
@@ -467,25 +802,43 @@ document.addEventListener('DOMContentLoaded', function () {
 
                 {% if can_edit_fiscal_data %}
                     <div class="buttons">
-                        <button type="button"
-                                id="edit-button-fiscal"
-                                class="button-common"
-                                onclick="toggleEditModeFiscal()">
+                        <button
+                            type="button"
+                            id="edit-button-fiscal"
+                            class="button-common"
+                            onclick="toggleEditModeFiscal()"
+                        >
                             Edit
                         </button>
 
-                        <button type="submit"
-                                id="save-button-fiscal"
-                                class="button-common"
-                                style="display:none;">
+                        <button
+                            type="submit"
+                            id="save-button-fiscal"
+                            class="button-common"
+                            style="display:none;"
+                        >
                             Save Changes
+                        </button>
+
+                        <button
+                             type="button"
+                             id="cancel-button-fiscal"
+                             class="button-common cancel-button"
+                             style="display:none;"
+                             onclick="cancelEditFiscal();"
+                        >
+                            Cancel
                         </button>
                     </div>
                 {% endif %}
             </form>
             <!-- Subsequent Adjustment Subsection -->
             <h3>Subsequent Adjustment</h3>
-            <form method="POST" action="{% url 'grant_detail' grant.grant_id %}">
+            <form
+                id="subsequent-form"
+                method="POST"
+                action="{% url 'grant_detail' grant.grant_id %}"
+            >
                 {% csrf_token %}
                 <input type="hidden" name="form_type" value="subsequent">
                 <table>
@@ -524,18 +877,32 @@ document.addEventListener('DOMContentLoaded', function () {
                 </table>
                 {% if can_edit_fiscal_data %}
                     <div class="buttons">
-                        <button type="button"
-                                id="edit-button-subsequent"
-                                class="button-common"
-                                onclick="toggleEditModeSubsequent()">
+                        <button
+                            type="button"
+                            id="edit-button-subsequent"
+                            class="button-common"
+                            onclick="toggleEditModeSubsequent()"
+                        >
                             Edit
                         </button>
 
-                        <button type="submit"
-                                id="save-button-subsequent"
-                                class="button-common"
-                                style="display:none;">
+                        <button
+                            type="submit"
+                            id="save-button-subsequent"
+                            class="button-common"
+                            style="display:none;"
+                        >
                             Save Changes
+                        </button>
+
+                        <button
+                            type="button"
+                            id="cancel-button-subsequent"
+                            class="button-common cancel-button"
+                            style="display:none;"
+                            onclick="cancelEditSubsequent();"
+                        >
+                            Cancel
                         </button>
                     </div>
                 {% endif %}
