@@ -337,42 +337,123 @@ def grant_detail(request, grant_id):
                 grant_id=grant_id,
             )
 
+
         elif form_type == "fiscal":
+
             if not can_edit_fiscal_data:
                 raise PermissionDenied
+
             print("Fiscal form submission detected")
 
-            gl_expenditures = GLExpenditure.objects.filter(grant_id=grant_id)
-            fiscal_breakdown = gl_expenditures.values('fiscal_year').annotate(
-                total_expenditure=Sum('net_expenditure')
-            ).order_by('fiscal_year')
-
-            for i, breakdown in enumerate(fiscal_breakdown, start=1):
-                fiscal_year = breakdown['fiscal_year']
-                try:
-                    federal_input = Decimal(request.POST.get(f'federal_{i}', '0').replace(',', ''))
-                    nonfederal_input = Decimal(request.POST.get(f'nonfederal_{i}', '0').replace(',', ''))
-                except InvalidOperation:
-                    federal_input, nonfederal_input = Decimal('0'), Decimal('0')
-
-                fiscal_record, created = FiscalBreakdown.objects.get_or_create(
-                    grant_id=grant,
-                    fiscal_year=fiscal_year,
-                    defaults={'federal': federal_input, 'nonfederal': nonfederal_input}
+            if grant.funding_sources != Form1.FundingSource.BOTH:
+                messages.error(
+                    request,
+                    (
+                        "Manual In-Period allocation is only available "
+                        "for grants funded by both Federal and "
+                        "Non-federal sources."
+                    ),
                 )
-                if not created:
-                    fiscal_record.federal = federal_input
-                    fiscal_record.nonfederal = nonfederal_input
-                    fiscal_record.save()
+                return redirect(
+                    "grant_detail",
+                    grant_id=grant_id,
+                )
+
+            fiscal_breakdown = (
+                GLExpenditure.objects
+                .filter(grant_id=grant_id)
+                .exclude(fiscal_year__isnull=True)
+                .exclude(fiscal_year="")
+                .values("fiscal_year")
+                .annotate(
+                    total_expenditure=Sum("net_expenditure")
+                )
+                .order_by("fiscal_year")
+            )
+
+            parsed_allocations = []
+
+            try:
+                for i, breakdown in enumerate(
+                        fiscal_breakdown,
+                        start=1,
+                ):
+                    fiscal_year = breakdown["fiscal_year"]
+
+                    total_expenditure = (
+                            breakdown["total_expenditure"]
+                            or Decimal("0.00")
+                    )
+
+                    raw_federal = request.POST.get(
+                        f"federal_{i}",
+                        "",
+                    ).replace(
+                        ",",
+                        "",
+                    ).strip()
+
+                    federal_input = (
+                        Decimal(raw_federal)
+                        if raw_federal
+                        else Decimal("0.00")
+                    )
+
+                    if not federal_input.is_finite():
+                        raise InvalidOperation
+
+                    nonfederal_calculated = (
+                            total_expenditure
+                            - federal_input
+                    )
+
+                    parsed_allocations.append(
+                        (
+                            fiscal_year,
+                            total_expenditure,
+                            federal_input,
+                            nonfederal_calculated,
+                        )
+                    )
+
+            except InvalidOperation:
+                messages.error(
+                    request,
+                    "Federal allocation amounts must be valid numbers.",
+                )
+                return redirect(
+                    "grant_detail",
+                    grant_id=grant_id,
+                )
+
+            with transaction.atomic():
+                for (
+                        fiscal_year,
+                        total_expenditure,
+                        federal_input,
+                        nonfederal_calculated,
+                ) in parsed_allocations:
+                    FiscalBreakdown.objects.update_or_create(
+                        grant_id=grant,
+                        fiscal_year=fiscal_year,
+                        defaults={
+                            "federal": federal_input,
+                            "nonfederal": nonfederal_calculated,
+                            "reviewed_total_allowed_expenditure": (
+                                total_expenditure
+                            ),
+                        },
+                    )
 
             messages.success(
                 request,
-                "Grant Fiscal Information was saved successfully.",
+                "In-Period allocation was saved successfully.",
             )
             return redirect(
                 "grant_detail",
                 grant_id=grant_id,
             )
+
         elif form_type == "subsequent":
             if not can_edit_fiscal_data:
                 raise PermissionDenied
@@ -425,10 +506,21 @@ def grant_detail(request, grant_id):
     form = GrantForm(instance=grant)
 
     # Fetch fiscal year breakdown for GL Expenditure
-    gl_expenditures = GLExpenditure.objects.filter(grant_id=grant_id)
-    fiscal_breakdown = gl_expenditures.values('fiscal_year').annotate(
-        total_expenditure=Sum('net_expenditure')
-    ).order_by('fiscal_year')
+    gl_expenditures = (
+        GLExpenditure.objects
+        .filter(grant_id=grant_id)
+        .exclude(fiscal_year__isnull=True)
+        .exclude(fiscal_year="")
+    )
+
+    fiscal_breakdown = (
+        gl_expenditures
+        .values("fiscal_year")
+        .annotate(
+            total_expenditure=Sum("net_expenditure")
+        )
+        .order_by("fiscal_year")
+    )
 
     total_expenditure_sum = Decimal('0')
     total_federal_sum = Decimal('0')
@@ -436,21 +528,94 @@ def grant_detail(request, grant_id):
     total_difference = Decimal('0')
 
     for breakdown in fiscal_breakdown:
+        fiscal_year = breakdown["fiscal_year"]
+
+        total_expenditure = (
+                breakdown["total_expenditure"]
+                or Decimal("0.00")
+        )
+
         breakdown_record = FiscalBreakdown.objects.filter(
-            grant_id=grant, fiscal_year=breakdown['fiscal_year']
+            grant_id=grant,
+            fiscal_year=fiscal_year,
         ).first()
 
-        federal = breakdown_record.federal if breakdown_record else Decimal('0')
-        nonfederal = breakdown_record.nonfederal if breakdown_record else Decimal('0')
+        if grant.funding_sources == Form1.FundingSource.FEDERAL:
+            federal = total_expenditure
+            nonfederal = Decimal("0.00")
+            difference = Decimal("0.00")
+            allocation_needs_review = False
+            reviewed_total = None
 
-        breakdown['federal'] = federal
-        breakdown['nonfederal'] = nonfederal
-        breakdown['difference'] = breakdown['total_expenditure'] - federal - nonfederal
+        elif grant.funding_sources == Form1.FundingSource.NONFEDERAL:
+            federal = Decimal("0.00")
+            nonfederal = total_expenditure
+            difference = Decimal("0.00")
+            allocation_needs_review = False
+            reviewed_total = None
 
-        total_expenditure_sum += breakdown['total_expenditure']
+        elif grant.funding_sources == Form1.FundingSource.BOTH:
+            federal = (
+                breakdown_record.federal
+                if breakdown_record
+                else Decimal("0.00")
+            )
+
+            nonfederal = (
+                    total_expenditure
+                    - federal
+            )
+
+            difference = Decimal("0.00")
+
+            reviewed_total = (
+                breakdown_record.reviewed_total_allowed_expenditure
+                if breakdown_record
+                else None
+            )
+
+            allocation_needs_review = (
+                    reviewed_total is None
+                    or reviewed_total != total_expenditure
+            )
+
+        else:
+            # Funding Sources still requires classification.
+            # Preserve existing legacy allocation values but
+            # do not treat them as authoritative.
+            federal = (
+                breakdown_record.federal
+                if breakdown_record
+                else Decimal("0.00")
+            )
+
+            nonfederal = (
+                breakdown_record.nonfederal
+                if breakdown_record
+                else Decimal("0.00")
+            )
+
+            difference = (
+                    total_expenditure
+                    - federal
+                    - nonfederal
+            )
+
+            reviewed_total = None
+            allocation_needs_review = True
+
+        breakdown["federal"] = federal
+        breakdown["nonfederal"] = nonfederal
+        breakdown["difference"] = difference
+        breakdown["allocation_needs_review"] = (
+            allocation_needs_review
+        )
+        breakdown["reviewed_total"] = reviewed_total
+
+        total_expenditure_sum += total_expenditure
         total_federal_sum += federal
         total_nonfederal_sum += nonfederal
-        total_difference += breakdown['difference']
+        total_difference += difference
 
     # Fetch fiscal year breakdown for Subsequent Adjustment
     subsequent_adjustments = SubsequentAdjustment.objects.filter(grant_id=grant_id)

@@ -171,6 +171,19 @@
     background-color: #fff8e6;
     color: #6b4608;
     }
+    .numeric-heading {
+        text-align: right;
+    }
+    .total-expenditure-column {
+        padding-left: 18px;
+    }
+    .nonfederal-column {
+        padding-left: 35px;
+    }
+    .allocation-status-column {
+        padding-left: 35px;
+        text-align: left;
+    }
     </style>
 
 
@@ -759,54 +772,133 @@ document.addEventListener('DOMContentLoaded', function () {
             </form>
 
             <h3>In-Period Expenditure</h3>
+
+            <p>
+                <strong>Allocation Basis:</strong>
+                {{ grant.get_funding_sources_display }}
+            </p>
+
+            {% if grant.funding_sources == "BOTH" %}
+                <p>
+                    Non-Federal is calculated as
+                    Total Allowed Expenditure minus Federal.
+                </p>
+            {% endif %}
+
             <form
                 id="fiscal-form"
                 method="POST"
                 action="{% url 'grant_detail' grant.grant_id %}"
             >
-               {% csrf_token %}
+                {% csrf_token %}
                 <input type="hidden" name="form_type" value="fiscal">
+
                 <table>
                     <thead>
                         <tr>
                             <th>Fiscal Year</th>
-                            <th>Total Expenditure</th>
-                            <th>Federal</th>
-                            <th>Non-Federal</th>
-                            <th>Difference</th>
+                            <th class="numeric-heading total-expenditure-column">
+                                Total Allowed Expenditure
+                            </th>
+                            <th class="numeric-heading">Federal</th>
+                            <th class="numeric-heading nonfederal-column">
+                                Non-Federal
+                            </th>
+                            <th class="allocation-status-column">
+                                Allocation Status
+                            </th>
                         </tr>
                     </thead>
+
                     <tbody>
                         {% for row in fiscal_breakdown %}
-                        <tr>
-                            <td>{{ row.fiscal_year }}</td>
-                            <td class="number">{{ row.total_expenditure|floatformat:2|intcomma }}</td>
-                            <td class="number">
-                                <input type="number" name="federal_{{ forloop.counter }}" value="{{ row.federal|floatformat:2 }}" step="0.01" readonly class="fiscal-edit-field number-right-align" oninput="enableSaveButtonFiscal();">
-                            </td>
-                            <td class="number">
-                                <input type="number" name="nonfederal_{{ forloop.counter }}" value="{{ row.nonfederal|floatformat:2 }}" step="0.01" readonly class="fiscal-edit-field number-right-align" oninput="enableSaveButtonFiscal();">
-                            </td>
-                            <td class="number">{{ row.difference|floatformat:2|intcomma }}</td>
-                        </tr>
+                            <tr>
+                                <td>
+                                    {{ row.fiscal_year }}
+                                </td>
+
+                                <td class="number total-expenditure-column">
+                                    {{ row.total_expenditure|floatformat:2|intcomma }}
+                                </td>
+
+                                <td class="number">
+                                    {% if grant.funding_sources == "BOTH" %}
+                                        <input
+                                            type="number"
+                                            name="federal_{{ forloop.counter }}"
+                                            value="{{ row.federal|floatformat:2 }}"
+                                            step="0.01"
+                                            readonly
+                                            class="fiscal-edit-field number-right-align"
+                                            oninput="enableSaveButtonFiscal();"
+                                        >
+                                    {% else %}
+                                        {{ row.federal|floatformat:2|intcomma }}
+                                    {% endif %}
+                                </td>
+
+                                <td class="number nonfederal-column">
+                                    {{ row.nonfederal|floatformat:2|intcomma }}
+                                </td>
+
+                                <td class="allocation-status-column">
+                                    {% if grant.funding_sources == "FEDERAL" %}
+                                        Automatic — 100% Federal
+
+                                    {% elif grant.funding_sources == "NONFEDERAL" %}
+                                        Automatic — 100% Non-federal
+
+                                    {% elif grant.funding_sources == "BOTH" %}
+                                        {% if row.allocation_needs_review %}
+                                            <strong>Needs Review</strong>
+                                        {% else %}
+                                            Reviewed
+                                        {% endif %}
+
+                                    {% else %}
+                                        <strong>
+                                            Funding Source Needs Review
+                                        </strong>
+                                    {% endif %}
+                                </td>
+                            </tr>
                         {% endfor %}
+
                         <tr>
-                            <td><strong>Total</strong></td>
-                            <td class="number">{{ total_expenditure_sum|floatformat:2|intcomma }}</td>
-                            <td class="number">{{ total_federal_sum|floatformat:2|intcomma }}</td>
-                            <td class="number">{{ total_nonfederal_sum|floatformat:2|intcomma }}</td>
-                            <td class="number">{{ total_difference|floatformat:2|intcomma }}</td>
+                            <td>
+                                <strong>Total</strong>
+                            </td>
+
+                            <td class="number total-expenditure-column">
+                                <strong>
+                                    {{ total_expenditure_sum|floatformat:2|intcomma }}
+                                </strong>
+                            </td>
+
+                            <td class="number">
+                                <strong>
+                                    {{ total_federal_sum|floatformat:2|intcomma }}
+                                </strong>
+                            </td>
+
+                            <td class="number nonfederal-column">
+                                <strong>
+                                    {{ total_nonfederal_sum|floatformat:2|intcomma }}
+                                </strong>
+                            </td>
+
+                            <td></td>
                         </tr>
                     </tbody>
                 </table>
 
-                {% if can_edit_fiscal_data %}
+                {% if can_edit_fiscal_data and grant.funding_sources == "BOTH" %}
                     <div class="buttons">
                         <button
                             type="button"
                             id="edit-button-fiscal"
                             class="button-common"
-                            onclick="toggleEditModeFiscal()"
+                            onclick="toggleEditModeFiscal();"
                         >
                             Edit
                         </button>
@@ -821,17 +913,18 @@ document.addEventListener('DOMContentLoaded', function () {
                         </button>
 
                         <button
-                             type="button"
-                             id="cancel-button-fiscal"
-                             class="button-common cancel-button"
-                             style="display:none;"
-                             onclick="cancelEditFiscal();"
+                            type="button"
+                            id="cancel-button-fiscal"
+                            class="button-common cancel-button"
+                            style="display:none;"
+                            onclick="cancelEditFiscal();"
                         >
                             Cancel
                         </button>
                     </div>
                 {% endif %}
             </form>
+
             <!-- Subsequent Adjustment Subsection -->
             <h3>Subsequent Adjustment</h3>
             <form
