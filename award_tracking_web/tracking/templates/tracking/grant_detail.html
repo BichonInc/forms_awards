@@ -177,6 +177,9 @@
     .total-expenditure-column {
         padding-left: 18px;
     }
+    .total-adjustment-column {
+        padding-left: 18px;
+    }
     .nonfederal-column {
         padding-left: 35px;
     }
@@ -925,81 +928,166 @@ document.addEventListener('DOMContentLoaded', function () {
                 {% endif %}
             </form>
 
-            <!-- Subsequent Adjustment Subsection -->
-            <h3>Subsequent Adjustment</h3>
-            <form
-                id="subsequent-form"
-                method="POST"
-                action="{% url 'grant_detail' grant.grant_id %}"
-            >
-                {% csrf_token %}
-                <input type="hidden" name="form_type" value="subsequent">
-                <table>
-                    <thead>
+        <!-- Subsequent Adjustment Subsection -->
+        <h3>Subsequent Adjustment</h3>
+
+        <p>
+            <strong>Allocation Basis:</strong>
+            {{ grant.get_funding_sources_display }}
+        </p>
+
+        {% if grant.funding_sources == "BOTH" %}
+            <p>
+                Non-Federal is calculated as
+                Total Adjustment minus Federal.
+            </p>
+        {% endif %}
+
+        <form
+            id="subsequent-form"
+            method="POST"
+            action="{% url 'grant_detail' grant.grant_id %}"
+        >
+            {% csrf_token %}
+            <input type="hidden" name="form_type" value="subsequent">
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Fiscal Year</th>
+
+                        <th class="numeric-heading total-adjustment-column">
+                            Total Adjustment
+                        </th>
+
+                        <th class="numeric-heading">
+                            Federal
+                        </th>
+
+                        <th class="numeric-heading nonfederal-column">
+                            Non-Federal
+                        </th>
+
+                        <th class="allocation-status-column">
+                            Allocation Status
+                        </th>
+                    </tr>
+                </thead>
+
+                <tbody>
+                    {% for row in subsequent_breakdown %}
                         <tr>
-                            <th>Fiscal Year</th>
-                            <th>Total Adjustment</th>
-                            <th>Federal</th>
-                            <th>Non-Federal</th>
-                            <th>Difference</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for row in subsequent_breakdown %}
-                        <tr>
-                            <td>{{ row.fiscal_year }}</td>
-                            <td class="number">{{ row.total_expenditure|floatformat:2|intcomma }}</td>
-                            <td class="number">
-                                <input type="number" name="federal_subsequent_{{ forloop.counter }}" value="{{ row.federal|floatformat:2 }}" step="0.01" readonly class="subsequent-edit-field number-right-align" oninput="enableSaveButtonSubsequent();">
+                            <td>
+                                {{ row.fiscal_year }}
                             </td>
-                            <td class="number">
-                                <input type="number" name="nonfederal_subsequent_{{ forloop.counter }}" value="{{ row.nonfederal|floatformat:2 }}" step="0.01" readonly class="subsequent-edit-field number-right-align" oninput="enableSaveButtonSubsequent();">
+
+                            <td class="number total-adjustment-column">
+                                {{ row.total_expenditure|floatformat:2|intcomma }}
                             </td>
-                            <td class="number">{{ row.difference|floatformat:2|intcomma }}</td>
+
+                            <td class="number">
+                                {% if grant.funding_sources == "BOTH" %}
+                                    <input
+                                        type="number"
+                                        name="federal_subsequent_{{ forloop.counter }}"
+                                        value="{{ row.federal|floatformat:2 }}"
+                                        step="0.01"
+                                        readonly
+                                        class="subsequent-edit-field number-right-align"
+                                        oninput="enableSaveButtonSubsequent();"
+                                    >
+                                {% else %}
+                                    {{ row.federal|floatformat:2|intcomma }}
+                                {% endif %}
+                            </td>
+
+                            <td class="number nonfederal-column">
+                                {{ row.nonfederal|floatformat:2|intcomma }}
+                            </td>
+
+                            <td class="allocation-status-column">
+                                {% if grant.funding_sources == "FEDERAL" %}
+                                    Automatic — 100% Federal
+
+                                {% elif grant.funding_sources == "NONFEDERAL" %}
+                                    Automatic — 100% Non-federal
+
+                                {% elif grant.funding_sources == "BOTH" %}
+                                    {% if row.allocation_needs_review %}
+                                        <strong>Needs Review</strong>
+                                    {% else %}
+                                        Reviewed
+                                    {% endif %}
+
+                                {% else %}
+                                    <strong>
+                                        Funding Source Needs Review
+                                    </strong>
+                                {% endif %}
+                            </td>
                         </tr>
-                        {% endfor %}
-                        <tr>
-                            <td><strong>Total</strong></td>
-                            <td class="number">{{ total_adjustment_sum|floatformat:2|intcomma }}</td>
-                            <td class="number">{{ total_federal_sub_sum|floatformat:2|intcomma }}</td>
-                            <td class="number">{{ total_nonfederal_sub_sum|floatformat:2|intcomma }}</td>
-                            <td class="number">{{ total_difference_sub|floatformat:2|intcomma }}</td>
-                        </tr>
+                    {% endfor %}
 
-                    </tbody>
-                </table>
-                {% if can_edit_fiscal_data %}
-                    <div class="buttons">
-                        <button
-                            type="button"
-                            id="edit-button-subsequent"
-                            class="button-common"
-                            onclick="toggleEditModeSubsequent()"
-                        >
-                            Edit
-                        </button>
+                    <tr>
+                        <td>
+                            <strong>Total</strong>
+                        </td>
 
-                        <button
-                            type="submit"
-                            id="save-button-subsequent"
-                            class="button-common"
-                            style="display:none;"
-                        >
-                            Save Changes
-                        </button>
+                        <td class="number total-adjustment-column">
+                            <strong>
+                                {{ total_adjustment_sum|floatformat:2|intcomma }}
+                            </strong>
+                        </td>
 
-                        <button
-                            type="button"
-                            id="cancel-button-subsequent"
-                            class="button-common cancel-button"
-                            style="display:none;"
-                            onclick="cancelEditSubsequent();"
-                        >
-                            Cancel
-                        </button>
-                    </div>
-                {% endif %}
-            </form>
+                        <td class="number">
+                            <strong>
+                                {{ total_federal_sub_sum|floatformat:2|intcomma }}
+                            </strong>
+                        </td>
+
+                        <td class="number nonfederal-column">
+                            <strong>
+                                {{ total_nonfederal_sub_sum|floatformat:2|intcomma }}
+                            </strong>
+                        </td>
+
+                        <td class="allocation-status-column"></td>
+                    </tr>
+                </tbody>
+            </table>
+
+            {% if can_edit_fiscal_data and grant.funding_sources == "BOTH" %}
+                <div class="buttons">
+                    <button
+                        type="button"
+                        id="edit-button-subsequent"
+                        class="button-common"
+                        onclick="toggleEditModeSubsequent();"
+                    >
+                        Edit
+                    </button>
+
+                    <button
+                        type="submit"
+                        id="save-button-subsequent"
+                        class="button-common"
+                        style="display:none;"
+                    >
+                        Save Changes
+                    </button>
+
+                    <button
+                        type="button"
+                        id="cancel-button-subsequent"
+                        class="button-common cancel-button"
+                        style="display:none;"
+                        onclick="cancelEditSubsequent();"
+                    >
+                        Cancel
+                    </button>
+                </div>
+            {% endif %}
+        </form>
     </div>
 </body>
 </html>

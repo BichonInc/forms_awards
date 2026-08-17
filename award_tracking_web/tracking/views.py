@@ -454,43 +454,208 @@ def grant_detail(request, grant_id):
                 grant_id=grant_id,
             )
 
+
         elif form_type == "subsequent":
+
             if not can_edit_fiscal_data:
                 raise PermissionDenied
+
             print("Subsequent Adjustment form submission detected")
-            subsequent_adjustments = SubsequentAdjustment.objects.filter(grant_id=grant_id)
-            subsequent_breakdown = subsequent_adjustments.values('fiscal_year').annotate(
-                total_expenditure=Sum('net_expenditure')
-            ).order_by('fiscal_year')
 
-            for i, breakdown in enumerate(subsequent_breakdown, start=1):
-                fiscal_year = breakdown['fiscal_year']
-                try:
-                    federal_input = Decimal(request.POST.get(f'federal_subsequent_{i}', '0').replace(',', ''))
-                    nonfederal_input = Decimal(request.POST.get(f'nonfederal_subsequent_{i}', '0').replace(',', ''))
-                except InvalidOperation:
-                    federal_input, nonfederal_input = Decimal('0'), Decimal('0')
+            if grant.funding_sources != Form1.FundingSource.BOTH:
+                messages.error(
 
-                subsequent_record, created = SubsequentFiscalBreakdown.objects.get_or_create(
-                    grant_id=grant,
-                    fiscal_year=fiscal_year,
-                    defaults={'federal': federal_input, 'nonfederal': nonfederal_input}
+                    request,
+
+                    (
+
+                        "Manual Subsequent Adjustment allocation is only "
+
+                        "available for grants funded by both Federal and "
+
+                        "Non-federal sources."
+
+                    ),
+
                 )
-                if not created:
-                    subsequent_record.federal = federal_input
-                    subsequent_record.nonfederal = nonfederal_input
-                    subsequent_record.save()
+
+                return redirect(
+
+                    "grant_detail",
+
+                    grant_id=grant_id,
+
+                )
+
+            subsequent_breakdown = (
+
+                SubsequentAdjustment.objects
+
+                .filter(grant_id=grant_id)
+
+                .exclude(fiscal_year__isnull=True)
+
+                .exclude(fiscal_year="")
+
+                .values("fiscal_year")
+
+                .annotate(
+
+                    total_adjustment=Sum("net_expenditure")
+
+                )
+
+                .order_by("fiscal_year")
+
+            )
+
+            parsed_allocations = []
+
+            try:
+
+                for i, breakdown in enumerate(
+
+                        subsequent_breakdown,
+
+                        start=1,
+
+                ):
+
+                    fiscal_year = breakdown["fiscal_year"]
+
+                    total_adjustment = (
+
+                            breakdown["total_adjustment"]
+
+                            or Decimal("0.00")
+
+                    )
+
+                    raw_federal = request.POST.get(
+
+                        f"federal_subsequent_{i}",
+
+                        "",
+
+                    ).replace(
+
+                        ",",
+
+                        "",
+
+                    ).strip()
+
+                    federal_input = (
+
+                        Decimal(raw_federal)
+
+                        if raw_federal
+
+                        else Decimal("0.00")
+
+                    )
+
+                    if not federal_input.is_finite():
+                        raise InvalidOperation
+
+                    nonfederal_calculated = (
+
+                            total_adjustment
+
+                            - federal_input
+
+                    )
+
+                    parsed_allocations.append(
+
+                        (
+
+                            fiscal_year,
+
+                            total_adjustment,
+
+                            federal_input,
+
+                            nonfederal_calculated,
+
+                        )
+
+                    )
+
+
+            except InvalidOperation:
+
+                messages.error(
+
+                    request,
+
+                    (
+
+                        "Federal Subsequent Adjustment allocation "
+
+                        "amounts must be valid numbers."
+
+                    ),
+
+                )
+
+                return redirect(
+
+                    "grant_detail",
+
+                    grant_id=grant_id,
+
+                )
+
+            with transaction.atomic():
+
+                for (
+
+                        fiscal_year,
+
+                        total_adjustment,
+
+                        federal_input,
+
+                        nonfederal_calculated,
+
+                ) in parsed_allocations:
+                    SubsequentFiscalBreakdown.objects.update_or_create(
+
+                        grant_id=grant,
+
+                        fiscal_year=fiscal_year,
+
+                        defaults={
+
+                            "federal": federal_input,
+
+                            "nonfederal": nonfederal_calculated,
+
+                            "reviewed_total_subsequent_adjustment": (
+
+                                total_adjustment
+
+                            ),
+
+                        },
+
+                    )
 
             messages.success(
+
                 request,
-                (
-                    "Subsequent Adjustment information "
-                    "was saved successfully."
-                ),
+
+                "Subsequent Adjustment allocation was saved successfully.",
+
             )
+
             return redirect(
+
                 "grant_detail",
+
                 grant_id=grant_id,
+
             )
 
         else:
@@ -618,34 +783,117 @@ def grant_detail(request, grant_id):
         total_difference += difference
 
     # Fetch fiscal year breakdown for Subsequent Adjustment
-    subsequent_adjustments = SubsequentAdjustment.objects.filter(grant_id=grant_id)
-    subsequent_breakdown = subsequent_adjustments.values('fiscal_year').annotate(
-        total_expenditure=Sum('net_expenditure')
-    ).order_by('fiscal_year')
+    subsequent_adjustments = (
+        SubsequentAdjustment.objects
+        .filter(grant_id=grant_id)
+        .exclude(fiscal_year__isnull=True)
+        .exclude(fiscal_year="")
+    )
+
+    subsequent_breakdown = (
+        subsequent_adjustments
+        .values("fiscal_year")
+        .annotate(
+            total_expenditure=Sum("net_expenditure")
+        )
+        .order_by("fiscal_year")
+    )
 
     # Calculate totals for Subsequent Adjustment
-    total_adjustment_sum = Decimal('0')
-    total_federal_sub_sum = Decimal('0')
-    total_nonfederal_sub_sum = Decimal('0')
-    total_difference_sub = Decimal('0')
+    total_adjustment_sum = Decimal("0.00")
+    total_federal_sub_sum = Decimal("0.00")
+    total_nonfederal_sub_sum = Decimal("0.00")
+    total_difference_sub = Decimal("0.00")
 
-    print("Subsequent Adjustment Data:")
     for breakdown in subsequent_breakdown:
+        fiscal_year = breakdown["fiscal_year"]
+
+        total_adjustment = (
+                breakdown["total_expenditure"]
+                or Decimal("0.00")
+        )
+
         sub_record = SubsequentFiscalBreakdown.objects.filter(
-            grant_id=grant, fiscal_year=breakdown['fiscal_year']
+            grant_id=grant,
+            fiscal_year=fiscal_year,
         ).first()
-        print(breakdown)
-        federal = sub_record.federal if sub_record else Decimal('0')
-        nonfederal = sub_record.nonfederal if sub_record else Decimal('0')
 
-        breakdown['federal'] = federal
-        breakdown['nonfederal'] = nonfederal
-        breakdown['difference'] = breakdown['total_expenditure'] - federal - nonfederal
+        if grant.funding_sources == Form1.FundingSource.FEDERAL:
+            federal = total_adjustment
+            nonfederal = Decimal("0.00")
+            difference = Decimal("0.00")
+            allocation_needs_review = False
+            reviewed_total = None
 
-        total_adjustment_sum += breakdown['total_expenditure']
-        total_federal_sub_sum += breakdown['federal']
-        total_nonfederal_sub_sum += breakdown['nonfederal']
-        total_difference_sub += breakdown['difference']
+        elif grant.funding_sources == Form1.FundingSource.NONFEDERAL:
+            federal = Decimal("0.00")
+            nonfederal = total_adjustment
+            difference = Decimal("0.00")
+            allocation_needs_review = False
+            reviewed_total = None
+
+        elif grant.funding_sources == Form1.FundingSource.BOTH:
+            federal = (
+                sub_record.federal
+                if sub_record
+                else Decimal("0.00")
+            )
+
+            nonfederal = (
+                    total_adjustment
+                    - federal
+            )
+
+            difference = Decimal("0.00")
+
+            reviewed_total = (
+                sub_record.reviewed_total_subsequent_adjustment
+                if sub_record
+                else None
+            )
+
+            allocation_needs_review = (
+                    reviewed_total is None
+                    or reviewed_total != total_adjustment
+            )
+
+        else:
+            # Funding Sources still requires classification.
+            # Preserve existing legacy allocation values but
+            # do not treat them as authoritative.
+            federal = (
+                sub_record.federal
+                if sub_record
+                else Decimal("0.00")
+            )
+
+            nonfederal = (
+                sub_record.nonfederal
+                if sub_record
+                else Decimal("0.00")
+            )
+
+            difference = (
+                    total_adjustment
+                    - federal
+                    - nonfederal
+            )
+
+            reviewed_total = None
+            allocation_needs_review = True
+
+        breakdown["federal"] = federal
+        breakdown["nonfederal"] = nonfederal
+        breakdown["difference"] = difference
+        breakdown["allocation_needs_review"] = (
+            allocation_needs_review
+        )
+        breakdown["reviewed_total"] = reviewed_total
+
+        total_adjustment_sum += total_adjustment
+        total_federal_sub_sum += federal
+        total_nonfederal_sub_sum += nonfederal
+        total_difference_sub += difference
 
     program_income_records = {
         record.fiscal_year: record.amount
