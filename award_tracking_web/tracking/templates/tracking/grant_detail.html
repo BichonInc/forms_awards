@@ -187,6 +187,13 @@
         padding-left: 35px;
         text-align: left;
     }
+    .fiscal-review-reasons {
+        margin: 0;
+        padding-left: 20px;
+    }
+    .needs-accountant-attention {
+        color: #c62828;
+    }
     </style>
 
 
@@ -689,6 +696,39 @@ document.addEventListener('DOMContentLoaded', function () {
                                 {% endif %}
                             </td>
                         </tr>
+                        <tr>
+                            <td>
+                                <strong>Fiscal Review Status</strong>
+                            </td>
+
+                            <td>
+                                {% if fiscal_review.needs_attention %}
+                                    <strong class="needs-accountant-attention">
+                                        Needs Accountant Attention
+                                    </strong>
+                                {% else %}
+                                    No Accountant Attention Needed
+                                {% endif %}
+                            </td>
+                        </tr>
+
+                        {% if fiscal_review.needs_attention %}
+                            <tr>
+                                <td>
+                                    <strong>Attention Reasons</strong>
+                                </td>
+
+                                <td>
+                                    <ul class="fiscal-review-reasons">
+                                        {% for reason in fiscal_review.reasons %}
+                                            <li>
+                                                {{ reason.message }}
+                                            </li>
+                                        {% endfor %}
+                                    </ul>
+                                </td>
+                            </tr>
+                        {% endif %}
                     </tbody>
                 </table>
 

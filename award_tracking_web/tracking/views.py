@@ -12,6 +12,8 @@ from .models import (
     SubsequentFiscalBreakdown,
     ProgramIncome,
 )
+from .fiscal_review import get_grant_fiscal_review
+
 from .permissions import (
     ROLE_ACCOUNTANT,
     ROLE_ADMINISTRATOR,
@@ -162,6 +164,7 @@ def grant_detail(request, grant_id):
     grant = get_object_or_404(Form1, grant_id=grant_id)
     print(f"Grant object fetched: {grant}")
 
+    fiscal_review = get_grant_fiscal_review(grant)
     can_request_change = user_has_any_role(
         request.user,
         ROLE_EDITOR,
@@ -967,6 +970,7 @@ def grant_detail(request, grant_id):
         ),
         "contract_balance": contract_balance,
         "contract_balance_abs": contract_balance_abs,
+        "fiscal_review": fiscal_review,
     }
 
     return render(request, 'tracking/grant_detail.html', context)
