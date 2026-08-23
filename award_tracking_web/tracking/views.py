@@ -13,7 +13,10 @@ from .models import (
     ProgramIncome,
     GrantFiscalExceptionReview,
 )
-from .fiscal_review import get_grant_fiscal_review
+from .fiscal_review import (
+    get_grant_fiscal_review,
+    get_grant_fiscal_review_summaries,
+)
 
 from .permissions import (
     ROLE_ACCOUNTANT,
@@ -25,7 +28,6 @@ from .permissions import (
 from .forms import GrantForm
 from django.core.files.storage import default_storage
 import pandas as pd
-import sqlite3
 from datetime import datetime, date
 from decimal import Decimal, InvalidOperation # Import this to ensure consistent types
 from django.conf import settings
@@ -45,95 +47,31 @@ from django.http import HttpResponse
 #        new_grant_id = 'A00001'
 #    return new_grant_id
 
-def get_fiscal_data(grant_id):
-    db_path = settings.DATABASES['default']['NAME']
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    # Adjusted query to group data by grant_id and fiscal_year, summing the net_expenditure
-    query = '''
-        SELECT g.fiscal_year, SUM(g.net_expenditure) AS total_expenditure, f.federal, f.nonfederal 
-        FROM gl_expenditure g
-        LEFT JOIN fiscal_breakdown f ON g.grant_id = f.grant_id AND g.fiscal_year = f.fiscal_year
-        WHERE g.grant_id = ?
-        GROUP BY g.fiscal_year
-    '''
-    cursor.execute(query, (grant_id,))
-    fiscal_data = cursor.fetchall()
-    print(fiscal_data)
-    conn.close()
-
-    fiscal_data_with_difference = []
-    for row in fiscal_data:
-        fiscal_year, total_expenditure, federal, nonfederal = row
-        difference = total_expenditure - (federal or 0) - (nonfederal or 0)
-        difference = round(difference, 2)
-        fiscal_data_with_difference.append({
-            'fiscal_year': fiscal_year,
-            'total_expenditure': total_expenditure,
-            'federal': federal,
-            'nonfederal': nonfederal,
-            'difference': difference,
-        })
-    print(fiscal_data_with_difference)
-    return fiscal_data_with_difference
-def get_subsequent_data(grant_id):
-    db_path = settings.DATABASES['default']['NAME']
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    # Query to group data by grant_id and fiscal_year, summing net_expenditure for Subsequent Adjustment
-    query = '''
-        SELECT sa.fiscal_year, SUM(sa.net_expenditure) AS total_adjustment, sf.federal, sf.nonfederal 
-        FROM tracking_subsequentadjustment sa
-        LEFT JOIN tracking_subsequentfiscalbreakdown sf ON sa.grant_id = sf.grant_id AND sa.fiscal_year = sf.fiscal_year
-        WHERE sa.grant_id = ?
-        GROUP BY sa.fiscal_year
-    '''
-    cursor.execute(query, (grant_id,))
-    subsequent_data = cursor.fetchall()
-    print(subsequent_data)
-    conn.close()
-
-    # Calculate the difference and round it to 2 decimal points
-    subsequent_data_with_difference = []
-    for row in subsequent_data:
-        fiscal_year, total_adjustment, federal, nonfederal = row
-        difference = total_adjustment - (federal or 0) - (nonfederal or 0)
-        difference = round(difference, 2)
-        subsequent_data_with_difference.append({
-            'fiscal_year': fiscal_year,
-            'total_adjustment': total_adjustment,
-            'federal': federal,
-            'nonfederal': nonfederal,
-            'difference': difference,
-        })
-    print(subsequent_data_with_difference)
-    return subsequent_data_with_difference
-
-
 
 # In views.py
 @login_required
 def grant_list(request):
-    grants = Form1.objects.all().order_by('grant_id')
+    grants = list(
+        Form1.objects.all().order_by("grant_id")
+    )
+
+    fiscal_review_summaries = (
+        get_grant_fiscal_review_summaries(grants)
+    )
 
     for grant in grants:
-        grant_id = grant.grant_id
-
-        # Check In-Period Warning
-        in_period_warning = any(
-            row['difference'] != 0 for row in get_fiscal_data(grant_id)
+        fiscal_summary = fiscal_review_summaries.get(
+            grant.grant_id,
+            {
+                "needs_attention": False,
+                "issue_count": 0,
+                "reason_codes": [],
+            },
         )
 
-        # Check Subsequent Adjustment Warning
-        subsequent_warning = any(
-            row['difference'] != 0 for row in get_subsequent_data(grant_id)
+        grant.fiscal_review_issue_count = (
+            fiscal_summary["issue_count"]
         )
-
-        # Add attributes to the grant object
-        grant.has_in_period_difference = in_period_warning
-        grant.has_subsequent_difference = subsequent_warning
 
     user_roles = list(
         request.user.groups.order_by("name").values_list(

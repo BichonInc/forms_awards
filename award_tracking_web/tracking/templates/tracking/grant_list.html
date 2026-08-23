@@ -108,6 +108,11 @@
         .logout-button:hover {
             background-color: #333;
         }
+        .fiscal-review-issue {
+            color: #c62828;
+            font-weight: bold;
+            white-space: nowrap;
+        }
     </style>
 
 </head>
@@ -179,6 +184,8 @@
                         <th data-resizable-column-id="program_title">Program Title</th>
                         <th data-resizable-column-id="contracting_agency">Contracting Agency</th>
                         <th data-resizable-column-id="contract_number">Contract Number</th>
+                        <th>Actions</th>
+                        <th>Fiscal Review</th>
                         <th data-resizable-column-id="contract_start_date">Contract Start Date</th>
                         <th data-resizable-column-id="contract_end_date">Contract End Date</th>
                         <th data-resizable-column-id="contract_amount">Contract Amount</th>
@@ -187,9 +194,6 @@
                         <th data-resizable-column-id="internal_award_code">Internal Award Code</th>
                         <th data-resizable-column-id="internal_gl_start_date">Internal GL Start Date</th>
                         <th data-resizable-column-id="internal_gl_end_date">Internal GL End Date</th>
-                        <th>In-Period Expenditure</th>
-                        <th>Subsequent Adjustment</th>
-                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -199,6 +203,26 @@
                         <td>{{ grant.program_title }}</td>
                         <td>{{ grant.contracting_agency }}</td>
                         <td>{{ grant.contract_number }}</td>
+                        <td>
+                            <a href="{% url 'grant_detail' grant.grant_id %}">
+                                View/Edit
+                            </a>
+                        </td>
+
+                        <td>
+                            {% if grant.fiscal_review_issue_count %}
+                                <span class="fiscal-review-issue">
+                                    {{ grant.fiscal_review_issue_count }}
+                                    {% if grant.fiscal_review_issue_count == 1 %}
+                                        Issue
+                                    {% else %}
+                                        Issues
+                                    {% endif %}
+                                </span>
+                            {% else %}
+                                &mdash;
+                            {% endif %}
+                        </td>
                         <td>{{ grant.contract_start_date|date:"Y-m-d" }}</td>
                         <td>{{ grant.contract_end_date|date:"Y-m-d" }}</td>
                         <td style="text-align: right;">{{ grant.contract_amount|floatformat:2|intcomma }}</td>
@@ -207,19 +231,6 @@
                         <td>{{ grant.internal_award_code }}</td>
                         <td>{{ grant.internal_gl_start_date|date:"Y-m-d" }}</td>
                         <td>{{ grant.internal_gl_end_date|date:"Y-m-d" }}</td>
-                        <td>
-                            {% if grant.has_in_period_difference %}
-                                <img src="{% static 'icons/warning_icon.png' %}" alt="Warning" />
-                            {% endif %}
-                        </td>
-                        <td>
-                            {% if grant.has_subsequent_difference %}
-                                <img src="{% static 'icons/warning_icon.png' %}" alt="Warning" />
-                            {% endif %}
-                        </td>
-                        <td>
-                            <a href="{% url 'grant_detail' grant.grant_id %}">View/Edit</a>
-                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>

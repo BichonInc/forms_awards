@@ -310,3 +310,320 @@ def get_grant_fiscal_review(grant):
             subsequent_allocation_issues
         ),
     }
+
+
+def get_grant_fiscal_review_summaries(grants):
+    """
+    Return compact Fiscal Review results for multiple grants.
+
+    This is intended for list/dashboard views where calling
+    get_grant_fiscal_review() separately for every grant would
+    create excessive database queries.
+    """
+    grants = list(grants)
+
+    if not grants:
+        return {}
+
+    grant_ids = [
+        grant.grant_id
+        for grant in grants
+    ]
+
+    def get_current_totals(model):
+        rows = (
+            model.objects
+            .filter(grant_id__in=grant_ids)
+            .exclude(fiscal_year__isnull=True)
+            .exclude(fiscal_year="")
+            .values(
+                "grant_id",
+                "fiscal_year",
+            )
+            .annotate(
+                current_total=Sum("net_expenditure")
+            )
+        )
+
+        totals = {}
+
+        for row in rows:
+            grant_id = row["grant_id"]
+            fiscal_year = row["fiscal_year"]
+
+            totals.setdefault(
+                grant_id,
+                {},
+            )[fiscal_year] = _money(
+                row["current_total"]
+            )
+
+        return totals
+
+    in_period_totals = get_current_totals(
+        GLExpenditure
+    )
+
+    subsequent_totals = get_current_totals(
+        SubsequentAdjustment
+    )
+
+    program_income_totals = {
+        row["grant_id"]: _money(row["total"])
+        for row in (
+            ProgramIncome.objects
+            .filter(grant_id__in=grant_ids)
+            .values("grant_id")
+            .annotate(total=Sum("amount"))
+        )
+    }
+
+    both_grant_ids = [
+        grant.grant_id
+        for grant in grants
+        if grant.funding_sources
+        == Form1.FundingSource.BOTH
+    ]
+
+    in_period_snapshots = {}
+
+    for row in (
+        FiscalBreakdown.objects
+        .filter(
+            grant_id__grant_id__in=both_grant_ids
+        )
+        .values(
+            "grant_id__grant_id",
+            "fiscal_year",
+            "reviewed_total_allowed_expenditure",
+        )
+    ):
+        reviewed_total = row[
+            "reviewed_total_allowed_expenditure"
+        ]
+
+        in_period_snapshots[
+            (
+                row["grant_id__grant_id"],
+                row["fiscal_year"],
+            )
+        ] = (
+            _money(reviewed_total)
+            if reviewed_total is not None
+            else None
+        )
+
+    subsequent_snapshots = {}
+
+    for row in (
+        SubsequentFiscalBreakdown.objects
+        .filter(
+            grant_id__grant_id__in=both_grant_ids
+        )
+        .values(
+            "grant_id__grant_id",
+            "fiscal_year",
+            "reviewed_total_subsequent_adjustment",
+        )
+    ):
+        reviewed_total = row[
+            "reviewed_total_subsequent_adjustment"
+        ]
+
+        subsequent_snapshots[
+            (
+                row["grant_id__grant_id"],
+                row["fiscal_year"],
+            )
+        ] = (
+            _money(reviewed_total)
+            if reviewed_total is not None
+            else None
+        )
+
+    accepted_negative_balance_snapshots = set()
+
+    for row in (
+        GrantFiscalExceptionReview.objects
+        .filter(
+            grant_id__in=grant_ids,
+            exception_type=(
+                GrantFiscalExceptionReview
+                .ExceptionType
+                .NEGATIVE_CONTRACT_BALANCE
+            ),
+        )
+        .values(
+            "grant_id",
+            "reviewed_contract_amount",
+            "reviewed_total_allowed_expenditure",
+            "reviewed_program_income",
+            "reviewed_program_income_treatment",
+            "reviewed_contract_balance",
+        )
+    ):
+        accepted_negative_balance_snapshots.add(
+            (
+                row["grant_id"],
+                _money(
+                    row["reviewed_contract_amount"]
+                ),
+                _money(
+                    row[
+                        "reviewed_total_allowed_expenditure"
+                    ]
+                ),
+                _money(
+                    row["reviewed_program_income"]
+                ),
+                row[
+                    "reviewed_program_income_treatment"
+                ],
+                _money(
+                    row["reviewed_contract_balance"]
+                ),
+            )
+        )
+
+    summaries = {}
+
+    for grant in grants:
+        grant_id = grant.grant_id
+
+        current_in_period = (
+            in_period_totals.get(
+                grant_id,
+                {},
+            )
+        )
+
+        current_subsequent = (
+            subsequent_totals.get(
+                grant_id,
+                {},
+            )
+        )
+
+        total_in_period = _money(
+            sum(
+                current_in_period.values(),
+                ZERO,
+            )
+        )
+
+        total_subsequent = _money(
+            sum(
+                current_subsequent.values(),
+                ZERO,
+            )
+        )
+
+        total_allowed_expenditure = _money(
+            total_in_period
+            + total_subsequent
+        )
+
+        total_program_income = (
+            program_income_totals.get(
+                grant_id,
+                ZERO,
+            )
+        )
+
+        contract_amount = _money(
+            grant.contract_amount
+        )
+
+        if (
+            grant.program_income_treatment
+            == Form1.ProgramIncomeTreatment.ADDITIVE
+        ):
+            contract_balance = _money(
+                contract_amount
+                + total_program_income
+                - total_allowed_expenditure
+            )
+        else:
+            contract_balance = _money(
+                contract_amount
+                - total_allowed_expenditure
+            )
+
+        reason_codes = []
+
+        if (
+            total_program_income != ZERO
+            and grant.program_income_treatment
+            == Form1.ProgramIncomeTreatment.NOT_RESEARCHED
+        ):
+            reason_codes.append(
+                "PROGRAM_INCOME_TREATMENT"
+            )
+
+        if contract_balance < ZERO:
+            current_snapshot = (
+                grant_id,
+                contract_amount,
+                total_allowed_expenditure,
+                total_program_income,
+                grant.program_income_treatment,
+                contract_balance,
+            )
+
+            if (
+                current_snapshot
+                not in accepted_negative_balance_snapshots
+            ):
+                reason_codes.append(
+                    "NEGATIVE_CONTRACT_BALANCE"
+                )
+
+        if (
+            grant.funding_sources
+            == Form1.FundingSource.BOTH
+        ):
+            in_period_needs_review = any(
+                in_period_snapshots.get(
+                    (
+                        grant_id,
+                        fiscal_year,
+                    )
+                )
+                != current_total
+                for fiscal_year, current_total
+                in current_in_period.items()
+            )
+
+            if in_period_needs_review:
+                reason_codes.append(
+                    "IN_PERIOD_ALLOCATION"
+                )
+
+            subsequent_needs_review = any(
+                subsequent_snapshots.get(
+                    (
+                        grant_id,
+                        fiscal_year,
+                    )
+                )
+                != current_total
+                for fiscal_year, current_total
+                in current_subsequent.items()
+            )
+
+            if subsequent_needs_review:
+                reason_codes.append(
+                    "SUBSEQUENT_ALLOCATION"
+                )
+
+        summaries[grant_id] = {
+            "needs_attention": bool(
+                reason_codes
+            ),
+            "issue_count": len(
+                reason_codes
+            ),
+            "reason_codes": reason_codes,
+        }
+
+    return summaries
