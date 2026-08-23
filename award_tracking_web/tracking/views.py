@@ -11,6 +11,7 @@ from .models import (
     SubsequentAdjustment,
     SubsequentFiscalBreakdown,
     ProgramIncome,
+    GrantFiscalExceptionReview,
 )
 from .fiscal_review import get_grant_fiscal_review
 
@@ -165,6 +166,20 @@ def grant_detail(request, grant_id):
     print(f"Grant object fetched: {grant}")
 
     fiscal_review = get_grant_fiscal_review(grant)
+
+    has_fiscal_exception_history = (
+        GrantFiscalExceptionReview.objects
+        .filter(
+            grant=grant,
+            exception_type=(
+                GrantFiscalExceptionReview
+                .ExceptionType
+                .NEGATIVE_CONTRACT_BALANCE
+            ),
+        )
+        .exists()
+    )
+
     can_request_change = user_has_any_role(
         request.user,
         ROLE_EDITOR,
@@ -340,6 +355,188 @@ def grant_detail(request, grant_id):
                 grant_id=grant_id,
             )
 
+        elif form_type == "accept_fiscal_exception":
+            if not can_edit_fiscal_data:
+                raise PermissionDenied
+
+            explanation = request.POST.get(
+                "exception_explanation",
+                "",
+            ).strip()
+
+            if not explanation:
+                messages.error(
+                    request,
+                    (
+                        "An explanation is required to accept "
+                        "a negative Contract Balance."
+                    ),
+                )
+                return redirect(
+                    "grant_detail",
+                    grant_id=grant_id,
+                )
+
+            fiscal_review = get_grant_fiscal_review(grant)
+
+            if fiscal_review["contract_balance"] >= Decimal("0.00"):
+                messages.error(
+                    request,
+                    (
+                        "The Contract Balance is no longer negative, "
+                        "so there is no exception to accept."
+                    ),
+                )
+                return redirect(
+                    "grant_detail",
+                    grant_id=grant_id,
+                )
+
+            if (
+                fiscal_review["current_negative_balance_exception"]
+                is not None
+            ):
+                messages.info(
+                    request,
+                    (
+                        "The current negative Contract Balance "
+                        "has already been accepted."
+                    ),
+                )
+                return redirect(
+                    "grant_detail",
+                    grant_id=grant_id,
+                )
+
+            GrantFiscalExceptionReview.objects.create(
+                grant=grant,
+                exception_type=(
+                    GrantFiscalExceptionReview
+                    .ExceptionType
+                    .NEGATIVE_CONTRACT_BALANCE
+                ),
+                reviewed_contract_amount=grant.contract_amount,
+                reviewed_total_allowed_expenditure=(
+                    fiscal_review[
+                        "contract_total_allowed_expenditure"
+                    ]
+                ),
+                reviewed_program_income=(
+                    fiscal_review["total_program_income"]
+                ),
+                reviewed_program_income_treatment=(
+                    grant.program_income_treatment
+                ),
+                reviewed_contract_balance=(
+                    fiscal_review["contract_balance"]
+                ),
+                explanation=explanation,
+                accepted_by=request.user,
+            )
+
+            messages.success(
+                request,
+                (
+                    "The current negative Contract Balance "
+                    "was accepted with an explanation."
+                ),
+            )
+
+            return redirect(
+                "grant_detail",
+                grant_id=grant_id,
+            )
+
+        elif form_type == "revise_fiscal_exception":
+            if not can_edit_fiscal_data:
+                raise PermissionDenied
+
+            explanation = request.POST.get(
+                "exception_explanation",
+                "",
+            ).strip()
+
+            if not explanation:
+                messages.error(
+                    request,
+                    (
+                        "An explanation is required to revise "
+                        "the accepted negative Contract Balance."
+                    ),
+                )
+                return redirect(
+                    "grant_detail",
+                    grant_id=grant_id,
+                )
+
+            fiscal_review = get_grant_fiscal_review(grant)
+
+            if fiscal_review["contract_balance"] >= Decimal("0.00"):
+                messages.error(
+                    request,
+                    (
+                        "The Contract Balance is no longer negative, "
+                        "so there is no current exception to revise."
+                    ),
+                )
+                return redirect(
+                    "grant_detail",
+                    grant_id=grant_id,
+                )
+
+            current_exception = fiscal_review[
+                "current_negative_balance_exception"
+            ]
+
+            if current_exception is None:
+                messages.error(
+                    request,
+                    (
+                        "The current negative Contract Balance "
+                        "has not yet been accepted. Please use "
+                        "Accept with Explanation instead."
+                    ),
+                )
+                return redirect(
+                    "grant_detail",
+                    grant_id=grant_id,
+                )
+
+            GrantFiscalExceptionReview.objects.create(
+                grant=grant,
+                exception_type=(
+                    GrantFiscalExceptionReview
+                    .ExceptionType
+                    .NEGATIVE_CONTRACT_BALANCE
+                ),
+                reviewed_contract_amount=grant.contract_amount,
+                reviewed_total_allowed_expenditure=(
+                    fiscal_review[
+                        "contract_total_allowed_expenditure"
+                    ]
+                ),
+                reviewed_program_income=(
+                    fiscal_review["total_program_income"]
+                ),
+                reviewed_program_income_treatment=(
+                    grant.program_income_treatment
+                ),
+                reviewed_contract_balance=(
+                    fiscal_review["contract_balance"]
+                ),
+                explanation=explanation,
+                accepted_by=request.user,
+            )
+
+            messages.success(
+                request,
+                "The accepted explanation was revised successfully.",
+            )
+
+            return redirect(
+                "grant_detail",
+                grant_id=grant_id,
+            )
 
         elif form_type == "fiscal":
 
@@ -971,10 +1168,43 @@ def grant_detail(request, grant_id):
         "contract_balance": contract_balance,
         "contract_balance_abs": contract_balance_abs,
         "fiscal_review": fiscal_review,
+        "has_fiscal_exception_history": has_fiscal_exception_history,
     }
 
     return render(request, 'tracking/grant_detail.html', context)
 
+
+@login_required
+def fiscal_exception_history(request, grant_id):
+    grant = get_object_or_404(
+        Form1,
+        grant_id=grant_id,
+    )
+
+    fiscal_exception_history = (
+        GrantFiscalExceptionReview.objects
+        .filter(
+            grant=grant,
+            exception_type=(
+                GrantFiscalExceptionReview
+                .ExceptionType
+                .NEGATIVE_CONTRACT_BALANCE
+            ),
+        )
+        .select_related("accepted_by")
+        .order_by("-accepted_at")
+    )
+
+    context = {
+        "grant": grant,
+        "fiscal_exception_history": fiscal_exception_history,
+    }
+
+    return render(
+        request,
+        "tracking/fiscal_exception_history.html",
+        context,
+    )
 
 
 from django.db.models import Q

@@ -191,8 +191,39 @@
         margin: 0;
         padding-left: 20px;
     }
+    .fiscal-exception-form textarea {
+        display: block;
+        width: 100%;
+        max-width: 700px;
+        min-height: 90px;
+        margin-top: 8px;
+        box-sizing: border-box;
+    }
     .needs-accountant-attention {
         color: #c62828;
+    }
+    .fiscal-exception-action-button {
+        background-color: #4CAF50;
+        color: white;
+    }
+    .fiscal-exception-edit-button {
+        background-color: #4CAF50;
+        color: white;
+    }
+
+    .fiscal-exception-edit-button:hover,
+    .fiscal-exception-action-button:hover {
+        background-color: #388E3C;
+    }
+
+    .audit-history-button {
+        background-color: #008CBA;
+        color: white;
+        text-decoration: none;
+    }
+
+    .audit-history-button:hover {
+        background-color: #005f8a;
     }
     </style>
 
@@ -459,7 +490,47 @@ document.addEventListener('DOMContentLoaded', function () {
         cancelButton.style.display = 'none';
         editButton.style.display = 'inline-block';
     }
+    function showFiscalExceptionAcceptance() {
+        const button = document.getElementById("add-explanation-button");
+        const form = document.getElementById("accept-fiscal-exception-form");
 
+        if (button && form) {
+            button.style.display = "none";
+            form.style.display = "block";
+        }
+    }
+
+    function cancelFiscalExceptionAcceptance() {
+        const button = document.getElementById("add-explanation-button");
+        const form = document.getElementById("accept-fiscal-exception-form");
+
+        if (button && form) {
+            form.reset();
+            form.style.display = "none";
+            button.style.display = "inline-block";
+        }
+    }
+
+    function showFiscalExceptionRevision() {
+        const button = document.getElementById("revise-explanation-button");
+        const form = document.getElementById("revise-fiscal-exception-form");
+
+        if (button && form) {
+            button.style.display = "none";
+            form.style.display = "block";
+        }
+    }
+
+    function cancelFiscalExceptionRevision() {
+        const button = document.getElementById("revise-explanation-button");
+        const form = document.getElementById("revise-fiscal-exception-form");
+
+        if (button && form) {
+            form.reset();
+            form.style.display = "none";
+            button.style.display = "inline-block";
+        }
+    }
     </script>
 
 
@@ -696,39 +767,7 @@ document.addEventListener('DOMContentLoaded', function () {
                                 {% endif %}
                             </td>
                         </tr>
-                        <tr>
-                            <td>
-                                <strong>Fiscal Review Status</strong>
-                            </td>
 
-                            <td>
-                                {% if fiscal_review.needs_attention %}
-                                    <strong class="needs-accountant-attention">
-                                        Needs Accountant Attention
-                                    </strong>
-                                {% else %}
-                                    No Accountant Attention Needed
-                                {% endif %}
-                            </td>
-                        </tr>
-
-                        {% if fiscal_review.needs_attention %}
-                            <tr>
-                                <td>
-                                    <strong>Attention Reasons</strong>
-                                </td>
-
-                                <td>
-                                    <ul class="fiscal-review-reasons">
-                                        {% for reason in fiscal_review.reasons %}
-                                            <li>
-                                                {{ reason.message }}
-                                            </li>
-                                        {% endfor %}
-                                    </ul>
-                                </td>
-                            </tr>
-                        {% endif %}
                     </tbody>
                 </table>
 
@@ -813,6 +852,183 @@ document.addEventListener('DOMContentLoaded', function () {
                     </div>
                 {% endif %}
             </form>
+
+            <h3>Fiscal Review</h3>
+
+            <table>
+                <tbody>
+                    <tr>
+                        <td>
+                            <strong>Fiscal Review Status</strong>
+                        </td>
+
+                        <td>
+                            {% if fiscal_review.needs_attention %}
+                                <strong class="needs-accountant-attention">
+                                    Needs Accountant Attention
+                                </strong>
+                            {% else %}
+                                No Accountant Attention Needed
+                            {% endif %}
+                        </td>
+                    </tr>
+
+                    {% if fiscal_review.needs_attention %}
+                        <tr>
+                            <td>
+                                <strong>Attention Reasons</strong>
+                            </td>
+
+                            <td>
+                                <ul class="fiscal-review-reasons">
+                                    {% for reason in fiscal_review.reasons %}
+                                        <li>
+                                            {{ reason.message }}
+                                        </li>
+                                    {% endfor %}
+                                </ul>
+                            </td>
+                        </tr>
+                    {% endif %}
+                </tbody>
+            </table>
+
+            {% if contract_balance < 0 or has_fiscal_exception_history %}
+                <h4>Negative Contract Balance Review</h4>
+
+                {% if contract_balance < 0 %}
+                    {% if fiscal_review.current_negative_balance_exception %}
+                        <p>
+                            <strong>Current Accepted Explanation:</strong>
+                            {{ fiscal_review.current_negative_balance_exception.explanation }}
+                        </p>
+
+                        {% if can_edit_fiscal_data %}
+                            <button
+                                type="button"
+                                id="revise-explanation-button"
+                                class="button-common fiscal-exception-edit-button"
+                                onclick="showFiscalExceptionRevision();"
+                            >
+                                Revise Explanation
+                            </button>
+
+                            <form
+                                id="revise-fiscal-exception-form"
+                                method="POST"
+                                action="{% url 'grant_detail' grant.grant_id %}"
+                                class="fiscal-exception-form"
+                                style="display:none;"
+                            >
+                                {% csrf_token %}
+
+                                <input
+                                    type="hidden"
+                                    name="form_type"
+                                    value="revise_fiscal_exception"
+                                >
+
+                                <label for="revised-exception-explanation">
+                                    <strong>Revise Explanation</strong>
+                                </label>
+
+                                <textarea
+                                    id="revised-exception-explanation"
+                                    name="exception_explanation"
+                                    required
+                                >{{ fiscal_review.current_negative_balance_exception.explanation }}</textarea>
+
+                                <div class="buttons">
+                                    <button
+                                        type="submit"
+                                        class="button-common fiscal-exception-action-button"
+                                    >
+                                        Save Revised Explanation
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        class="button-common cancel-button"
+                                        onclick="cancelFiscalExceptionRevision();"
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                            </form>
+                        {% endif %}
+
+                    {% else %}
+                        <p>
+                            The current negative Contract Balance has not
+                            yet been accepted with an explanation.
+                        </p>
+
+                        {% if can_edit_fiscal_data %}
+                            <button
+                                type="button"
+                                id="add-explanation-button"
+                                class="button-common fiscal-exception-edit-button"
+                                onclick="showFiscalExceptionAcceptance();"
+                            >
+                                Add Explanation
+                            </button>
+
+                            <form
+                                id="accept-fiscal-exception-form"
+                                method="POST"
+                                action="{% url 'grant_detail' grant.grant_id %}"
+                                class="fiscal-exception-form"
+                                style="display:none;"
+                            >
+                                {% csrf_token %}
+
+                                <input
+                                    type="hidden"
+                                    name="form_type"
+                                    value="accept_fiscal_exception"
+                                >
+
+                                <label for="exception-explanation">
+                                    <strong>Explanation</strong>
+                                </label>
+
+                                <textarea
+                                    id="exception-explanation"
+                                    name="exception_explanation"
+                                    required
+                                ></textarea>
+
+                                <div class="buttons">
+                                    <button
+                                        type="submit"
+                                        class="button-common fiscal-exception-action-button"
+                                    >
+                                        Accept with Explanation
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        class="button-common cancel-button"
+                                        onclick="cancelFiscalExceptionAcceptance();"
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                            </form>
+                        {% endif %}
+                    {% endif %}
+                {% endif %}
+
+                {% if has_fiscal_exception_history %}
+                    <a
+                        href="{% url 'fiscal_exception_history' grant.grant_id %}"
+                        target="_blank"
+                        class="button-common audit-history-button"
+                    >
+                        Audit History
+                    </a>
+                {% endif %}
+            {% endif %}
 
             <h3>In-Period Expenditure</h3>
 

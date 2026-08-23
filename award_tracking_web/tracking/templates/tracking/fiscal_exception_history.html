@@ -1,0 +1,192 @@
+{% load humanize %}
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Fiscal Exception Audit History</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 1200px;
+            margin: auto;
+        }
+
+        .grant-summary {
+            margin-bottom: 25px;
+        }
+
+        .grant-summary p {
+            margin: 6px 0;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+
+        th,
+        td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            vertical-align: top;
+        }
+
+        th {
+            background-color: #f2f2f2;
+            text-align: left;
+        }
+
+        td.number,
+        th.number {
+            text-align: right;
+        }
+
+        .buttons {
+            margin-top: 25px;
+            display: flex;
+            gap: 10px;
+        }
+
+        .button-common {
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            cursor: pointer;
+            border-radius: 5px;
+            text-decoration: none;
+            display: inline-block;
+        }
+
+        .back-button {
+            background-color: #4CAF50;
+        }
+
+        .back-button:hover {
+            background-color: #388E3C;
+        }
+
+        .close-window-button {
+            background-color: #008CBA;
+        }
+
+        .close-window-button:hover {
+            background-color: #005f8a;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h2>Fiscal Exception Audit History</h2>
+
+        <div class="grant-summary">
+            <p>
+                <strong>Grant ID:</strong>
+                {{ grant.grant_id }}
+            </p>
+
+            <p>
+                <strong>Program Title:</strong>
+                {{ grant.program_title }}
+            </p>
+
+            <p>
+                <strong>Contracting Agency:</strong>
+                {{ grant.contracting_agency }}
+            </p>
+
+            <p>
+                <strong>Contract Number:</strong>
+                {{ grant.contract_number }}
+            </p>
+        </div>
+
+        {% if fiscal_exception_history %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Accepted At</th>
+                        <th>Accepted By</th>
+                        <th class="number">Contract Amount</th>
+                        <th class="number">Total Allowed Expenditure</th>
+                        <th class="number">Program Income</th>
+                        <th>Program Income Treatment</th>
+                        <th class="number">Contract Balance</th>
+                        <th>Explanation</th>
+                    </tr>
+                </thead>
+
+                <tbody>
+                    {% for review in fiscal_exception_history %}
+                        <tr>
+                            <td>
+                                {{ review.accepted_at|date:"Y-m-d H:i" }}
+                            </td>
+
+                            <td>
+                                {{ review.accepted_by }}
+                            </td>
+
+                            <td class="number">
+                                {{ review.reviewed_contract_amount|floatformat:2|intcomma }}
+                            </td>
+
+                            <td class="number">
+                                {{ review.reviewed_total_allowed_expenditure|floatformat:2|intcomma }}
+                            </td>
+
+                            <td class="number">
+                                {{ review.reviewed_program_income|floatformat:2|intcomma }}
+                            </td>
+
+                            <td>
+                                {{ review.get_reviewed_program_income_treatment_display }}
+                            </td>
+
+                            <td class="number">
+                                {% if review.reviewed_contract_balance < 0 %}
+                                    ({{ review.reviewed_contract_balance|floatformat:2|intcomma|cut:"-" }})
+                                {% else %}
+                                    {{ review.reviewed_contract_balance|floatformat:2|intcomma }}
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                {{ review.explanation }}
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <p>
+                No Fiscal Exception review history is available for this grant.
+            </p>
+        {% endif %}
+
+        <div class="buttons">
+            <a
+                href="{% url 'grant_detail' grant.grant_id %}"
+                class="button-common back-button"
+            >
+                Back to Grant Detail
+            </a>
+
+            <button
+                type="button"
+                class="button-common close-window-button"
+                onclick="window.close();"
+            >
+                Close Window
+            </button>
+        </div>
+    </div>
+</body>
+</html>
