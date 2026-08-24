@@ -2,6 +2,25 @@ from django import forms
 from .models import Form1
 from django.core.exceptions import ValidationError
 import re
+
+GRANT_BASIC_INFORMATION_CHANGE_FIELDS = (
+    "program_title",
+    "contracting_agency",
+    "contract_number",
+    "amendment_no",
+    "contract_start_date",
+    "contract_end_date",
+    "contract_amount",
+    "funding_sources",
+    "federal_information_status",
+    "federal_grantor",
+    "federal_aln",
+    "internal_award_code",
+    "internal_gl_start_date",
+    "internal_gl_end_date",
+)
+
+
 class GrantForm(forms.ModelForm):
     # Define extra fields for 'Add New' options
     new_program_title = forms.CharField(required=False, label='New Program Title')
@@ -103,7 +122,8 @@ class GrantForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         if not self.is_bound and not self.instance.pk:
             self.fields["amendment_no"].initial = 0
-            self.fields["status"].initial = "active"
+            if "status" in self.fields:
+                self.fields["status"].initial = "active"
         # Get current choices from the database and handle None values
         program_titles = sorted(pt for pt in Form1.objects.values_list('program_title', flat=True).distinct() if pt)
         contracting_agencies = sorted(
@@ -297,6 +317,29 @@ class GrantForm(forms.ModelForm):
         return cleaned_data
 
 
+class GrantBasicInformationChangeForm(GrantForm):
+    """
+    Validates proposed changes to an existing grant without saving Form1.
 
+    The authoritative Form1 record is updated only after the change request
+    receives the required approvals.
+    """
+
+    class Meta(GrantForm.Meta):
+        fields = GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+
+    def clean(self):
+        cleaned_data = super().clean()
+
+        # Form1.status is obsolete and is intentionally excluded from
+        # the Basic Information change-request workflow.
+        cleaned_data.pop("status", None)
+
+        return cleaned_data
+
+    def save(self, *args, **kwargs):
+        raise RuntimeError(
+            "GrantBasicInformationChangeForm must not save Form1 directly."
+        )
 
 

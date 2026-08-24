@@ -1,9 +1,9 @@
 from django.core.exceptions import PermissionDenied
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import render, get_object_or_404, redirect
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Sum, Max
-
+from django.core import signing
 from .models import (
     Form1,
     GLExpenditure,
@@ -12,6 +12,8 @@ from .models import (
     SubsequentFiscalBreakdown,
     ProgramIncome,
     GrantFiscalExceptionReview,
+    ChangeRequest,
+    ChangeRequestField,
 )
 from .fiscal_review import (
     get_grant_fiscal_review,
@@ -25,7 +27,11 @@ from .permissions import (
     role_required,
     user_has_any_role,
 )
-from .forms import GrantForm
+from .forms import (
+    GRANT_BASIC_INFORMATION_CHANGE_FIELDS,
+    GrantBasicInformationChangeForm,
+    GrantForm,
+)
 from django.core.files.storage import default_storage
 import pandas as pd
 from datetime import datetime, date
@@ -93,6 +99,25 @@ def grant_list(request):
         "user_roles": user_roles,
     }
     return render(request, 'tracking/grant_list.html', context)
+
+
+def serialize_change_request_value(value):
+    """
+    Convert Basic Information values to stable text for audit storage.
+
+    ChangeRequestField.proposed_value uses NULL to mean "unchanged",
+    so an actual blank proposed value is stored as an empty string.
+    """
+    if value is None:
+        return ""
+
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+
+    if isinstance(value, Decimal):
+        return format(value, "f")
+
+    return str(value)
 
 
 @login_required
@@ -1110,6 +1135,273 @@ def grant_detail(request, grant_id):
     }
 
     return render(request, 'tracking/grant_detail.html', context)
+
+
+@role_required(ROLE_EDITOR)
+def create_grant_change_request(request, grant_id):
+    grant = get_object_or_404(Form1, grant_id=grant_id)
+
+    active_request = (
+        ChangeRequest.objects
+        .filter(
+            grant_id=grant_id,
+            status__in=[
+                ChangeRequest.Status.PENDING,
+                ChangeRequest.Status.RETURNED,
+            ],
+        )
+        .first()
+    )
+
+    if active_request:
+        messages.error(
+            request,
+            (
+                "This grant already has an active Basic Information "
+                "Change Request."
+            ),
+        )
+        return redirect(
+            "grant_detail",
+            grant_id=grant_id,
+        )
+
+    # Capture the authoritative values BEFORE binding/validating the
+    # ModelForm. ModelForm validation may update its instance in memory.
+    current_values = {
+        field_name: serialize_change_request_value(
+            getattr(grant, field_name)
+        )
+        for field_name in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    }
+
+    snapshot_salt = "tracking.grant_basic_information_change"
+
+    if request.method == "POST":
+        submitted_snapshot_token = request.POST.get(
+            "snapshot_token",
+            "",
+        )
+
+        try:
+            opened_values = signing.loads(
+                submitted_snapshot_token,
+                salt=snapshot_salt,
+            )
+        except signing.BadSignature:
+            messages.error(
+                request,
+                (
+                    "The Change Request form could not be verified. "
+                    "Please reopen it and try again."
+                ),
+            )
+            return redirect(
+                "create_grant_change_request",
+                grant_id=grant_id,
+            )
+
+        if opened_values != current_values:
+            messages.error(
+                request,
+                (
+                    "Grant Basic Information changed after this form "
+                    "was opened. Please review the current values "
+                    "before submitting a Change Request."
+                ),
+            )
+            return redirect(
+                "create_grant_change_request",
+                grant_id=grant_id,
+            )
+
+        form = GrantBasicInformationChangeForm(
+            request.POST,
+            instance=grant,
+        )
+
+        if form.is_valid():
+            proposed_values = {
+                field_name: serialize_change_request_value(
+                    form.cleaned_data.get(field_name)
+                )
+                for field_name in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+            }
+
+            # Validate the proposed Award Code / GL date range against
+            # authoritative grants. This same validation will be repeated
+            # before final approval is applied.
+            overlapping_grants = (
+                Form1.objects
+                .filter(
+                    internal_award_code=form.cleaned_data[
+                        "internal_award_code"
+                    ],
+                    internal_gl_end_date__gte=form.cleaned_data[
+                        "internal_gl_start_date"
+                    ],
+                    internal_gl_start_date__lte=form.cleaned_data[
+                        "internal_gl_end_date"
+                    ],
+                )
+                .exclude(grant_id=grant_id)
+                .order_by("grant_id")
+            )
+
+            if overlapping_grants.exists():
+                conflicting_grant_ids = ", ".join(
+                    overlapping_grants.values_list(
+                        "grant_id",
+                        flat=True,
+                    )
+                )
+
+                form.add_error(
+                    "internal_gl_end_date",
+                    (
+                        "The proposed Internal Award Code and GL date "
+                        "range overlap with: "
+                        f"{conflicting_grant_ids}."
+                    ),
+                )
+            else:
+                field_snapshots = []
+
+                for field_name in (
+                    GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+                ):
+                    current_value = current_values[field_name]
+                    proposed_value = proposed_values[field_name]
+
+                    if proposed_value == current_value:
+                        stored_proposed_value = None
+                    else:
+                        stored_proposed_value = proposed_value
+
+                    field_snapshots.append(
+                        {
+                            "field_name": field_name,
+                            "current_value": current_value,
+                            "proposed_value": stored_proposed_value,
+                        }
+                    )
+
+                has_changes = any(
+                    snapshot["proposed_value"] is not None
+                    for snapshot in field_snapshots
+                )
+
+                if not has_changes:
+                    form.add_error(
+                        None,
+                        "No Basic Information changes were entered.",
+                    )
+                else:
+                    try:
+                        with transaction.atomic():
+                            # Recheck inside the transaction. The database
+                            # constraint is the final protection against a
+                            # concurrent second active request.
+                            if (
+                                ChangeRequest.objects
+                                .filter(
+                                    grant_id=grant_id,
+                                    status__in=[
+                                        ChangeRequest.Status.PENDING,
+                                        ChangeRequest.Status.RETURNED,
+                                    ],
+                                )
+                                .exists()
+                            ):
+                                messages.error(
+                                    request,
+                                    (
+                                        "This grant already has an active "
+                                        "Basic Information Change Request."
+                                    ),
+                                )
+                                return redirect(
+                                    "grant_detail",
+                                    grant_id=grant_id,
+                                )
+
+                            change_request = ChangeRequest.objects.create(
+                                grant_id=grant_id,
+                                request_type=(
+                                    ChangeRequest
+                                    .RequestType
+                                    .EDIT_GRANT
+                                ),
+                                status=ChangeRequest.Status.PENDING,
+                                current_revision=1,
+                                submitted_by=request.user,
+                            )
+
+                            ChangeRequestField.objects.bulk_create(
+                                [
+                                    ChangeRequestField(
+                                        change_request=change_request,
+                                        revision_no=1,
+                                        field_name=snapshot[
+                                            "field_name"
+                                        ],
+                                        current_value=snapshot[
+                                            "current_value"
+                                        ],
+                                        proposed_value=snapshot[
+                                            "proposed_value"
+                                        ],
+                                    )
+                                    for snapshot in field_snapshots
+                                ]
+                            )
+
+                    except IntegrityError:
+                        messages.error(
+                            request,
+                            (
+                                "Another active Change Request was "
+                                "created for this grant. Please review "
+                                "the existing request."
+                            ),
+                        )
+                        return redirect(
+                            "grant_detail",
+                            grant_id=grant_id,
+                        )
+
+                    messages.success(
+                        request,
+                        (
+                            "Basic Information Change Request "
+                            "submitted for approval."
+                        ),
+                    )
+                    return redirect(
+                        "grant_detail",
+                        grant_id=grant_id,
+                    )
+
+    else:
+        form = GrantBasicInformationChangeForm(
+            instance=grant,
+        )
+
+    snapshot_token = signing.dumps(
+        current_values,
+        salt=snapshot_salt,
+    )
+
+    return render(
+        request,
+        "tracking/grant_change_request_form.html",
+        {
+            "grant": grant,
+            "form": form,
+            "snapshot_token": snapshot_token,
+            "current_values": current_values,
+        },
+    )
 
 
 @login_required

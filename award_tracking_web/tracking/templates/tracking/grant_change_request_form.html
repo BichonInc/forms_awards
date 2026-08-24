@@ -1,0 +1,511 @@
+{% load custom_filters %}
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Propose Grant Basic Information Changes</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        .container {
+            width: 100%;
+            max-width: 900px; /* Increased the width of the container */
+            margin: auto;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: inline-block;
+            width: 200px;
+            font-weight: bold;
+        }
+        input, select {
+            width: 300px; /* Added width for input and select to match better */
+        }
+        .form-group select, .form-group input[type="text"] {
+            display: inline-block;
+        }
+        .form-group input[type="text"] {
+            display: inline-block; /* Ensure text inputs are displayed */
+            margin-left: 10px;
+        }
+        .buttons {
+            margin-top: 20px;
+        }
+        #save-button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            cursor: pointer;
+        }
+        #back-button {
+            margin-left: 20px;
+            text-decoration: none;
+            padding: 10px 20px;
+            background-color: #008CBA;
+            color: white;
+            border-radius: 5px;
+        }
+        .messages {
+            margin-bottom: 20px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .messages.error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .messages.success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .messages.info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+        }
+        .error-message {
+            color: red;
+            font-size: 0.9em;
+            margin-top: 5px;
+        }
+
+    </style>
+    <script>
+    document.addEventListener("DOMContentLoaded", function () {
+        const addNewPairs = [
+            ["id_program_title", "id_new_program_title"],
+            ["id_contracting_agency", "id_new_contracting_agency"],
+            ["id_federal_grantor", "id_new_federal_grantor"],
+            ["id_federal_aln", "id_new_federal_aln"],
+        ];
+
+        function configureAddNewField(selectId, inputId) {
+            const selectElement = document.getElementById(selectId);
+            const inputElement = document.getElementById(inputId);
+
+            if (!selectElement || !inputElement) {
+                return;
+            }
+
+            function updateAddNewField() {
+                const showInput = selectElement.value === "Add New";
+
+                inputElement.style.display = showInput
+                    ? "inline-block"
+                    : "none";
+
+                inputElement.required = showInput;
+
+                if (!showInput) {
+                    inputElement.value = "";
+                }
+            }
+
+            selectElement.addEventListener(
+                "change",
+                updateAddNewField
+            );
+
+            updateAddNewField();
+        }
+
+        addNewPairs.forEach(function (pair) {
+            configureAddNewField(pair[0], pair[1]);
+        });
+
+        const fundingField = document.getElementById(
+            "id_funding_sources"
+        );
+        const statusField = document.getElementById(
+            "id_federal_information_status"
+        );
+        const notApplicableOption = statusField
+            ? statusField.querySelector(
+                'option[value="NOT_APPLICABLE"]'
+            )
+            : null;
+
+        const statusGroup = document.getElementById(
+            "federal-status-group"
+        );
+        const grantorGroup = document.getElementById(
+            "federal-grantor-group"
+        );
+        const alnGroup = document.getElementById(
+            "federal-aln-group"
+        );
+
+        const grantorField = document.getElementById(
+            "id_federal_grantor"
+        );
+        const newGrantorField = document.getElementById(
+            "id_new_federal_grantor"
+        );
+        const alnField = document.getElementById(
+            "id_federal_aln"
+        );
+        const newAlnField = document.getElementById(
+            "id_new_federal_aln"
+        );
+
+        function hasServerError(group) {
+            return (
+                group &&
+                group.querySelector(
+                    ".error-message, .errorlist"
+                )
+            );
+        }
+
+        function setGroupVisibility(group, visible) {
+            if (!group) {
+                return;
+            }
+
+            group.style.display = (
+                visible || hasServerError(group)
+            )
+                ? "block"
+                : "none";
+        }
+
+        function setFieldsDisabled(fields, disabled) {
+            fields.forEach(function (field) {
+                if (field) {
+                    field.disabled = disabled;
+                }
+            });
+        }
+
+        function clearFields(fields) {
+            fields.forEach(function (field) {
+                if (field) {
+                    field.value = "";
+                }
+            });
+        }
+
+        function updateFederalFields() {
+            if (!fundingField || !statusField) {
+                return;
+            }
+
+            const fundingValue = fundingField.value;
+
+            if (fundingValue === "") {
+                if (notApplicableOption) {
+                    notApplicableOption.disabled = true;
+                    notApplicableOption.hidden = true;
+                }
+                statusField.value = "";
+
+                setGroupVisibility(statusGroup, false);
+                setGroupVisibility(grantorGroup, false);
+                setGroupVisibility(alnGroup, false);
+
+                setFieldsDisabled([
+                    grantorField,
+                    newGrantorField,
+                    alnField,
+                    newAlnField,
+                ], true);
+
+                return;
+            }
+
+            if (fundingValue === "NONFEDERAL") {
+                if (notApplicableOption) {
+                    notApplicableOption.disabled = false;
+                    notApplicableOption.hidden = false;
+                }
+                statusField.value = "NOT_APPLICABLE";
+
+                setGroupVisibility(statusGroup, false);
+                setGroupVisibility(grantorGroup, false);
+                setGroupVisibility(alnGroup, false);
+
+                clearFields([
+                    grantorField,
+                    newGrantorField,
+                    alnField,
+                    newAlnField,
+                ]);
+
+                setFieldsDisabled([
+                    grantorField,
+                    newGrantorField,
+                    alnField,
+                    newAlnField,
+                ], true);
+
+                return;
+            }
+            if (notApplicableOption) {
+                notApplicableOption.disabled = true;
+                notApplicableOption.hidden = true;
+            }
+            /*
+            * FEDERAL, BOTH, and REVIEW_REQUIRED all use
+            * Federal Information Status.
+            *
+            * If the user changes from NONFEDERAL to one
+            * of these choices, clear the automatically
+            * assigned NOT_APPLICABLE status.
+            */
+            if (statusField.value === "NOT_APPLICABLE") {
+                statusField.value = "";
+            }
+
+            setGroupVisibility(statusGroup, true);
+
+            setFieldsDisabled([
+                grantorField,
+                newGrantorField,
+                alnField,
+                newAlnField,
+            ], false);
+
+            const federalStatus = statusField.value;
+
+            if (federalStatus === "NO_ALN") {
+                setGroupVisibility(grantorGroup, true);
+                setGroupVisibility(alnGroup, false);
+
+                if (!hasServerError(alnGroup)) {
+                    clearFields([
+                        alnField,
+                        newAlnField,
+                    ]);
+
+                    setFieldsDisabled([
+                        alnField,
+                        newAlnField,
+                    ], true);
+                }
+
+            } else if (
+                federalStatus === "PENDING" ||
+                federalStatus === "COMPLETE"
+            ) {
+                setGroupVisibility(grantorGroup, true);
+                setGroupVisibility(alnGroup, true);
+
+            } else {
+                setGroupVisibility(grantorGroup, false);
+                setGroupVisibility(alnGroup, false);
+            }
+        }
+
+        if (fundingField) {
+            fundingField.addEventListener(
+                "change",
+                updateFederalFields
+            );
+        }
+
+        if (statusField) {
+            statusField.addEventListener(
+                "change",
+                updateFederalFields
+            );
+        }
+
+        updateFederalFields();
+        const grantForm = document.getElementById(
+            "grant-change-request-form"
+        );
+        const saveButton = document.getElementById(
+            "save-button"
+        );
+
+        let formIsSubmitting = false;
+
+        if (grantForm && saveButton) {
+            grantForm.addEventListener("submit", function (event) {
+                if (formIsSubmitting) {
+                    event.preventDefault();
+                    return;
+                }
+
+                formIsSubmitting = true;
+                saveButton.disabled = true;
+                saveButton.textContent = "Submitting...";
+            });
+        }
+    });
+</script>
+</head>
+<body>
+    <div class="container">
+        <h1>Propose Grant Basic Information Changes</h1>
+        <p>
+            <strong>Grant ID:</strong> {{ grant.grant_id }}<br>
+            <strong>Program Title:</strong> {{ current_values.program_title }}<br>
+            <strong>Contracting Agency:</strong> {{ current_values.contracting_agency }}<br>
+            <strong>Contract Number:</strong> {{ current_values.contract_number }}
+        </p>
+        {% if messages %}
+            <div class="messages-container">
+                {% for message in messages %}
+                    <div class="messages {{ message.tags }}">
+                        {{ message }}
+                    </div>
+                {% endfor %}
+            </div>
+        {% endif %}
+
+        <form
+            method="post"
+            action="{% url 'create_grant_change_request' grant.grant_id %}"
+            id="grant-change-request-form"
+        >
+            {% csrf_token %}
+            <input
+                type="hidden"
+                name="snapshot_token"
+                value="{{ snapshot_token }}"
+            >
+            {% if form.non_field_errors %}
+                <div class="error-message">
+                    {{ form.non_field_errors }}
+                </div>
+            {% endif %}
+
+            <div class="form-group">
+                <label>Program Title:</label>
+                {{ form.program_title }}
+                {{ form.new_program_title }}
+            </div>
+            <div class="form-group">
+                <label>Contracting Agency:</label>
+                {{ form.contracting_agency }}
+                {{ form.new_contracting_agency }}
+            </div>
+            <div class="form-group">
+                <label>Contract Number:</label>
+                {{ form.contract_number }}
+            </div>
+            <div class="form-group">
+                <label>Amendment Number:</label>
+                {{ form.amendment_no }}
+                {% if form.amendment_no.errors %}
+                    <div class="error-message">
+                        {{ form.amendment_no.errors }}
+                    </div>
+                {% endif %}
+                <div class="help-text">
+                    Enter 0 for the original contract.
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Contract Start Date:</label>
+                {{ form.contract_start_date }}
+            </div>
+            <div class="form-group">
+                <label>Contract End Date:</label>
+                {{ form.contract_end_date }}
+                {% if form.contract_end_date.errors %}
+                    <div class="error-message">
+                        {{ form.contract_end_date.errors }}
+                    </div>
+                {% endif %}
+            </div>
+            <div class="form-group">
+                <label>Contract Amount:</label>
+                {{ form.contract_amount }}
+            </div>
+            <div class="form-group">
+                <label>Funding Sources:</label>
+                {{ form.funding_sources }}
+                {% if form.funding_sources.errors %}
+                    <div class="error-message">
+                        {{ form.funding_sources.errors }}
+                    </div>
+                {% endif %}
+            </div>
+            <div class="form-group" id="federal-status-group">
+                <label>Federal Information Status:</label>
+                {{ form.federal_information_status }}
+                {% if form.federal_information_status.errors %}
+                    <div class="error-message">
+                        {{ form.federal_information_status.errors }}
+                    </div>
+                {% endif %}
+            </div>
+            <div class="form-group" id="federal-grantor-group">
+                <label>Federal Grantor:</label>
+                {{ form.federal_grantor }}
+                {{ form.new_federal_grantor }}
+
+                {% if form.federal_grantor.errors %}
+                    <div class="error-message">
+                        {{ form.federal_grantor.errors }}
+                    </div>
+                {% endif %}
+
+                {% if form.new_federal_grantor.errors %}
+                    <div class="error-message">
+                        {{ form.new_federal_grantor.errors }}
+                    </div>
+                {% endif %}
+            </div>
+
+            <div class="form-group" id="federal-aln-group">
+                <label>Federal ALN:</label>
+                {{ form.federal_aln }}
+                {{ form.new_federal_aln }}
+                {% if form.federal_aln.errors %}
+                    <div class="error-message">
+                        {{ form.federal_aln.errors }}
+                    </div>
+                {% endif %}
+                {% if form.new_federal_aln.errors %}
+                    <div class="error-message">
+                        {{ form.new_federal_aln.errors }}
+                    </div>
+                {% endif %}
+            </div>
+
+            <div class="form-group">
+                <label>Internal Award Code:</label>
+                {{ form.internal_award_code }}
+                {% if form.internal_award_code.errors %}
+                    <div class="error-message">
+                        {{ form.internal_award_code.errors }}
+                    </div>
+                {% endif %}
+            </div>
+
+            <div class="form-group">
+                <label>Internal GL Start Date:</label>
+                {{ form.internal_gl_start_date }}
+            </div>
+            <div class="form-group">
+                <label>Internal GL End Date:</label>
+                {{ form.internal_gl_end_date }}
+                {% if form.internal_gl_end_date.errors %}
+                    <div class="error-message">
+                        {{ form.internal_gl_end_date.errors }}
+                    </div>
+                {% endif %}
+            </div>
+
+            <div class="buttons">
+                <button type="submit" id="save-button">
+                    Submit Change Request
+                </button>
+
+                <a
+                    href="{% url 'grant_detail' grant.grant_id %}"
+                    id="back-button"
+                >
+                    Cancel
+                </a>
+            </div>
+        </form>
+    </div>
+</body>
+</html>

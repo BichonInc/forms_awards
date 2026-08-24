@@ -9,6 +9,11 @@ urlpatterns = [
         views.fiscal_exception_history,
         name='fiscal_exception_history',
     ),
+    path(
+        'grants/<str:grant_id>/change-request/new/',
+        views.create_grant_change_request,
+        name='create_grant_change_request',
+    ),
     path('grants/<str:grant_id>/', views.grant_detail, name='grant_detail'),
     path('refresh_gl_expenditure/', views.refresh_gl_expenditure, name='refresh_gl_expenditure'),
     path('refresh_subsequent_adjustment/', views.refresh_subsequent_adjustment, name='refresh_subsequent_adjustment'),  # Add this line
