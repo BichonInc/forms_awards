@@ -353,6 +353,18 @@ class ChangeRequest(models.Model):
 
     class Meta:
         db_table = "change_request"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["grant_id"],
+                condition=models.Q(
+                    status__in=[
+                        "PENDING",
+                        "RETURNED",
+                    ]
+                ),
+                name="unique_active_change_request_per_grant",
+            )
+        ]
 
     def __str__(self):
         return (

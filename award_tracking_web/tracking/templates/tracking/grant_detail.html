@@ -597,6 +597,13 @@ document.addEventListener('DOMContentLoaded', function () {
                 </div>
 
                 <div class="form-group">
+                    <label>Amendment No.:</label>
+                    <span class="basic-view-field">
+                        {{ grant.amendment_no }}
+                    </span>
+                </div>
+
+                <div class="form-group">
                     <label>Contract Start Date:</label>
                     <span class="basic-view-field">{{ grant.contract_start_date|date:"Y-m-d" }}</span>
                     <input class="basic-edit-field" type="date" name="contract_start_date" value="{{ grant.contract_start_date|date:'Y-m-d' }}" readonly oninput="enableSaveButtonBasic();">
