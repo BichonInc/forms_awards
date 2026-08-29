@@ -319,14 +319,60 @@ class GrantFiscalExceptionReview(models.Model):
         )
 
 
+class CoordinatedChange(models.Model):
+    class Status(models.TextChoices):
+        DRAFT = "DRAFT", "Draft"
+        PENDING = "PENDING", "Pending"
+        RETURNED = "RETURNED", "Returned for Revision"
+        APPLIED = "APPLIED", "Applied"
+        DENIED = "DENIED", "Denied"
+
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.DRAFT,
+    )
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="coordinated_changes_created",
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    submitted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    applied_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        db_table = "coordinated_change"
+
+    def __str__(self):
+        return (
+            f"Coordinated Change {self.id} "
+            f"({self.get_status_display()})"
+        )
+
+
 class ChangeRequest(models.Model):
     class RequestType(models.TextChoices):
         NEW_GRANT = "NEW_GRANT", "New Grant"
         EDIT_GRANT = "EDIT_GRANT", "Edit Grant"
 
     class Status(models.TextChoices):
+        DRAFT = "DRAFT", "Draft"
         PENDING = "PENDING", "Pending"
         RETURNED = "RETURNED", "Returned for Revision"
+        READY = "READY", "Approved - Waiting to Apply"
         DENIED = "DENIED", "Denied"
         APPROVED = "APPROVED", "Approved"
 
@@ -343,6 +389,13 @@ class ChangeRequest(models.Model):
         choices=Status.choices,
         default=Status.PENDING,
     )
+    coordinated_change = models.ForeignKey(
+        CoordinatedChange,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="change_requests",
+    )
     current_revision = models.PositiveIntegerField(default=1)
     submitted_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -358,8 +411,10 @@ class ChangeRequest(models.Model):
                 fields=["grant_id"],
                 condition=models.Q(
                     status__in=[
+                        "DRAFT",
                         "PENDING",
                         "RETURNED",
+                        "READY",
                     ]
                 ),
                 name="unique_active_change_request_per_grant",
