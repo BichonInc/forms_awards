@@ -15,6 +15,8 @@ from .models import (
     ChangeRequest,
     ChangeRequestField,
     ChangeAction,
+    CHANGE_REQUEST_BLOCKING_STATUSES,
+    CHANGE_REQUEST_SUBMITTED_STATUSES,
 )
 from .fiscal_review import (
     get_grant_fiscal_review,
@@ -194,14 +196,17 @@ def grant_detail(request, grant_id):
         ROLE_APPROVER,
     )
 
+    active_change_request_statuses = (
+        CHANGE_REQUEST_BLOCKING_STATUSES
+        if can_request_change
+        else CHANGE_REQUEST_SUBMITTED_STATUSES
+    )
+
     active_change_request = (
         ChangeRequest.objects
         .filter(
             grant_id=grant_id,
-            status__in=[
-                ChangeRequest.Status.PENDING,
-                ChangeRequest.Status.RETURNED,
-            ],
+            status__in=active_change_request_statuses,
         )
         .order_by("-submitted_at", "-id")
         .first()
@@ -1206,10 +1211,7 @@ def create_grant_change_request(request, grant_id):
         ChangeRequest.objects
         .filter(
             grant_id=grant_id,
-            status__in=[
-                ChangeRequest.Status.PENDING,
-                ChangeRequest.Status.RETURNED,
-            ],
+            status__in=CHANGE_REQUEST_BLOCKING_STATUSES,
         )
         .first()
     )
@@ -1367,10 +1369,7 @@ def create_grant_change_request(request, grant_id):
                                 ChangeRequest.objects
                                 .filter(
                                     grant_id=grant_id,
-                                    status__in=[
-                                        ChangeRequest.Status.PENDING,
-                                        ChangeRequest.Status.RETURNED,
-                                    ],
+                                    status__in=CHANGE_REQUEST_BLOCKING_STATUSES,
                                 )
                                 .exists()
                             ):

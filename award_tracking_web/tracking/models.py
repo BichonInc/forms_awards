@@ -363,6 +363,20 @@ class CoordinatedChange(models.Model):
         )
 
 
+CHANGE_REQUEST_BLOCKING_STATUSES = (
+    "DRAFT",
+    "PENDING",
+    "RETURNED",
+    "READY",
+)
+
+CHANGE_REQUEST_SUBMITTED_STATUSES = (
+    "PENDING",
+    "RETURNED",
+    "READY",
+)
+
+
 class ChangeRequest(models.Model):
     class RequestType(models.TextChoices):
         NEW_GRANT = "NEW_GRANT", "New Grant"
@@ -410,12 +424,9 @@ class ChangeRequest(models.Model):
             models.UniqueConstraint(
                 fields=["grant_id"],
                 condition=models.Q(
-                    status__in=[
-                        "DRAFT",
-                        "PENDING",
-                        "RETURNED",
-                        "READY",
-                    ]
+                    status__in=list(
+                        CHANGE_REQUEST_BLOCKING_STATUSES
+                    )
                 ),
                 name="unique_active_change_request_per_grant",
             )
