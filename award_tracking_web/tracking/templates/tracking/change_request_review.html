@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Review Change Request</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 1100px;
+            margin: auto;
+        }
+
+        .request-summary {
+            padding: 20px;
+            margin-bottom: 25px;
+            background-color: #e9f3fb;
+            border-radius: 5px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        th,
+        td {
+            border: 1px solid #ccc;
+            padding: 10px;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        th {
+            background-color: #f2f2f2;
+        }
+
+        .changed-row {
+            font-weight: bold;
+        }
+
+        .button-common {
+            display: inline-block;
+            border: none;
+            border-radius: 5px;
+            padding: 10px 20px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 1em;
+        }
+
+        .approve-button {
+            background-color: #4CAF50;
+            color: white;
+        }
+
+        .back-button {
+            background-color: #008CBA;
+            color: white;
+            margin-left: 10px;
+        }
+
+        .messages {
+            margin-bottom: 20px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+
+        .messages.error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+
+        .messages.success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+
+        .messages.info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+        }
+    </style>
+</head>
+
+<body>
+<div class="container">
+
+    <h1>Review Basic Information Change Request</h1>
+
+    {% if messages %}
+        {% for message in messages %}
+            <div class="messages {{ message.tags }}">
+                {{ message }}
+            </div>
+        {% endfor %}
+    {% endif %}
+
+    <div class="request-summary">
+        <p><strong>Request ID:</strong> {{ change_request.id }}</p>
+        <p><strong>Grant ID:</strong> {{ change_request.grant_id }}</p>
+        <p><strong>Program Title:</strong> {{ grant.program_title }}</p>
+        <p><strong>Contracting Agency:</strong> {{ grant.contracting_agency }}</p>
+        <p><strong>Contract Number:</strong> {{ grant.contract_number }}</p>
+        <p>
+            <strong>Status:</strong>
+            {{ change_request.get_status_display }}
+        </p>
+        <p>
+            <strong>Revision:</strong>
+            {{ change_request.current_revision }}
+        </p>
+        <p>
+            <strong>Submitted By:</strong>
+            {{ change_request.submitted_by }}
+        </p>
+        <p>
+            <strong>Approvals:</strong>
+            {{ approval_count }} of 2
+        </p>
+    </div>
+
+    <h2>Basic Information</h2>
+
+    <table>
+        <thead>
+        <tr>
+            <th>Field</th>
+            <th>Current Value</th>
+            <th>Proposed Value</th>
+        </tr>
+        </thead>
+
+        <tbody>
+        {% for row in review_rows %}
+            <tr {% if row.changed %}class="changed-row"{% endif %}>
+                <td>{{ row.label }}</td>
+                <td>{{ row.current_value }}</td>
+                <td>{{ row.proposed_value }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    <div style="margin-top: 25px;">
+
+        {% if can_approve %}
+            <form
+                method="post"
+                action="{% url 'change_request_review' change_request.id %}"
+                style="display:inline;"
+            >
+                {% csrf_token %}
+                <input type="hidden" name="action" value="approve">
+
+                <button
+                    type="submit"
+                    class="button-common approve-button"
+                >
+                    Approve
+                </button>
+            </form>
+        {% elif user_has_approved %}
+            <strong>You approved this revision.</strong>
+        {% elif approval_count == 1 %}
+            <strong>
+                1 of 2 approvals received.
+                Final approval processing is not yet enabled.
+            </strong>
+        {% endif %}
+
+        <a
+            href="{% url 'grant_detail' grant.grant_id %}"
+            class="button-common back-button"
+        >
+            Back to Grant Detail
+        </a>
+
+    </div>
+
+</div>
+</body>
+</html>

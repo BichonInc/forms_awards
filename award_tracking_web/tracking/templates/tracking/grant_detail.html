@@ -225,6 +225,10 @@
     .audit-history-button:hover {
         background-color: #005f8a;
     }
+    a.button-common {
+        text-decoration: none;
+    }
+
     </style>
 
 
@@ -555,17 +559,48 @@ document.addEventListener('DOMContentLoaded', function () {
                 <strong>Basic Information Changes</strong>
                 Changes to Grant Basic Information must be submitted
                 through the change-request workflow.
-                <a
-                    href="{% url 'create_grant_change_request' grant.grant_id %}"
-                    class="button-common fiscal-exception-action-button"
-                >
-                    Propose Changes
-                </a>
+
+                {% if active_change_request %}
+                    <div>
+                        <strong>Active Change Request:</strong>
+                        {{ active_change_request.get_status_display }}
+                        {% if can_review_change_request %}
+                            <a
+                                href="{% url 'change_request_review' active_change_request.id %}"
+                                class="button-common fiscal-exception-action-button"
+                            >
+                                Review Change Request
+                            </a>
+                        {% endif %}
+                    </div>
+                {% else %}
+                    <a
+                        href="{% url 'create_grant_change_request' grant.grant_id %}"
+                        class="button-common fiscal-exception-action-button"
+                    >
+                        Propose Changes
+                    </a>
+                {% endif %}
             </div>
         {% else %}
             <div class="access-notice read-only-notice">
                 <strong>Read-Only Access</strong>
                 Grant Basic Information is read-only for your role.
+
+                {% if active_change_request %}
+                    <div>
+                        <strong>Active Change Request:</strong>
+                        {{ active_change_request.get_status_display }}
+                        {% if can_review_change_request %}
+                            <a
+                                href="{% url 'change_request_review' active_change_request.id %}"
+                                class="button-common fiscal-exception-action-button"
+                            >
+                                Review Change Request
+                            </a>
+                        {% endif %}
+                    </div>
+                {% endif %}
             </div>
         {% endif %}
 

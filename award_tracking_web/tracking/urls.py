@@ -14,6 +14,11 @@ urlpatterns = [
         views.create_grant_change_request,
         name='create_grant_change_request',
     ),
+    path(
+        'change-requests/<int:request_id>/review/',
+        views.change_request_review,
+        name='change_request_review',
+    ),
     path('grants/<str:grant_id>/', views.grant_detail, name='grant_detail'),
     path('refresh_gl_expenditure/', views.refresh_gl_expenditure, name='refresh_gl_expenditure'),
     path('refresh_subsequent_adjustment/', views.refresh_subsequent_adjustment, name='refresh_subsequent_adjustment'),  # Add this line

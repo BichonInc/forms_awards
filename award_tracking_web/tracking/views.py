@@ -14,15 +14,17 @@ from .models import (
     GrantFiscalExceptionReview,
     ChangeRequest,
     ChangeRequestField,
+    ChangeAction,
 )
 from .fiscal_review import (
     get_grant_fiscal_review,
     get_grant_fiscal_review_summaries,
 )
-
+from .gl_assignment import rematch_gl_expenditures
 from .permissions import (
     ROLE_ACCOUNTANT,
     ROLE_ADMINISTRATOR,
+    ROLE_APPROVER,
     ROLE_EDITOR,
     role_required,
     user_has_any_role,
@@ -32,6 +34,7 @@ from .forms import (
     GrantBasicInformationChangeForm,
     GrantForm,
 )
+
 from django.core.files.storage import default_storage
 import pandas as pd
 from datetime import datetime, date
@@ -120,6 +123,44 @@ def serialize_change_request_value(value):
     return str(value)
 
 
+def format_change_request_display_value(field_name, value):
+    if value in (None, ""):
+        return "—"
+
+    if field_name in {
+        "contract_start_date",
+        "contract_end_date",
+        "internal_gl_start_date",
+        "internal_gl_end_date",
+    }:
+        try:
+            return datetime.fromisoformat(value).strftime("%Y-%m-%d")
+        except (TypeError, ValueError):
+            return value
+
+    if field_name == "contract_amount":
+        try:
+            return f"{Decimal(value):,.2f}"
+        except (InvalidOperation, TypeError, ValueError):
+            return value
+
+    if field_name == "funding_sources":
+        return dict(Form1.FundingSource.choices).get(
+            value,
+            value,
+        )
+
+    if field_name == "federal_information_status":
+        return dict(
+            Form1.FederalInformationStatus.choices
+        ).get(
+            value,
+            value,
+        )
+
+    return value
+
+
 @login_required
 def grant_detail(request, grant_id):
     print(f"Grant detail accessed for grant_id: {grant_id}")
@@ -146,6 +187,24 @@ def grant_detail(request, grant_id):
     can_request_change = user_has_any_role(
         request.user,
         ROLE_EDITOR,
+    )
+
+    can_review_change_request = user_has_any_role(
+        request.user,
+        ROLE_APPROVER,
+    )
+
+    active_change_request = (
+        ChangeRequest.objects
+        .filter(
+            grant_id=grant_id,
+            status__in=[
+                ChangeRequest.Status.PENDING,
+                ChangeRequest.Status.RETURNED,
+            ],
+        )
+        .order_by("-submitted_at", "-id")
+        .first()
     )
 
     can_edit_fiscal_data = user_has_any_role(
@@ -1109,6 +1168,8 @@ def grant_detail(request, grant_id):
         'grant': grant,
         'form': form,
         "can_request_change": can_request_change,
+        "active_change_request": active_change_request,
+        "can_review_change_request": can_review_change_request,
         "can_edit_fiscal_data": can_edit_fiscal_data,
         'fiscal_breakdown': fiscal_breakdown,
         'total_expenditure_sum': total_expenditure_sum,
@@ -1404,6 +1465,238 @@ def create_grant_change_request(request, grant_id):
     )
 
 
+@role_required(ROLE_APPROVER)
+def change_request_review(request, request_id):
+    change_request = get_object_or_404(
+        ChangeRequest,
+        id=request_id,
+    )
+
+    grant = get_object_or_404(
+        Form1,
+        grant_id=change_request.grant_id,
+    )
+
+    revision_no = change_request.current_revision
+
+    snapshots = {
+        snapshot.field_name: snapshot
+        for snapshot in (
+            ChangeRequestField.objects
+            .filter(
+                change_request=change_request,
+                revision_no=revision_no,
+            )
+        )
+    }
+
+    label_form = GrantBasicInformationChangeForm(
+        instance=grant,
+    )
+
+    review_rows = []
+
+    for field_name in GRANT_BASIC_INFORMATION_CHANGE_FIELDS:
+        snapshot = snapshots.get(field_name)
+
+        if not snapshot:
+            continue
+
+        changed = snapshot.proposed_value is not None
+
+        review_rows.append(
+            {
+                "field_name": field_name,
+                "label": label_form.fields[field_name].label,
+                "current_value": (
+                    format_change_request_display_value(
+                        field_name,
+                        snapshot.current_value,
+                    )
+                ),
+                "proposed_value": (
+                    format_change_request_display_value(
+                        field_name,
+                        snapshot.proposed_value,
+                    )
+                    if changed
+                    else "No change"
+                ),
+                "changed": changed,
+            }
+        )
+
+    approvals = (
+        ChangeAction.objects
+        .filter(
+            change_request=change_request,
+            revision_no=revision_no,
+            action=ChangeAction.Action.APPROVE,
+        )
+        .select_related("acted_by")
+        .order_by("acted_at", "id")
+    )
+
+    approval_count = approvals.count()
+
+    user_has_approved = approvals.filter(
+        acted_by=request.user,
+    ).exists()
+
+    can_approve = (
+        change_request.status == ChangeRequest.Status.PENDING
+        and change_request.submitted_by_id != request.user.id
+        and not user_has_approved
+        and approval_count == 0
+    )
+
+    if request.method == "POST":
+        action = request.POST.get("action")
+
+        if action != "approve":
+            messages.error(
+                request,
+                "Invalid Change Request action.",
+            )
+            return redirect(
+                "change_request_review",
+                request_id=request_id,
+            )
+
+        try:
+            with transaction.atomic():
+                locked_request = (
+                    ChangeRequest.objects
+                    .select_for_update()
+                    .get(id=request_id)
+                )
+
+                if (
+                    locked_request.status
+                    != ChangeRequest.Status.PENDING
+                ):
+                    messages.error(
+                        request,
+                        (
+                            "This Change Request is no longer "
+                            "pending approval."
+                        ),
+                    )
+                    return redirect(
+                        "change_request_review",
+                        request_id=request_id,
+                    )
+
+                if locked_request.submitted_by_id == request.user.id:
+                    messages.error(
+                        request,
+                        (
+                            "You cannot approve a Change Request "
+                            "that you submitted."
+                        ),
+                    )
+                    return redirect(
+                        "change_request_review",
+                        request_id=request_id,
+                    )
+
+                existing_approval = (
+                    ChangeAction.objects
+                    .filter(
+                        change_request=locked_request,
+                        revision_no=locked_request.current_revision,
+                        acted_by=request.user,
+                        action=ChangeAction.Action.APPROVE,
+                    )
+                    .exists()
+                )
+
+                if existing_approval:
+                    messages.info(
+                        request,
+                        (
+                            "You have already approved this "
+                            "revision."
+                        ),
+                    )
+                    return redirect(
+                        "change_request_review",
+                        request_id=request_id,
+                    )
+
+                approval_count_before = (
+                    ChangeAction.objects
+                    .filter(
+                        change_request=locked_request,
+                        revision_no=locked_request.current_revision,
+                        action=ChangeAction.Action.APPROVE,
+                    )
+                    .count()
+                )
+
+                # For this first workflow step, allow only approval #1.
+                # Final approval/application will be implemented next.
+                if approval_count_before >= 1:
+                    messages.info(
+                        request,
+                        (
+                            "This Change Request already has one "
+                            "approval. Final approval processing "
+                            "will be enabled in the next workflow "
+                            "step."
+                        ),
+                    )
+                    return redirect(
+                        "change_request_review",
+                        request_id=request_id,
+                    )
+
+                ChangeAction.objects.create(
+                    change_request=locked_request,
+                    revision_no=locked_request.current_revision,
+                    acted_by=request.user,
+                    action=ChangeAction.Action.APPROVE,
+                    comment="",
+                )
+
+        except IntegrityError:
+            messages.error(
+                request,
+                (
+                    "The approval could not be recorded because "
+                    "the request changed. Please review it again."
+                ),
+            )
+            return redirect(
+                "change_request_review",
+                request_id=request_id,
+            )
+
+        messages.success(
+            request,
+            "Approval recorded. 1 of 2 approvals received.",
+        )
+
+        return redirect(
+            "change_request_review",
+            request_id=request_id,
+        )
+
+    return render(
+        request,
+        "tracking/change_request_review.html",
+        {
+            "change_request": change_request,
+            "grant": grant,
+            "review_rows": review_rows,
+            "approvals": approvals,
+            "approval_count": approval_count,
+            "user_has_approved": user_has_approved,
+            "can_approve": can_approve,
+        },
+    )
+
+
 @login_required
 def fiscal_exception_history(request, grant_id):
     grant = get_object_or_404(
@@ -1610,37 +1903,42 @@ def refresh_gl_expenditure(request):
                 "Credit": "credit"
             }, inplace=True)
 
-            # Clear existing GLExpenditure records to prevent duplication
-            GLExpenditure.objects.all().delete()
-            logger.info("Cleared existing GLExpenditure records")
+            # Replace the GLExpenditure table contents atomically.
+            # If import or grant assignment fails, the previous GL data
+            # remains intact.
+            with transaction.atomic():
+                # Clear existing GLExpenditure records to prevent duplication
+                GLExpenditure.objects.all().delete()
+                logger.info("Cleared existing GLExpenditure records")
 
-            # Insert data into GLExpenditure table
-            for _, row in df.iterrows():
-                GLExpenditure.objects.create(
-                    effective_date=row['effective_date'],
-                    award_code=row['award_code'],
-                    debit=Decimal(row['debit']),
-                    credit=Decimal(row['credit']),
-                    net_expenditure=Decimal(row['net_expenditure']),
-                    fiscal_year=row['fiscal_year']
-                )
-
-            # Update grant_id associations based on internal award codes
-            for expenditure in GLExpenditure.objects.all():
-                try:
-                    matching_form = Form1.objects.get(
-                        internal_award_code=expenditure.award_code,
-                        internal_gl_start_date__lte=expenditure.effective_date,
-                        internal_gl_end_date__gte=expenditure.effective_date
+                # Insert data into GLExpenditure table
+                for _, row in df.iterrows():
+                    GLExpenditure.objects.create(
+                        effective_date=row['effective_date'],
+                        award_code=row['award_code'],
+                        debit=Decimal(row['debit']),
+                        credit=Decimal(row['credit']),
+                        net_expenditure=Decimal(row['net_expenditure']),
+                        fiscal_year=row['fiscal_year']
                     )
-                    expenditure.grant_id = matching_form.grant_id
-                    expenditure.save()
-                except Form1.DoesNotExist:
-                    expenditure.grant_id = None
-                    expenditure.save()
+
+                # Assign GL transactions to grants using the shared
+                # Award Code + Internal GL date-range matching service.
+                assignment_result = rematch_gl_expenditures()
+
+            logger.info(
+                (
+                    "GL grant assignment completed: "
+                    "examined=%s, changed=%s, assigned=%s, unassigned=%s"
+                ),
+                assignment_result["examined"],
+                assignment_result["changed"],
+                assignment_result["assigned"],
+                assignment_result["unassigned"],
+            )
 
             logger.info("GL Expenditure data successfully refreshed.")
-            return redirect('grant_list')  # Redirect to refresh Grant List page
+            return redirect('grant_list')
 
         except Exception as e:
             logger.error(f"An error occurred while processing the file: {str(e)}")
