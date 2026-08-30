@@ -4,6 +4,7 @@ from django.shortcuts import render, get_object_or_404, redirect
 from django.db import IntegrityError, transaction
 from django.db.models import Sum, Max
 from django.core import signing
+from django.utils import timezone
 from .models import (
     Form1,
     GLExpenditure,
@@ -1395,6 +1396,7 @@ def create_grant_change_request(request, grant_id):
                                 status=ChangeRequest.Status.PENDING,
                                 current_revision=1,
                                 submitted_by=request.user,
+                                submitted_at=timezone.now(),
                             )
 
                             ChangeRequestField.objects.bulk_create(

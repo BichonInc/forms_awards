@@ -326,6 +326,8 @@ class CoordinatedChange(models.Model):
         RETURNED = "RETURNED", "Returned for Revision"
         APPLIED = "APPLIED", "Applied"
         DENIED = "DENIED", "Denied"
+        CANCELLED = "CANCELLED", "Cancelled"
+        WITHDRAWN = "WITHDRAWN", "Withdrawn"
 
     status = models.CharField(
         max_length=20,
@@ -339,6 +341,14 @@ class CoordinatedChange(models.Model):
         related_name="coordinated_changes_created",
     )
 
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="coordinated_changes_submitted",
+    )
+
     created_at = models.DateTimeField(
         auto_now_add=True,
     )
@@ -348,9 +358,51 @@ class CoordinatedChange(models.Model):
         blank=True,
     )
 
+    concurrency_version = models.PositiveIntegerField(
+        default=1,
+    )
+
     applied_at = models.DateTimeField(
         null=True,
         blank=True,
+    )
+
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="coordinated_changes_cancelled",
+    )
+
+    cancelled_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    cancellation_reason = models.TextField(
+        blank=True,
+        default="",
+        max_length=500,
+    )
+
+    withdrawn_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="coordinated_changes_withdrawn",
+    )
+
+    withdrawn_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    withdrawal_reason = models.TextField(
+        blank=True,
+        default="",
+        max_length=500,
     )
 
     class Meta:
@@ -389,6 +441,8 @@ class ChangeRequest(models.Model):
         READY = "READY", "Approved - Waiting to Apply"
         DENIED = "DENIED", "Denied"
         APPROVED = "APPROVED", "Approved"
+        CANCELLED = "CANCELLED", "Cancelled"
+        WITHDRAWN = "WITHDRAWN", "Withdrawn"
 
     grant_id = models.CharField(
         max_length=10,
@@ -411,12 +465,19 @@ class ChangeRequest(models.Model):
         related_name="change_requests",
     )
     current_revision = models.PositiveIntegerField(default=1)
+
     submitted_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
         on_delete=models.PROTECT,
         related_name="submitted_change_requests",
     )
-    submitted_at = models.DateTimeField(auto_now_add=True)
+
+    submitted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
 
     class Meta:
         db_table = "change_request"
@@ -429,7 +490,14 @@ class ChangeRequest(models.Model):
                     )
                 ),
                 name="unique_active_change_request_per_grant",
-            )
+            ),
+            models.CheckConstraint(
+                condition=(
+                    ~models.Q(status="DRAFT")
+                    | models.Q(coordinated_change__isnull=False)
+                ),
+                name="draft_request_requires_coordinated_change",
+            ),
         ]
 
     def __str__(self):
@@ -469,6 +537,7 @@ class ChangeAction(models.Model):
         RETURN = "RETURN", "Return for Revision"
         DENY = "DENY", "Deny"
         RESUBMIT = "RESUBMIT", "Resubmit"
+        WITHDRAW = "WITHDRAW", "Withdraw"
 
     change_request = models.ForeignKey(
         ChangeRequest,
