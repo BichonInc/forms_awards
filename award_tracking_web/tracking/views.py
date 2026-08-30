@@ -38,6 +38,9 @@ from .forms import (
     GrantForm,
 )
 from .change_request_workflow import (
+    ChangeRequestApprovalError,
+    ChangeRequestValidationError,
+    approve_standalone_change_request,
     serialize_change_request_value,
 )
 from django.core.files.storage import default_storage
@@ -195,6 +198,8 @@ def grant_detail(request, grant_id):
         .order_by("-submitted_at", "-id")
         .first()
     )
+
+
 
     can_edit_fiscal_data = user_has_any_role(
         request.user,
@@ -1531,7 +1536,7 @@ def change_request_review(request, request_id):
         change_request.status == ChangeRequest.Status.PENDING
         and change_request.submitted_by_id != request.user.id
         and not user_has_approved
-        and approval_count == 0
+        and approval_count < 2
     )
 
     if request.method == "POST":
@@ -1546,6 +1551,8 @@ def change_request_review(request, request_id):
                 "change_request_review",
                 request_id=request_id,
             )
+
+        final_approval_result = None
 
         try:
             with transaction.atomic():
@@ -1618,30 +1625,34 @@ def change_request_review(request, request_id):
                     .count()
                 )
 
-                # For this first workflow step, allow only approval #1.
-                # Final approval/application will be implemented next.
-                if approval_count_before >= 1:
-                    messages.info(
-                        request,
-                        (
-                            "This Change Request already has one "
-                            "approval. Final approval processing "
-                            "will be enabled in the next workflow "
-                            "step."
-                        ),
+                if approval_count_before == 0:
+                    ChangeAction.objects.create(
+                        change_request=locked_request,
+                        revision_no=locked_request.current_revision,
+                        acted_by=request.user,
+                        action=ChangeAction.Action.APPROVE,
+                        comment="",
                     )
-                    return redirect(
-                        "change_request_review",
-                        request_id=request_id,
+                else:
+                    final_approval_result = (
+                        approve_standalone_change_request(
+                            change_request_id=locked_request.id,
+                            approver=request.user,
+                        )
                     )
 
-                ChangeAction.objects.create(
-                    change_request=locked_request,
-                    revision_no=locked_request.current_revision,
-                    acted_by=request.user,
-                    action=ChangeAction.Action.APPROVE,
-                    comment="",
-                )
+        except (
+            ChangeRequestApprovalError,
+            ChangeRequestValidationError,
+        ) as exc:
+            messages.error(
+                request,
+                str(exc),
+            )
+            return redirect(
+                "change_request_review",
+                request_id=request_id,
+            )
 
         except IntegrityError:
             messages.error(
@@ -1656,10 +1667,20 @@ def change_request_review(request, request_id):
                 request_id=request_id,
             )
 
-        messages.success(
-            request,
-            "Approval recorded. 1 of 2 approvals received.",
-        )
+        if final_approval_result is not None:
+            messages.success(
+                request,
+                (
+                    "Final approval recorded. The Change Request "
+                    "has been approved and the Basic Information "
+                    "changes have been applied."
+                ),
+            )
+        else:
+            messages.success(
+                request,
+                "Approval recorded. 1 of 2 approvals received.",
+            )
 
         return redirect(
             "change_request_review",

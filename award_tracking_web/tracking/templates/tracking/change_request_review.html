@@ -123,6 +123,21 @@
             <strong>Approvals:</strong>
             {{ approval_count }} of 2
         </p>
+
+        {% if approvals %}
+            <div>
+                <strong>Approval History:</strong>
+                <ol>
+                    {% for approval in approvals %}
+                        <li>
+                            {{ approval.acted_by.username }}
+                            —
+                            {{ approval.acted_at|date:"M j, Y, g:i A" }}
+                        </li>
+                    {% endfor %}
+                </ol>
+            </div>
+        {% endif %}
     </div>
 
     <h2>Basic Information</h2>
@@ -170,7 +185,6 @@
         {% elif approval_count == 1 %}
             <strong>
                 1 of 2 approvals received.
-                Final approval processing is not yet enabled.
             </strong>
         {% endif %}
 
