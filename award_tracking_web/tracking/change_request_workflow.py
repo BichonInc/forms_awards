@@ -6,6 +6,7 @@ from .forms import (
     GRANT_BASIC_INFORMATION_CHANGE_FIELDS,
     GrantBasicInformationChangeForm,
 )
+from .gl_assignment import rematch_gl_expenditures
 from .models import ChangeRequestField, Form1
 
 
@@ -206,4 +207,53 @@ def validate_basic_information_change_request(change_request):
         gl_rematch_required=bool(
             GL_ASSIGNMENT_FIELDS.intersection(changed_fields)
         ),
+    )
+
+
+def _apply_validated_basic_information_values(
+        *,
+        grant,
+        validation_result,
+):
+    """
+    Apply an already-validated Basic Information proposal to Form1.
+
+    This is intentionally a private low-level helper. It does not:
+      - determine approval eligibility;
+      - create ChangeAction records;
+      - change ChangeRequest status; or
+      - open its own transaction.
+
+    The approval workflow must call it only after the request and grant
+    have been locked and final validation has succeeded.
+    """
+    if not validation_result.changed_fields:
+        raise ChangeRequestValidationError(
+            "The Change Request contains no proposed Basic Information "
+            "changes."
+        )
+
+    old_award_code = grant.internal_award_code
+
+    for field_name in validation_result.changed_fields:
+        setattr(
+            grant,
+            field_name,
+            validation_result.proposed_values[field_name],
+        )
+
+    grant.save(
+        update_fields=list(
+            validation_result.changed_fields
+        )
+    )
+
+    if not validation_result.gl_rematch_required:
+        return None
+
+    return rematch_gl_expenditures(
+        award_codes={
+            old_award_code,
+            grant.internal_award_code,
+        }
     )
