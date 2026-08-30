@@ -37,7 +37,9 @@ from .forms import (
     GrantBasicInformationChangeForm,
     GrantForm,
 )
-
+from .change_request_workflow import (
+    serialize_change_request_value,
+)
 from django.core.files.storage import default_storage
 import pandas as pd
 from datetime import datetime, date
@@ -105,25 +107,6 @@ def grant_list(request):
         "user_roles": user_roles,
     }
     return render(request, 'tracking/grant_list.html', context)
-
-
-def serialize_change_request_value(value):
-    """
-    Convert Basic Information values to stable text for audit storage.
-
-    ChangeRequestField.proposed_value uses NULL to mean "unchanged",
-    so an actual blank proposed value is stored as an empty string.
-    """
-    if value is None:
-        return ""
-
-    if isinstance(value, (date, datetime)):
-        return value.isoformat()
-
-    if isinstance(value, Decimal):
-        return format(value, "f")
-
-    return str(value)
 
 
 def format_change_request_display_value(field_name, value):
