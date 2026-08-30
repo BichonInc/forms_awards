@@ -2,12 +2,19 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
+from django.db import transaction
+
 from .forms import (
     GRANT_BASIC_INFORMATION_CHANGE_FIELDS,
     GrantBasicInformationChangeForm,
 )
 from .gl_assignment import rematch_gl_expenditures
-from .models import ChangeRequestField, Form1
+from .models import (
+    ChangeAction,
+    ChangeRequest,
+    ChangeRequestField,
+    Form1,
+)
 
 
 GL_ASSIGNMENT_FIELDS = {
@@ -23,11 +30,26 @@ class ChangeRequestValidationError(Exception):
     """
 
 
+class ChangeRequestApprovalError(Exception):
+    """
+    Raised when a Change Request cannot receive the requested approval.
+    """
+
+
 @dataclass(frozen=True)
 class BasicInformationValidationResult:
     proposed_values: dict
     changed_fields: tuple
     gl_rematch_required: bool
+
+
+@dataclass(frozen=True)
+class StandaloneApprovalResult:
+    change_request_id: int
+    status: str
+    approval_count: int
+    changed_fields: tuple
+    gl_rematch_result: object
 
 
 def serialize_change_request_value(value):
@@ -257,3 +279,167 @@ def _apply_validated_basic_information_values(
             grant.internal_award_code,
         }
     )
+
+
+def _get_revision_submitter_id(change_request):
+    """
+    Return the user responsible for submitting the current revision.
+
+    Revision 1 uses ChangeRequest.submitted_by.
+    Later revisions use the RESUBMIT action recorded for that revision.
+    """
+    revision_no = change_request.current_revision
+
+    if revision_no == 1:
+        if change_request.submitted_by_id is None:
+            raise ChangeRequestApprovalError(
+                "This Change Request has no recorded submitter."
+            )
+
+        return change_request.submitted_by_id
+
+    resubmit_actions = list(
+        ChangeAction.objects.filter(
+            change_request=change_request,
+            revision_no=revision_no,
+            action=ChangeAction.Action.RESUBMIT,
+        ).values_list(
+            "acted_by_id",
+            flat=True,
+        )
+    )
+
+    if len(resubmit_actions) != 1:
+        raise ChangeRequestApprovalError(
+            "The current revision does not have exactly one recorded "
+            "resubmission action."
+        )
+
+    return resubmit_actions[0]
+
+
+def approve_standalone_change_request(
+        *,
+        change_request_id,
+        approver,
+):
+    """
+    Record approval #2 and atomically apply a standalone Basic Information
+    Change Request.
+
+    This service is intentionally limited to standalone EDIT_GRANT requests.
+    Coordinated requests use a separate group-level application workflow.
+    """
+    with transaction.atomic():
+        change_request = (
+            ChangeRequest.objects
+            .select_for_update()
+            .get(pk=change_request_id)
+        )
+
+        if change_request.coordinated_change_id is not None:
+            raise ChangeRequestApprovalError(
+                "A coordinated Change Request cannot be finalized through "
+                "the standalone approval workflow."
+            )
+
+        if (
+            change_request.request_type
+            != ChangeRequest.RequestType.EDIT_GRANT
+        ):
+            raise ChangeRequestApprovalError(
+                "This approval service currently supports only existing-"
+                "grant Basic Information Change Requests."
+            )
+
+        if change_request.status != ChangeRequest.Status.PENDING:
+            raise ChangeRequestApprovalError(
+                "This Change Request is no longer pending approval."
+            )
+
+        revision_no = change_request.current_revision
+
+        revision_submitter_id = _get_revision_submitter_id(
+            change_request
+        )
+
+        if revision_submitter_id == approver.id:
+            raise ChangeRequestApprovalError(
+                "You cannot approve a Change Request revision that you "
+                "submitted."
+            )
+
+        existing_approval = ChangeAction.objects.filter(
+            change_request=change_request,
+            revision_no=revision_no,
+            acted_by=approver,
+            action=ChangeAction.Action.APPROVE,
+        ).exists()
+
+        if existing_approval:
+            raise ChangeRequestApprovalError(
+                "You have already approved this revision."
+            )
+
+        prior_approvals = list(
+            ChangeAction.objects.filter(
+                change_request=change_request,
+                revision_no=revision_no,
+                action=ChangeAction.Action.APPROVE,
+            ).values_list(
+                "acted_by_id",
+                flat=True,
+            )
+        )
+
+        if len(prior_approvals) != 1:
+            raise ChangeRequestApprovalError(
+                "Final approval requires exactly one existing approval "
+                "for the current revision."
+            )
+
+        if prior_approvals[0] == revision_submitter_id:
+            raise ChangeRequestApprovalError(
+                "The existing approval was recorded by the submitter of this "
+                "revision and cannot count toward final approval."
+            )
+
+        grant = (
+            Form1.objects
+            .select_for_update()
+            .get(grant_id=change_request.grant_id)
+        )
+
+        validation_result = (
+            validate_basic_information_change_request(
+                change_request
+            )
+        )
+
+        ChangeAction.objects.create(
+            change_request=change_request,
+            revision_no=revision_no,
+            acted_by=approver,
+            action=ChangeAction.Action.APPROVE,
+            comment="",
+        )
+
+        gl_rematch_result = (
+            _apply_validated_basic_information_values(
+                grant=grant,
+                validation_result=validation_result,
+            )
+        )
+
+        change_request.status = ChangeRequest.Status.APPROVED
+        change_request.save(
+            update_fields=["status"]
+        )
+
+        return StandaloneApprovalResult(
+            change_request_id=change_request.id,
+            status=change_request.status,
+            approval_count=2,
+            changed_fields=validation_result.changed_fields,
+            gl_rematch_result=gl_rematch_result,
+        )
