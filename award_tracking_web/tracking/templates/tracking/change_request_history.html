@@ -1,0 +1,159 @@
+{% load tz %}
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Change Request History</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 1100px;
+            margin: auto;
+        }
+
+        .grant-summary {
+            padding: 20px;
+            margin-bottom: 25px;
+            background-color: #e9f3fb;
+            border-radius: 5px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        th,
+        td {
+            border: 1px solid #ccc;
+            padding: 10px;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        th {
+            background-color: #f2f2f2;
+        }
+
+        .button-common {
+            display: inline-block;
+            border: none;
+            border-radius: 5px;
+            padding: 10px 20px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 1em;
+        }
+
+        .view-button {
+            background-color: #4CAF50;
+            color: white;
+        }
+
+        .back-button {
+            background-color: #008CBA;
+            color: white;
+            margin-top: 20px;
+        }
+
+        .empty-message {
+            padding: 20px;
+            margin-top: 20px;
+            background-color: #f2f2f2;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+
+<body>
+<div class="container">
+
+    <h1>Change Request History</h1>
+
+    <div class="grant-summary">
+        <p>
+            <strong>Grant ID:</strong>
+            {{ grant.grant_id }}
+        </p>
+        <p>
+            <strong>Program Title:</strong>
+            {{ grant.program_title }}
+        </p>
+        <p>
+            <strong>Contracting Agency:</strong>
+            {{ grant.contracting_agency }}
+        </p>
+        <p>
+            <strong>Current Contract Number:</strong>
+            {{ grant.contract_number }}
+        </p>
+    </div>
+
+    {% if change_requests %}
+        <table>
+            <thead>
+            <tr>
+                <th>Request ID</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Revision</th>
+                <th>Submitted By</th>
+                <th>Submitted At</th>
+                <th>Action</th>
+            </tr>
+            </thead>
+
+            <tbody>
+            {% for change_request in change_requests %}
+                <tr>
+                    <td>{{ change_request.id }}</td>
+                    <td>
+                        {{ change_request.get_request_type_display }}
+                    </td>
+                    <td>
+                        {{ change_request.get_status_display }}
+                    </td>
+                    <td>
+                        {{ change_request.current_revision }}
+                    </td>
+                    <td>
+                        {{ change_request.submitted_by }}
+                    </td>
+                    <td>
+                        {{ change_request.submitted_at|localtime|date:"M j, Y, g:i A" }}
+                    </td>
+                    <td>
+                        <a
+                            href="{% url 'change_request_review' change_request.id %}"
+                            class="button-common view-button"
+                        >
+                            View
+                        </a>
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <div class="empty-message">
+            No completed Change Requests are available for this grant.
+        </div>
+    {% endif %}
+
+    <a
+        href="{% url 'grant_detail' grant.grant_id %}"
+        class="button-common back-button"
+    >
+        Back to Grant Detail
+    </a>
+
+</div>
+</body>
+</html>

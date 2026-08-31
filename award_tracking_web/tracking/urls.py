@@ -15,6 +15,11 @@ urlpatterns = [
         name='create_grant_change_request',
     ),
     path(
+        'grants/<str:grant_id>/change-request-history/',
+        views.change_request_history,
+        name='change_request_history',
+    ),
+    path(
         'change-requests/<int:request_id>/review/',
         views.change_request_review,
         name='change_request_review',

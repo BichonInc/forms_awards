@@ -18,6 +18,7 @@ from .models import (
     ChangeAction,
     CHANGE_REQUEST_BLOCKING_STATUSES,
     CHANGE_REQUEST_SUBMITTED_STATUSES,
+    CHANGE_REQUEST_HISTORY_STATUSES,
 )
 from .fiscal_review import (
     get_grant_fiscal_review,
@@ -29,6 +30,7 @@ from .permissions import (
     ROLE_ADMINISTRATOR,
     ROLE_APPROVER,
     ROLE_EDITOR,
+    ROLE_VIEWER,
     role_required,
     user_has_any_role,
 )
@@ -178,11 +180,6 @@ def grant_detail(request, grant_id):
         ROLE_EDITOR,
     )
 
-    can_review_change_request = user_has_any_role(
-        request.user,
-        ROLE_APPROVER,
-    )
-
     active_change_request_statuses = (
         CHANGE_REQUEST_BLOCKING_STATUSES
         if can_request_change
@@ -199,7 +196,16 @@ def grant_detail(request, grant_id):
         .first()
     )
 
-
+    can_review_change_request = (
+        active_change_request is not None
+        and active_change_request.status
+        in CHANGE_REQUEST_SUBMITTED_STATUSES
+        and user_has_any_role(
+            request.user,
+            ROLE_EDITOR,
+            ROLE_APPROVER,
+        )
+    )
 
     can_edit_fiscal_data = user_has_any_role(
         request.user,
@@ -1454,17 +1460,98 @@ def create_grant_change_request(request, grant_id):
     )
 
 
-@role_required(ROLE_APPROVER)
+@role_required(
+    ROLE_ADMINISTRATOR,
+    ROLE_VIEWER,
+    ROLE_EDITOR,
+    ROLE_ACCOUNTANT,
+    ROLE_APPROVER,
+)
+def change_request_history(request, grant_id):
+    grant = get_object_or_404(
+        Form1,
+        grant_id=grant_id,
+    )
+
+    change_requests = (
+        ChangeRequest.objects
+        .filter(
+            grant_id=grant_id,
+            status__in=CHANGE_REQUEST_HISTORY_STATUSES,
+            submitted_at__isnull=False,
+        )
+        .select_related("submitted_by")
+        .order_by("-submitted_at", "-id")
+    )
+
+    return render(
+        request,
+        "tracking/change_request_history.html",
+        {
+            "grant": grant,
+            "change_requests": change_requests,
+        },
+    )
+
+
+@role_required(
+    ROLE_ADMINISTRATOR,
+    ROLE_VIEWER,
+    ROLE_EDITOR,
+    ROLE_ACCOUNTANT,
+    ROLE_APPROVER,
+)
 def change_request_review(request, request_id):
     change_request = get_object_or_404(
         ChangeRequest,
         id=request_id,
     )
 
+    is_history_request = (
+        change_request.status
+        in CHANGE_REQUEST_HISTORY_STATUSES
+    )
+
+    is_active_submitted_request = (
+        change_request.status
+        in CHANGE_REQUEST_SUBMITTED_STATUSES
+    )
+
+    if is_history_request:
+        pass
+
+    elif is_active_submitted_request:
+        if not user_has_any_role(
+            request.user,
+            ROLE_EDITOR,
+            ROLE_APPROVER,
+        ):
+            raise PermissionDenied
+
+    else:
+        raise PermissionDenied
+
     grant = get_object_or_404(
         Form1,
         grant_id=change_request.grant_id,
     )
+
+    if (
+        request.method == "POST"
+        and is_history_request
+    ):
+        raise PermissionDenied(
+            "Completed Change Requests are read-only."
+        )
+
+    if (
+        request.method == "POST"
+        and not user_has_any_role(
+            request.user,
+            ROLE_APPROVER,
+        )
+    ):
+        raise PermissionDenied
 
     revision_no = change_request.current_revision
 
@@ -1533,7 +1620,11 @@ def change_request_review(request, request_id):
     ).exists()
 
     can_approve = (
-        change_request.status == ChangeRequest.Status.PENDING
+        user_has_any_role(
+            request.user,
+            ROLE_APPROVER,
+        )
+        and change_request.status == ChangeRequest.Status.PENDING
         and change_request.submitted_by_id != request.user.id
         and not user_has_approved
         and approval_count < 2
@@ -1698,6 +1789,7 @@ def change_request_review(request, request_id):
             "approval_count": approval_count,
             "user_has_approved": user_has_approved,
             "can_approve": can_approve,
+            "is_history_request": is_history_request,
         },
     )
 

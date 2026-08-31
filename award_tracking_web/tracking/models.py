@@ -428,6 +428,12 @@ CHANGE_REQUEST_SUBMITTED_STATUSES = (
     "READY",
 )
 
+CHANGE_REQUEST_HISTORY_STATUSES = (
+    "APPROVED",
+    "DENIED",
+    "WITHDRAWN",
+)
+
 
 class ChangeRequest(models.Model):
     class RequestType(models.TextChoices):

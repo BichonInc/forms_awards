@@ -553,7 +553,12 @@ document.addEventListener('DOMContentLoaded', function () {
             </div>
         {% endif %}
         <a href="{% url 'grant_list' %}" id="back-button" class="button-common">Back to Grant List</a>
-
+        <a
+            href="{% url 'change_request_history' grant.grant_id %}"
+            class="button-common fiscal-exception-action-button"
+        >
+            Change Request History
+        </a>
         {% if can_request_change %}
             <div class="access-notice workflow-notice">
                 <strong>Basic Information Changes</strong>

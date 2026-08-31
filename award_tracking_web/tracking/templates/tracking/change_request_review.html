@@ -26,6 +26,7 @@
             width: 100%;
             border-collapse: collapse;
             margin-top: 20px;
+            table-layout: fixed;
         }
 
         th,
@@ -34,6 +35,8 @@
             padding: 10px;
             text-align: left;
             vertical-align: top;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
 
         th {
@@ -164,28 +167,30 @@
 
     <div style="margin-top: 25px;">
 
-        {% if can_approve %}
-            <form
-                method="post"
-                action="{% url 'change_request_review' change_request.id %}"
-                style="display:inline;"
-            >
-                {% csrf_token %}
-                <input type="hidden" name="action" value="approve">
-
-                <button
-                    type="submit"
-                    class="button-common approve-button"
+        {% if not is_history_request %}
+            {% if can_approve %}
+                <form
+                    method="post"
+                    action="{% url 'change_request_review' change_request.id %}"
+                    style="display:inline;"
                 >
-                    Approve
-                </button>
-            </form>
-        {% elif user_has_approved %}
-            <strong>You approved this revision.</strong>
-        {% elif approval_count == 1 %}
-            <strong>
-                1 of 2 approvals received.
-            </strong>
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="approve">
+
+                    <button
+                        type="submit"
+                        class="button-common approve-button"
+                    >
+                        Approve
+                    </button>
+                </form>
+            {% elif user_has_approved %}
+                <strong>You approved this revision.</strong>
+            {% elif approval_count == 1 %}
+                <strong>
+                    1 of 2 approvals received.
+                </strong>
+            {% endif %}
         {% endif %}
 
         <a
