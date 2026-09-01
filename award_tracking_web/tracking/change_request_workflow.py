@@ -36,6 +36,12 @@ class ChangeRequestApprovalError(Exception):
     """
 
 
+class ChangeRequestReturnError(Exception):
+    """
+    Raised when a Change Request cannot be returned for revision.
+    """
+
+
 @dataclass(frozen=True)
 class BasicInformationValidationResult:
     proposed_values: dict
@@ -50,6 +56,14 @@ class StandaloneApprovalResult:
     approval_count: int
     changed_fields: tuple
     gl_rematch_result: object
+
+
+@dataclass(frozen=True)
+class StandaloneReturnResult:
+    change_request_id: int
+    status: str
+    revision_no: int
+    approval_count: int
 
 
 def serialize_change_request_value(value):
@@ -442,4 +456,117 @@ def approve_standalone_change_request(
             approval_count=2,
             changed_fields=validation_result.changed_fields,
             gl_rematch_result=gl_rematch_result,
+        )
+
+
+def return_standalone_change_request(
+        *,
+        change_request_id,
+        approver,
+        comment,
+):
+    """
+    Return a standalone Basic Information Change Request for revision.
+
+    The current revision and any approvals already recorded for it remain
+    historical. No authoritative Form1 values are changed.
+    """
+    feedback = (comment or "").strip()
+
+    if not feedback:
+        raise ChangeRequestReturnError(
+            "Return for Revision requires feedback."
+        )
+
+    if len(feedback) > 500:
+        raise ChangeRequestReturnError(
+            "Return for Revision feedback cannot exceed 500 characters."
+        )
+
+    with transaction.atomic():
+        change_request = (
+            ChangeRequest.objects
+            .select_for_update()
+            .get(pk=change_request_id)
+        )
+
+        if change_request.coordinated_change_id is not None:
+            raise ChangeRequestReturnError(
+                "A coordinated Change Request cannot be returned through "
+                "the standalone workflow."
+            )
+
+        if (
+            change_request.request_type
+            != ChangeRequest.RequestType.EDIT_GRANT
+        ):
+            raise ChangeRequestReturnError(
+                "This return service currently supports only existing-grant "
+                "Basic Information Change Requests."
+            )
+
+        if change_request.status != ChangeRequest.Status.PENDING:
+            raise ChangeRequestReturnError(
+                "This Change Request is no longer pending review."
+            )
+
+        revision_no = change_request.current_revision
+
+        try:
+            revision_submitter_id = _get_revision_submitter_id(
+                change_request
+            )
+        except ChangeRequestApprovalError as exc:
+            raise ChangeRequestReturnError(
+                str(exc)
+            ) from exc
+
+        if revision_submitter_id == approver.id:
+            raise ChangeRequestReturnError(
+                "You cannot return a Change Request revision that you "
+                "submitted."
+            )
+
+        user_has_approved = ChangeAction.objects.filter(
+            change_request=change_request,
+            revision_no=revision_no,
+            acted_by=approver,
+            action=ChangeAction.Action.APPROVE,
+        ).exists()
+
+        if user_has_approved:
+            raise ChangeRequestReturnError(
+                "You have already approved this revision and cannot return "
+                "the same revision for changes."
+            )
+
+        approval_count = ChangeAction.objects.filter(
+            change_request=change_request,
+            revision_no=revision_no,
+            action=ChangeAction.Action.APPROVE,
+        ).count()
+
+        if approval_count >= 2:
+            raise ChangeRequestReturnError(
+                "A fully approved revision cannot be returned for changes."
+            )
+
+        ChangeAction.objects.create(
+            change_request=change_request,
+            revision_no=revision_no,
+            acted_by=approver,
+            action=ChangeAction.Action.RETURN,
+            comment=feedback,
+        )
+
+        change_request.status = ChangeRequest.Status.RETURNED
+        change_request.save(
+            update_fields=["status"]
+        )
+
+        return StandaloneReturnResult(
+            change_request_id=change_request.id,
+            status=change_request.status,
+            revision_no=revision_no,
+            approval_count=approval_count,
         )

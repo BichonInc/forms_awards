@@ -62,6 +62,34 @@
             color: white;
         }
 
+        .return-button {
+            background-color: #f0ad4e;
+            color: white;
+        }
+
+        .return-section {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #fff3cd;
+            border-radius: 5px;
+        }
+
+        .return-section textarea {
+            width: 100%;
+            max-width: 700px;
+            box-sizing: border-box;
+            padding: 8px;
+            margin-top: 8px;
+            margin-bottom: 10px;
+        }
+
+        .return-feedback {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #fff3cd;
+            border-radius: 5px;
+        }
+
         .back-button {
             background-color: #008CBA;
             color: white;
@@ -141,6 +169,24 @@
                 </ol>
             </div>
         {% endif %}
+        {% if return_action %}
+            <div class="return-feedback">
+                <p>
+                    <strong>Returned for Revision By:</strong>
+                    {{ return_action.acted_by.username }}
+                </p>
+
+                <p>
+                    <strong>Returned At:</strong>
+                    {{ return_action.acted_at|date:"M j, Y, g:i A" }}
+                </p>
+
+                <p>
+                    <strong>Feedback:</strong><br>
+                    {{ return_action.comment }}
+                </p>
+            </div>
+        {% endif %}
     </div>
 
     <h2>Basic Information</h2>
@@ -191,6 +237,45 @@
                     1 of 2 approvals received.
                 </strong>
             {% endif %}
+
+            {% if can_return %}
+                <div class="return-section">
+                    <form
+                        method="post"
+                        action="{% url 'change_request_review' change_request.id %}"
+                    >
+                        {% csrf_token %}
+
+                        <input
+                            type="hidden"
+                            name="action"
+                            value="return"
+                        >
+
+                        <label for="return-comment">
+                            <strong>Return for Revision Feedback:</strong>
+                        </label>
+
+                        <textarea
+                            id="return-comment"
+                            name="comment"
+                            rows="4"
+                            maxlength="500"
+                            required
+                        ></textarea>
+
+                        <br>
+
+                        <button
+                            type="submit"
+                            class="button-common return-button"
+                        >
+                            Return for Revision
+                        </button>
+                    </form>
+                </div>
+            {% endif %}
+
         {% endif %}
 
         <a

@@ -41,8 +41,10 @@ from .forms import (
 )
 from .change_request_workflow import (
     ChangeRequestApprovalError,
+    ChangeRequestReturnError,
     ChangeRequestValidationError,
     approve_standalone_change_request,
+    return_standalone_change_request,
     serialize_change_request_value,
 )
 from django.core.files.storage import default_storage
@@ -1619,7 +1621,30 @@ def change_request_review(request, request_id):
         acted_by=request.user,
     ).exists()
 
+    return_action = (
+        ChangeAction.objects
+        .filter(
+            change_request=change_request,
+            revision_no=revision_no,
+            action=ChangeAction.Action.RETURN,
+        )
+        .select_related("acted_by")
+        .order_by("-acted_at", "-id")
+        .first()
+    )
+
     can_approve = (
+        user_has_any_role(
+            request.user,
+            ROLE_APPROVER,
+        )
+        and change_request.status == ChangeRequest.Status.PENDING
+        and change_request.submitted_by_id != request.user.id
+        and not user_has_approved
+        and approval_count < 2
+    )
+
+    can_return = (
         user_has_any_role(
             request.user,
             ROLE_APPROVER,
@@ -1632,6 +1657,50 @@ def change_request_review(request, request_id):
 
     if request.method == "POST":
         action = request.POST.get("action")
+
+        if action == "return":
+            try:
+                return_result = return_standalone_change_request(
+                    change_request_id=change_request.id,
+                    approver=request.user,
+                    comment=request.POST.get("comment", ""),
+                )
+
+            except ChangeRequestReturnError as exc:
+                messages.error(
+                    request,
+                    str(exc),
+                )
+                return redirect(
+                    "change_request_review",
+                    request_id=request_id,
+                )
+
+            except IntegrityError:
+                messages.error(
+                    request,
+                    (
+                        "The Change Request could not be returned "
+                        "because it changed. Please review it again."
+                    ),
+                )
+                return redirect(
+                    "change_request_review",
+                    request_id=request_id,
+                )
+
+            messages.success(
+                request,
+                (
+                    "The Change Request has been returned for "
+                    "revision."
+                ),
+            )
+
+            return redirect(
+                "change_request_review",
+                request_id=return_result.change_request_id,
+            )
 
         if action != "approve":
             messages.error(
@@ -1788,7 +1857,9 @@ def change_request_review(request, request_id):
             "approvals": approvals,
             "approval_count": approval_count,
             "user_has_approved": user_has_approved,
+            "return_action": return_action,
             "can_approve": can_approve,
+            "can_return": can_return,
             "is_history_request": is_history_request,
         },
     )
