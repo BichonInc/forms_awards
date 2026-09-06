@@ -61,6 +61,12 @@ class ChangeRequestReturnError(Exception):
     """
 
 
+class ChangeRequestResubmitError(Exception):
+    """
+    Raised when a returned Change Request cannot be resubmitted.
+    """
+
+
 @dataclass(frozen=True)
 class BasicInformationValidationResult:
     proposed_values: dict
@@ -83,6 +89,15 @@ class StandaloneReturnResult:
     status: str
     revision_no: int
     approval_count: int
+
+
+@dataclass(frozen=True)
+class StandaloneResubmitResult:
+    change_request_id: int
+    status: str
+    previous_revision_no: int
+    revision_no: int
+    changed_fields: tuple
 
 
 def serialize_change_request_value(value):
@@ -207,50 +222,27 @@ def validate_basic_information_revision_baseline(
     return grant, snapshots_by_field
 
 
-def validate_basic_information_change_request(
-        change_request,
+def _validate_basic_information_proposed_form_data(
         *,
-        grant=None,
+        change_request,
+        grant,
+        proposed_form_data,
 ):
     """
-    Fully revalidate the current revision of an existing-grant Basic
-    Information Change Request without writing anything to the database.
+    Fully validate proposed Basic Information form data against the
+    authoritative grant without writing to Form1.
 
-    This verifies that:
-      1. the revision has one snapshot for every expected Basic Information
-         field;
-      2. authoritative Form1 values still match the revision's stored
-         current-value snapshot;
-      3. the complete proposed Form1 state still passes the same form
-         validation used during submission; and
-      4. the proposed Award Code / Internal GL date range does not overlap
-         another authoritative grant.
-
-    Returns a BasicInformationValidationResult when safe to continue.
+    The caller is responsible for performing any required authoritative
+    baseline check before calling this helper.
     """
-    _, snapshots_by_field = (
-        validate_basic_information_revision_baseline(
-            change_request,
-            grant=grant,
+    if grant.grant_id != change_request.grant_id:
+        raise ChangeRequestValidationError(
+            "The authoritative grant does not belong to this "
+            "Change Request."
         )
-    )
 
-    proposed_form_data = {}
-
-    for field_name in GRANT_BASIC_INFORMATION_CHANGE_FIELDS:
-        snapshot = snapshots_by_field[field_name]
-
-        if snapshot.proposed_value is None:
-            proposed_form_data[field_name] = (
-                snapshot.current_value
-            )
-        else:
-            proposed_form_data[field_name] = (
-                snapshot.proposed_value
-            )
-
-    # Use a fresh model instance because ModelForm validation may update its
-    # instance in memory even when save() is never called.
+    # Use a separate model instance because ModelForm validation may update
+    # its instance in memory even when save() is never called.
     validation_grant = Form1.objects.get(
         grant_id=change_request.grant_id,
     )
@@ -262,7 +254,7 @@ def validate_basic_information_change_request(
 
     if not form.is_valid():
         raise ChangeRequestValidationError(
-            "The proposed Basic Information no longer passes validation: "
+            "The proposed Basic Information does not pass validation: "
             + form.errors.as_text()
         )
 
@@ -296,14 +288,29 @@ def validate_basic_information_change_request(
             f"with: {conflicting_grant_ids}."
         )
 
+    proposed_values = {
+        field_name: form.cleaned_data.get(field_name)
+        for field_name
+        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    }
+
+    current_values = {
+        field_name: serialize_change_request_value(
+            getattr(grant, field_name)
+        )
+        for field_name
+        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    }
+
     changed_fields = tuple(
         field_name
         for field_name
         in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
         if (
-            snapshots_by_field[field_name]
-            .proposed_value
-            is not None
+            serialize_change_request_value(
+                proposed_values[field_name]
+            )
+            != current_values[field_name]
         )
     )
 
@@ -313,12 +320,6 @@ def validate_basic_information_change_request(
             "changes."
         )
 
-    proposed_values = {
-        field_name: form.cleaned_data.get(field_name)
-        for field_name
-        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
-    }
-
     return BasicInformationValidationResult(
         proposed_values=proposed_values,
         changed_fields=changed_fields,
@@ -327,6 +328,55 @@ def validate_basic_information_change_request(
                 changed_fields
             )
         ),
+    )
+
+
+def validate_basic_information_change_request(
+        change_request,
+        *,
+        grant=None,
+):
+    """
+    Fully revalidate the current revision of an existing-grant Basic
+    Information Change Request without writing anything to the database.
+
+    This verifies that:
+      1. the revision has one snapshot for every expected Basic Information
+         field;
+      2. authoritative Form1 values still match the revision's stored
+         current-value snapshot;
+      3. the complete proposed Form1 state still passes the same form
+         validation used during submission; and
+      4. the proposed Award Code / Internal GL date range does not overlap
+         another authoritative grant.
+
+    Returns a BasicInformationValidationResult when safe to continue.
+    """
+    grant, snapshots_by_field = (
+        validate_basic_information_revision_baseline(
+            change_request,
+            grant=grant,
+        )
+    )
+
+    proposed_form_data = {}
+
+    for field_name in GRANT_BASIC_INFORMATION_CHANGE_FIELDS:
+        snapshot = snapshots_by_field[field_name]
+
+        if snapshot.proposed_value is None:
+            proposed_form_data[field_name] = (
+                snapshot.current_value
+            )
+        else:
+            proposed_form_data[field_name] = (
+                snapshot.proposed_value
+            )
+
+    return _validate_basic_information_proposed_form_data(
+        change_request=change_request,
+        grant=grant,
+        proposed_form_data=proposed_form_data,
     )
 
 
@@ -687,4 +737,207 @@ def return_standalone_change_request(
             status=change_request.status,
             revision_no=revision_no,
             approval_count=approval_count,
+        )
+
+
+def resubmit_standalone_change_request(
+        *,
+        change_request_id,
+        resubmitter,
+        proposed_form_data,
+        comment="",
+):
+    """
+    Create the next formal revision of a returned standalone Basic
+    Information Change Request.
+
+    The previous revision remains immutable. The new revision receives a
+    complete 14-field snapshot, a RESUBMIT action identifying the actual
+    resubmitter, and begins PENDING with zero approvals.
+    """
+    resubmission_comment = (comment or "").strip()
+
+    if len(resubmission_comment) > 500:
+        raise ChangeRequestResubmitError(
+            "Resubmission comments cannot exceed 500 characters."
+        )
+
+    with transaction.atomic():
+        change_request = (
+            ChangeRequest.objects
+            .select_for_update()
+            .get(pk=change_request_id)
+        )
+
+        if change_request.coordinated_change_id is not None:
+            raise ChangeRequestResubmitError(
+                "A coordinated Change Request cannot be resubmitted "
+                "through the standalone workflow."
+            )
+
+        if (
+            change_request.request_type
+            != ChangeRequest.RequestType.EDIT_GRANT
+        ):
+            raise ChangeRequestResubmitError(
+                "This resubmission service currently supports only "
+                "existing-grant Basic Information Change Requests."
+            )
+
+        if change_request.status != ChangeRequest.Status.RETURNED:
+            raise ChangeRequestResubmitError(
+                "Only a Change Request that is Returned for Revision "
+                "can be resubmitted."
+            )
+
+        previous_revision_no = (
+            change_request.current_revision
+        )
+
+        return_count = (
+            ChangeAction.objects
+            .filter(
+                change_request=change_request,
+                revision_no=previous_revision_no,
+                action=ChangeAction.Action.RETURN,
+            )
+            .count()
+        )
+
+        if return_count != 1:
+            raise ChangeRequestResubmitError(
+                "The returned revision does not have exactly one recorded "
+                "Return for Revision action."
+            )
+
+        approval_count = (
+            ChangeAction.objects
+            .filter(
+                change_request=change_request,
+                revision_no=previous_revision_no,
+                action=ChangeAction.Action.APPROVE,
+            )
+            .count()
+        )
+
+        if approval_count >= 2:
+            raise ChangeRequestResubmitError(
+                "A revision with two approvals cannot be resubmitted."
+            )
+
+        grant = (
+            Form1.objects
+            .select_for_update()
+            .get(grant_id=change_request.grant_id)
+        )
+
+        validate_basic_information_revision_baseline(
+            change_request,
+            grant=grant,
+        )
+
+        validation_result = (
+            _validate_basic_information_proposed_form_data(
+                change_request=change_request,
+                grant=grant,
+                proposed_form_data=proposed_form_data,
+            )
+        )
+
+        new_revision_no = previous_revision_no + 1
+
+        if (
+            ChangeRequestField.objects
+            .filter(
+                change_request=change_request,
+                revision_no=new_revision_no,
+            )
+            .exists()
+        ):
+            raise ChangeRequestResubmitError(
+                "The next revision already contains field snapshots."
+            )
+
+        if (
+            ChangeAction.objects
+            .filter(
+                change_request=change_request,
+                revision_no=new_revision_no,
+            )
+            .exists()
+        ):
+            raise ChangeRequestResubmitError(
+                "The next revision already contains workflow actions."
+            )
+
+        current_values = {
+            field_name: serialize_change_request_value(
+                getattr(grant, field_name)
+            )
+            for field_name
+            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        }
+
+        proposed_values = {
+            field_name: serialize_change_request_value(
+                validation_result.proposed_values[field_name]
+            )
+            for field_name
+            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        }
+
+        field_snapshots = []
+
+        for field_name in (
+            GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        ):
+            current_value = current_values[field_name]
+            proposed_value = proposed_values[field_name]
+
+            if proposed_value == current_value:
+                stored_proposed_value = None
+            else:
+                stored_proposed_value = proposed_value
+
+            field_snapshots.append(
+                ChangeRequestField(
+                    change_request=change_request,
+                    revision_no=new_revision_no,
+                    field_name=field_name,
+                    current_value=current_value,
+                    proposed_value=stored_proposed_value,
+                )
+            )
+
+        ChangeRequestField.objects.bulk_create(
+            field_snapshots
+        )
+
+        ChangeAction.objects.create(
+            change_request=change_request,
+            revision_no=new_revision_no,
+            acted_by=resubmitter,
+            action=ChangeAction.Action.RESUBMIT,
+            comment=resubmission_comment,
+        )
+
+        change_request.current_revision = (
+            new_revision_no
+        )
+        change_request.status = (
+            ChangeRequest.Status.PENDING
+        )
+        change_request.save(
+            update_fields=[
+                "current_revision",
+                "status",
+            ]
+        )
+
+        return StandaloneResubmitResult(
+            change_request_id=change_request.id,
+            status=change_request.status,
+            previous_revision_no=previous_revision_no,
+            revision_no=new_revision_no,
+            changed_fields=validation_result.changed_fields,
         )
