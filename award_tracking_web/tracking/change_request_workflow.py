@@ -3,6 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 
 from .forms import (
     GRANT_BASIC_INFORMATION_CHANGE_FIELDS,
@@ -18,6 +19,10 @@ from .models import (
     Form1,
 )
 
+from .permissions import (
+    ROLE_ADMINISTRATOR,
+    user_has_any_role,
+)
 
 GL_ASSIGNMENT_FIELDS = {
     "internal_award_code",
@@ -112,6 +117,12 @@ class ChangeRequestIntegrityBlockedError(
         super().__init__(message)
 
 
+class ChangeRequestIntegrityDispositionError(Exception):
+    """
+    Raised when an integrity incident cannot be dispositioned safely.
+    """
+
+
 @dataclass(frozen=True)
 class BasicInformationValidationResult:
     proposed_values: dict
@@ -150,6 +161,16 @@ class IntegrityIssueDetectionResult:
     integrity_issue_id: int
     created: bool
     revision_no: int
+
+
+@dataclass(frozen=True)
+class IntegrityIssueDispositionResult:
+    integrity_issue_id: int
+    change_request_id: int
+    revision_no: int
+    change_request_status: str
+    classification: str
+    checkpoint_field_count: int
 
 
 def serialize_change_request_value(value):
@@ -195,6 +216,97 @@ def get_open_change_request_integrity_issue(
         issues = issues.select_for_update()
 
     return issues.first()
+
+
+def get_integrity_snapshot_values(
+        integrity_issue,
+        *,
+        stage,
+        lock=False,
+):
+    """
+    Return one complete integrity snapshot stage as a dictionary.
+
+    A valid integrity snapshot stage must contain exactly one row for every
+    protected Basic Information field and no unexpected fields.
+    """
+    valid_stages = {
+        value
+        for value, _label
+        in ChangeRequestIntegritySnapshotField.Stage.choices
+    }
+
+    if stage not in valid_stages:
+        raise ChangeRequestIntegrityIssueError(
+            "Invalid integrity snapshot stage."
+        )
+
+    snapshots = (
+        ChangeRequestIntegritySnapshotField.objects
+        .filter(
+            integrity_issue=integrity_issue,
+            stage=stage,
+        )
+        .order_by("field_name")
+    )
+
+    if lock:
+        snapshots = snapshots.select_for_update()
+
+    snapshots = list(snapshots)
+
+    expected_fields = set(
+        GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    )
+
+    snapshot_fields = {
+        snapshot.field_name
+        for snapshot in snapshots
+    }
+
+    missing_fields = sorted(
+        expected_fields - snapshot_fields
+    )
+
+    unexpected_fields = sorted(
+        snapshot_fields - expected_fields
+    )
+
+    if (
+        len(snapshots) != len(expected_fields)
+        or missing_fields
+        or unexpected_fields
+    ):
+        details = []
+
+        if missing_fields:
+            details.append(
+                "missing fields: "
+                + ", ".join(missing_fields)
+            )
+
+        if unexpected_fields:
+            details.append(
+                "unexpected fields: "
+                + ", ".join(unexpected_fields)
+            )
+
+        if not details:
+            details.append(
+                "the snapshot does not contain exactly one row "
+                "for every protected field"
+            )
+
+        raise ChangeRequestIntegrityIssueError(
+            "The integrity snapshot is incomplete or invalid ("
+            + "; ".join(details)
+            + ")."
+        )
+
+    return {
+        snapshot.field_name: snapshot.authoritative_value
+        for snapshot in snapshots
+    }
 
 
 def detect_or_get_change_request_integrity_issue(
@@ -345,6 +457,213 @@ def detect_or_get_change_request_integrity_issue(
             integrity_issue_id=integrity_issue.id,
             created=True,
             revision_no=integrity_issue.revision_no,
+        )
+
+
+def resolve_change_request_integrity_issue(
+        *,
+        integrity_issue_id,
+        administrator,
+        classification,
+        comment,
+):
+    """
+    Resolve an OPEN Basic Information integrity incident.
+
+    The Administrator classifies the incident, records a required
+    explanation, captures all current authoritative Form1 values as the
+    DISPOSITION checkpoint, closes the incident, and returns the Change
+    Request to Editors.
+
+    This service does not modify authoritative Form1 values and does not
+    create an ordinary ChangeAction RETURN record.
+    """
+    if not user_has_any_role(
+        administrator,
+        ROLE_ADMINISTRATOR,
+    ):
+        raise ChangeRequestIntegrityDispositionError(
+            "Only an Administrator can resolve an integrity incident."
+        )
+
+    resolution_comment = (comment or "").strip()
+
+    if not resolution_comment:
+        raise ChangeRequestIntegrityDispositionError(
+            "Integrity resolution requires an explanation."
+        )
+
+    if len(resolution_comment) > 1000:
+        raise ChangeRequestIntegrityDispositionError(
+            "Integrity resolution explanation cannot exceed "
+            "1000 characters."
+        )
+
+    valid_classifications = {
+        value
+        for value, _label
+        in ChangeRequestIntegrityIssue.Classification.choices
+    }
+
+    if classification not in valid_classifications:
+        raise ChangeRequestIntegrityDispositionError(
+            "A valid integrity classification is required."
+        )
+
+    with transaction.atomic():
+        integrity_issue = (
+            ChangeRequestIntegrityIssue.objects
+            .select_for_update()
+            .get(pk=integrity_issue_id)
+        )
+
+        change_request = (
+            ChangeRequest.objects
+            .select_for_update()
+            .get(pk=integrity_issue.change_request_id)
+        )
+
+        if (
+            integrity_issue.status
+            != ChangeRequestIntegrityIssue.Status.OPEN
+        ):
+            raise ChangeRequestIntegrityDispositionError(
+                "This integrity incident is no longer open."
+            )
+
+        if change_request.coordinated_change_id is not None:
+            raise ChangeRequestIntegrityDispositionError(
+                "A coordinated Change Request cannot be resolved through "
+                "the standalone integrity workflow."
+            )
+
+        if (
+            change_request.request_type
+            != ChangeRequest.RequestType.EDIT_GRANT
+        ):
+            raise ChangeRequestIntegrityDispositionError(
+                "This integrity workflow currently supports only "
+                "existing-grant Basic Information Change Requests."
+            )
+
+        if change_request.status not in {
+            ChangeRequest.Status.PENDING,
+            ChangeRequest.Status.RETURNED,
+        }:
+            raise ChangeRequestIntegrityDispositionError(
+                "The Change Request is not in a state that can be "
+                "returned to Editors through integrity resolution."
+            )
+
+        if (
+            integrity_issue.revision_no
+            != change_request.current_revision
+        ):
+            raise ChangeRequestIntegrityDispositionError(
+                "The integrity incident does not belong to the current "
+                "formal revision."
+            )
+
+        try:
+            get_integrity_snapshot_values(
+                integrity_issue,
+                stage=(
+                    ChangeRequestIntegritySnapshotField
+                    .Stage
+                    .DETECTION
+                ),
+                lock=True,
+            )
+        except ChangeRequestIntegrityIssueError as exc:
+            raise ChangeRequestIntegrityDispositionError(
+                str(exc)
+            ) from exc
+
+        disposition_exists = (
+            ChangeRequestIntegritySnapshotField.objects
+            .filter(
+                integrity_issue=integrity_issue,
+                stage=(
+                    ChangeRequestIntegritySnapshotField
+                    .Stage
+                    .DISPOSITION
+                ),
+            )
+            .exists()
+        )
+
+        if disposition_exists:
+            raise ChangeRequestIntegrityDispositionError(
+                "This integrity incident already contains a "
+                "Disposition checkpoint."
+            )
+
+        grant = (
+            Form1.objects
+            .select_for_update()
+            .get(grant_id=change_request.grant_id)
+        )
+
+        disposition_values = {
+            field_name: serialize_change_request_value(
+                getattr(grant, field_name)
+            )
+            for field_name
+            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        }
+
+        ChangeRequestIntegritySnapshotField.objects.bulk_create(
+            [
+                ChangeRequestIntegritySnapshotField(
+                    integrity_issue=integrity_issue,
+                    stage=(
+                        ChangeRequestIntegritySnapshotField
+                        .Stage
+                        .DISPOSITION
+                    ),
+                    field_name=field_name,
+                    authoritative_value=(
+                        disposition_values[field_name]
+                    ),
+                )
+                for field_name
+                in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+            ]
+        )
+
+        integrity_issue.status = (
+            ChangeRequestIntegrityIssue.Status.CLOSED
+        )
+        integrity_issue.classification = classification
+        integrity_issue.closed_by = administrator
+        integrity_issue.closed_at = timezone.now()
+        integrity_issue.resolution_comment = (
+            resolution_comment
+        )
+        integrity_issue.save(
+            update_fields=[
+                "status",
+                "classification",
+                "closed_by",
+                "closed_at",
+                "resolution_comment",
+            ]
+        )
+
+        change_request.status = (
+            ChangeRequest.Status.RETURNED
+        )
+        change_request.save(
+            update_fields=["status"]
+        )
+
+        return IntegrityIssueDispositionResult(
+            integrity_issue_id=integrity_issue.id,
+            change_request_id=change_request.id,
+            revision_no=integrity_issue.revision_no,
+            change_request_status=change_request.status,
+            classification=integrity_issue.classification,
+            checkpoint_field_count=len(disposition_values),
         )
 
 
