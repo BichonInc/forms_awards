@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 
 from .forms import (
     GRANT_BASIC_INFORMATION_CHANGE_FIELDS,
@@ -13,6 +13,8 @@ from .models import (
     ChangeAction,
     ChangeRequest,
     ChangeRequestField,
+    ChangeRequestIntegrityIssue,
+    ChangeRequestIntegritySnapshotField,
     Form1,
 )
 
@@ -67,6 +69,13 @@ class ChangeRequestResubmitError(Exception):
     """
 
 
+class ChangeRequestIntegrityIssueError(Exception):
+    """
+    Raised when a Change Request integrity incident cannot be recorded
+    or used safely.
+    """
+
+
 @dataclass(frozen=True)
 class BasicInformationValidationResult:
     proposed_values: dict
@@ -100,6 +109,13 @@ class StandaloneResubmitResult:
     changed_fields: tuple
 
 
+@dataclass(frozen=True)
+class IntegrityIssueDetectionResult:
+    integrity_issue_id: int
+    created: bool
+    revision_no: int
+
+
 def serialize_change_request_value(value):
     """
     Convert Basic Information values to stable text for audit storage.
@@ -117,6 +133,183 @@ def serialize_change_request_value(value):
         return format(value, "f")
 
     return str(value)
+
+
+def get_open_change_request_integrity_issue(
+        change_request,
+        *,
+        lock=False,
+):
+    """
+    Return the currently OPEN integrity issue for a Change Request,
+    if one exists.
+
+    When lock=True, request a row lock for callers already operating inside
+    a transaction.
+    """
+    issues = (
+        ChangeRequestIntegrityIssue.objects
+        .filter(
+            change_request=change_request,
+            status=ChangeRequestIntegrityIssue.Status.OPEN,
+        )
+    )
+
+    if lock:
+        issues = issues.select_for_update()
+
+    return issues.first()
+
+
+def detect_or_get_change_request_integrity_issue(
+        *,
+        change_request_id,
+        detected_by,
+        detected_during,
+):
+    """
+    Record an OPEN Basic Information integrity incident when authoritative
+    Form1 no longer matches the current formal revision baseline.
+
+    The first detection captures all protected Basic Information fields as
+    immutable DETECTION evidence.
+
+    If an OPEN incident already exists for the Change Request, return that
+    incident without creating duplicate issue or snapshot records.
+    """
+    valid_detection_stages = {
+        value
+        for value, _label
+        in ChangeRequestIntegrityIssue.DetectedDuring.choices
+    }
+
+    if detected_during not in valid_detection_stages:
+        raise ChangeRequestIntegrityIssueError(
+            "Invalid integrity-incident detection stage."
+        )
+
+    with transaction.atomic():
+        change_request = (
+            ChangeRequest.objects
+            .select_for_update()
+            .get(pk=change_request_id)
+        )
+
+        existing_issue = (
+            get_open_change_request_integrity_issue(
+                change_request,
+                lock=True,
+            )
+        )
+
+        if existing_issue is not None:
+            return IntegrityIssueDetectionResult(
+                integrity_issue_id=existing_issue.id,
+                created=False,
+                revision_no=existing_issue.revision_no,
+            )
+
+        if (
+            change_request.request_type
+            != ChangeRequest.RequestType.EDIT_GRANT
+        ):
+            raise ChangeRequestIntegrityIssueError(
+                "Integrity detection currently supports only existing-grant "
+                "Basic Information Change Requests."
+            )
+
+        if change_request.current_revision < 1:
+            raise ChangeRequestIntegrityIssueError(
+                "The Change Request does not have a valid current revision."
+            )
+
+        grant = (
+            Form1.objects
+            .select_for_update()
+            .get(grant_id=change_request.grant_id)
+        )
+
+        try:
+            validate_basic_information_revision_baseline(
+                change_request,
+                grant=grant,
+            )
+
+        except ChangeRequestBaselineMismatchError:
+            pass
+
+        else:
+            raise ChangeRequestIntegrityIssueError(
+                "No authoritative Basic Information baseline mismatch "
+                "currently exists for this Change Request."
+            )
+
+        detection_values = {
+            field_name: serialize_change_request_value(
+                getattr(grant, field_name)
+            )
+            for field_name
+            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        }
+
+        try:
+            with transaction.atomic():
+                integrity_issue = (
+                    ChangeRequestIntegrityIssue.objects.create(
+                        change_request=change_request,
+                        revision_no=change_request.current_revision,
+                        request_status_at_detection=(
+                            change_request.status
+                        ),
+                        detected_during=detected_during,
+                        detected_by=detected_by,
+                    )
+                )
+
+                ChangeRequestIntegritySnapshotField.objects.bulk_create(
+                    [
+                        ChangeRequestIntegritySnapshotField(
+                            integrity_issue=integrity_issue,
+                            stage=(
+                                ChangeRequestIntegritySnapshotField
+                                .Stage
+                                .DETECTION
+                            ),
+                            field_name=field_name,
+                            authoritative_value=(
+                                detection_values[field_name]
+                            ),
+                        )
+                        for field_name
+                        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+                    ]
+                )
+
+        except IntegrityError:
+            # Final concurrency protection. If another transaction created
+            # the OPEN incident first, reuse it instead of creating a
+            # duplicate incident.
+            existing_issue = (
+                get_open_change_request_integrity_issue(
+                    change_request,
+                    lock=True,
+                )
+            )
+
+            if existing_issue is None:
+                raise
+
+            return IntegrityIssueDetectionResult(
+                integrity_issue_id=existing_issue.id,
+                created=False,
+                revision_no=existing_issue.revision_no,
+            )
+
+        return IntegrityIssueDetectionResult(
+            integrity_issue_id=integrity_issue.id,
+            created=True,
+            revision_no=integrity_issue.revision_no,
+        )
 
 
 def validate_basic_information_revision_baseline(
