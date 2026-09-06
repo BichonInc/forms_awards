@@ -31,6 +31,15 @@ GL_ASSIGNMENT_FIELDS = {
 }
 
 
+RESUBMISSION_BASELINE_FORMAL_REVISION = (
+    "FORMAL_REVISION"
+)
+
+RESUBMISSION_BASELINE_INTEGRITY_DISPOSITION = (
+    "INTEGRITY_DISPOSITION"
+)
+
+
 class ChangeRequestValidationError(Exception):
     """
     Raised when a submitted Change Request can no longer be safely applied.
@@ -41,19 +50,36 @@ class ChangeRequestBaselineMismatchError(
         ChangeRequestValidationError
 ):
     """
-    Raised when authoritative Form1 values no longer match the current
-    revision's recorded authoritative baseline.
+    Raised when authoritative Form1 values no longer match the applicable
+    recorded authoritative baseline.
     """
 
-    def __init__(self, stale_fields):
+    def __init__(
+            self,
+            stale_fields,
+            *,
+            baseline_description=None,
+    ):
         self.stale_fields = tuple(stale_fields)
+        self.baseline_description = baseline_description
 
-        super().__init__(
-            "The authoritative grant no longer matches the current-value "
-            "snapshot for this revision. Stale fields: "
-            + ", ".join(self.stale_fields)
-            + "."
-        )
+        if baseline_description is None:
+            message = (
+                "The authoritative grant no longer matches the current-value "
+                "snapshot for this revision. Stale fields: "
+                + ", ".join(self.stale_fields)
+                + "."
+            )
+        else:
+            message = (
+                "The authoritative grant no longer matches "
+                + baseline_description
+                + ". Stale fields: "
+                + ", ".join(self.stale_fields)
+                + "."
+            )
+
+        super().__init__(message)
 
 
 class ChangeRequestApprovalError(Exception):
@@ -171,6 +197,13 @@ class IntegrityIssueDispositionResult:
     change_request_status: str
     classification: str
     checkpoint_field_count: int
+
+
+@dataclass(frozen=True)
+class ReturnedResubmissionBaselineResult:
+    source: str
+    baseline_values: dict
+    integrity_issue_id: int | None
 
 
 def serialize_change_request_value(value):
@@ -307,6 +340,147 @@ def get_integrity_snapshot_values(
         snapshot.field_name: snapshot.authoritative_value
         for snapshot in snapshots
     }
+
+
+def validate_returned_resubmission_baseline(
+        change_request,
+        *,
+        grant=None,
+        lock=False,
+):
+    """
+    Validate the authoritative baseline that applies to a returned
+    standalone Basic Information Change Request.
+
+    Ordinary Return for Revision:
+        validate against the current formal revision snapshot.
+
+    Administrator Integrity Return:
+        validate against the most recent closed integrity DISPOSITION
+        checkpoint for the current formal revision.
+
+    A DISPOSITION checkpoint takes precedence over the original formal
+    revision baseline because it records the authoritative Form1 state
+    accepted by the Administrator when resolving the integrity incident.
+    """
+    if change_request.status != ChangeRequest.Status.RETURNED:
+        raise ChangeRequestValidationError(
+            "The Change Request is not Returned for Revision."
+        )
+
+    existing_open_issue = (
+        get_open_change_request_integrity_issue(
+            change_request,
+            lock=lock,
+        )
+    )
+
+    if existing_open_issue is not None:
+        raise ChangeRequestIntegrityBlockedError(
+            existing_open_issue.id,
+            newly_detected=False,
+        )
+
+    if grant is None:
+        grants = Form1.objects.filter(
+            grant_id=change_request.grant_id
+        )
+
+        if lock:
+            grants = grants.select_for_update()
+
+        grant = grants.get()
+
+    elif grant.grant_id != change_request.grant_id:
+        raise ChangeRequestValidationError(
+            "The authoritative grant does not belong to this "
+            "Change Request."
+        )
+
+    latest_closed_issue = (
+        ChangeRequestIntegrityIssue.objects
+        .filter(
+            change_request=change_request,
+            revision_no=change_request.current_revision,
+            status=ChangeRequestIntegrityIssue.Status.CLOSED,
+        )
+        .order_by(
+            "-closed_at",
+            "-id",
+        )
+        .first()
+    )
+
+    if latest_closed_issue is None:
+        grant, snapshots_by_field = (
+            validate_basic_information_revision_baseline(
+                change_request,
+                grant=grant,
+            )
+        )
+
+        baseline_values = {
+            field_name: (
+                snapshots_by_field[field_name].current_value
+            )
+            for field_name
+            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        }
+
+        return ReturnedResubmissionBaselineResult(
+            source=(
+                RESUBMISSION_BASELINE_FORMAL_REVISION
+            ),
+            baseline_values=baseline_values,
+            integrity_issue_id=None,
+        )
+
+    try:
+        baseline_values = get_integrity_snapshot_values(
+            latest_closed_issue,
+            stage=(
+                ChangeRequestIntegritySnapshotField
+                .Stage
+                .DISPOSITION
+            ),
+            lock=lock,
+        )
+
+    except ChangeRequestIntegrityIssueError as exc:
+        raise ChangeRequestValidationError(
+            "The latest integrity disposition checkpoint is invalid: "
+            + str(exc)
+        ) from exc
+
+    stale_fields = []
+
+    for field_name in GRANT_BASIC_INFORMATION_CHANGE_FIELDS:
+        authoritative_value = serialize_change_request_value(
+            getattr(grant, field_name)
+        )
+
+        if (
+            authoritative_value
+            != baseline_values[field_name]
+        ):
+            stale_fields.append(field_name)
+
+    if stale_fields:
+        raise ChangeRequestBaselineMismatchError(
+            stale_fields,
+            baseline_description=(
+                "the Administrator integrity disposition checkpoint "
+                f"for Integrity Issue #{latest_closed_issue.id}"
+            ),
+        )
+
+    return ReturnedResubmissionBaselineResult(
+        source=(
+            RESUBMISSION_BASELINE_INTEGRITY_DISPOSITION
+        ),
+        baseline_values=baseline_values,
+        integrity_issue_id=latest_closed_issue.id,
+    )
 
 
 def detect_or_get_change_request_integrity_issue(
