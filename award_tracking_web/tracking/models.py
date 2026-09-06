@@ -616,6 +616,167 @@ class ChangeNote(models.Model):
         )
 
 
+class ChangeRequestIntegrityIssue(models.Model):
+    class Status(models.TextChoices):
+        OPEN = "OPEN", "Open"
+        CLOSED = "CLOSED", "Closed"
+
+    class Classification(models.TextChoices):
+        LEGITIMATE = "LEGITIMATE", "Legitimate"
+        ILLEGITIMATE = "ILLEGITIMATE", "Illegitimate"
+
+    class DetectedDuring(models.TextChoices):
+        APPROVAL = "APPROVAL", "Approval"
+        RETURN = "RETURN", "Return for Revision"
+        RESUBMIT = "RESUBMIT", "Resubmission"
+        REVIEW = "REVIEW", "Review"
+        OTHER = "OTHER", "Other"
+
+    change_request = models.ForeignKey(
+        ChangeRequest,
+        on_delete=models.PROTECT,
+        related_name="integrity_issues",
+    )
+
+    revision_no = models.PositiveIntegerField()
+
+    request_status_at_detection = models.CharField(
+        max_length=20,
+        choices=ChangeRequest.Status.choices,
+    )
+
+    detected_during = models.CharField(
+        max_length=20,
+        choices=DetectedDuring.choices,
+    )
+
+    detected_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="detected_change_request_integrity_issues",
+    )
+
+    detected_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    status = models.CharField(
+        max_length=10,
+        choices=Status.choices,
+        default=Status.OPEN,
+    )
+
+    classification = models.CharField(
+        max_length=20,
+        choices=Classification.choices,
+        null=True,
+        blank=True,
+    )
+
+    closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="closed_change_request_integrity_issues",
+    )
+
+    closed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    resolution_comment = models.TextField(
+        blank=True,
+        default="",
+        max_length=1000,
+    )
+
+    class Meta:
+        db_table = "change_request_integrity_issue"
+        ordering = ["-detected_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["change_request"],
+                condition=models.Q(status="OPEN"),
+                name="unique_open_integrity_issue_per_request",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        status="OPEN",
+                        classification__isnull=True,
+                        closed_by__isnull=True,
+                        closed_at__isnull=True,
+                    )
+                    | models.Q(
+                        status="CLOSED",
+                        classification__isnull=False,
+                        closed_by__isnull=False,
+                        closed_at__isnull=False,
+                    )
+                ),
+                name="integrity_issue_close_fields_consistent",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"Integrity Issue {self.id}: "
+            f"Request {self.change_request_id}, "
+            f"revision {self.revision_no} "
+            f"({self.get_status_display()})"
+        )
+
+
+class ChangeRequestIntegritySnapshotField(models.Model):
+    class Stage(models.TextChoices):
+        DETECTION = "DETECTION", "Detection"
+        DISPOSITION = "DISPOSITION", "Disposition"
+
+    integrity_issue = models.ForeignKey(
+        ChangeRequestIntegrityIssue,
+        on_delete=models.PROTECT,
+        related_name="snapshot_fields",
+    )
+
+    stage = models.CharField(
+        max_length=20,
+        choices=Stage.choices,
+    )
+
+    field_name = models.CharField(
+        max_length=100,
+    )
+
+    authoritative_value = models.TextField(
+        blank=True,
+        default="",
+    )
+
+    class Meta:
+        db_table = "change_request_integrity_snapshot_field"
+        ordering = ["stage", "field_name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=[
+                    "integrity_issue",
+                    "stage",
+                    "field_name",
+                ],
+                name="unique_integrity_snapshot_field_per_stage",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"Integrity Issue {self.integrity_issue_id}: "
+            f"{self.stage} - {self.field_name}"
+        )
+
+
 def grant_document_upload_path(instance, filename):
     return (
         f"grant_documents/{instance.grant_id}/"
