@@ -76,6 +76,42 @@ class ChangeRequestIntegrityIssueError(Exception):
     """
 
 
+class ChangeRequestIntegrityBlockedError(
+        ChangeRequestValidationError
+):
+    """
+    Raised after an integrity incident has been committed and normal
+    Change Request workflow must remain blocked.
+    """
+
+    def __init__(
+            self,
+            integrity_issue_id,
+            *,
+            newly_detected,
+    ):
+        self.integrity_issue_id = integrity_issue_id
+        self.newly_detected = newly_detected
+
+        if newly_detected:
+            message = (
+                "An authoritative Basic Information integrity issue was "
+                f"detected and recorded as Integrity Issue "
+                f"#{integrity_issue_id}. Normal workflow actions are "
+                "blocked until an Administrator resolves the issue."
+            )
+        else:
+            message = (
+                "This Change Request has an open authoritative Basic "
+                f"Information integrity issue "
+                f"(Integrity Issue #{integrity_issue_id}). Normal workflow "
+                "actions are blocked until an Administrator resolves the "
+                "issue."
+            )
+
+        super().__init__(message)
+
+
 @dataclass(frozen=True)
 class BasicInformationValidationResult:
     proposed_values: dict
@@ -672,9 +708,17 @@ def approve_standalone_change_request(
     Approval #2 revalidates and atomically applies the approved Basic
     Information proposal to Form1, then marks the request APPROVED.
 
+    If an authoritative Basic Information baseline mismatch is detected,
+    the integrity incident is committed first and the approval is then
+    blocked outside the transaction.
+
     This service is intentionally limited to standalone EDIT_GRANT requests.
     Coordinated requests use a separate group-level approval workflow.
     """
+    blocked_integrity_issue_id = None
+    blocked_integrity_issue_created = False
+    approval_result = None
+
     with transaction.atomic():
         change_request = (
             ChangeRequest.objects
@@ -702,111 +746,164 @@ def approve_standalone_change_request(
                 "This Change Request is no longer pending approval."
             )
 
-        revision_no = change_request.current_revision
-
-        revision_submitter_id = get_revision_submitter_id(
-            change_request
-        )
-
-        if revision_submitter_id == approver.id:
-            raise ChangeRequestApprovalError(
-                "You cannot approve a Change Request revision that you "
-                "submitted."
-            )
-
-        existing_approval = (
-            ChangeAction.objects
-            .filter(
-                change_request=change_request,
-                revision_no=revision_no,
-                acted_by=approver,
-                action=ChangeAction.Action.APPROVE,
-            )
-            .exists()
-        )
-
-        if existing_approval:
-            raise ChangeRequestApprovalError(
-                "You have already approved this revision."
-            )
-
-        prior_approvals = list(
-            ChangeAction.objects
-            .filter(
-                change_request=change_request,
-                revision_no=revision_no,
-                action=ChangeAction.Action.APPROVE,
-            )
-            .values_list(
-                "acted_by_id",
-                flat=True,
-            )
-        )
-
-        if len(prior_approvals) > 1:
-            raise ChangeRequestApprovalError(
-                "This revision already has enough approvals and cannot "
-                "receive another approval."
-            )
-
-        if (
-            prior_approvals
-            and prior_approvals[0] == revision_submitter_id
-        ):
-            raise ChangeRequestApprovalError(
-                "The existing approval was recorded by the submitter of "
-                "this revision and cannot count toward approval."
-            )
-
-        grant = (
-            Form1.objects
-            .select_for_update()
-            .get(grant_id=change_request.grant_id)
-        )
-
-        validation_result = (
-            validate_basic_information_change_request(
+        existing_integrity_issue = (
+            get_open_change_request_integrity_issue(
                 change_request,
-                grant=grant,
+                lock=True,
             )
         )
 
-        ChangeAction.objects.create(
-            change_request=change_request,
-            revision_no=revision_no,
-            acted_by=approver,
-            action=ChangeAction.Action.APPROVE,
-            comment="",
-        )
+        if existing_integrity_issue is not None:
+            blocked_integrity_issue_id = (
+                existing_integrity_issue.id
+            )
+            blocked_integrity_issue_created = False
 
-        if not prior_approvals:
-            return StandaloneApprovalResult(
-                change_request_id=change_request.id,
-                status=change_request.status,
-                approval_count=1,
-                changed_fields=validation_result.changed_fields,
-                gl_rematch_result=None,
+        else:
+            revision_no = change_request.current_revision
+
+            revision_submitter_id = get_revision_submitter_id(
+                change_request
             )
 
-        gl_rematch_result = (
-            _apply_validated_basic_information_values(
-                grant=grant,
-                validation_result=validation_result,
+            if revision_submitter_id == approver.id:
+                raise ChangeRequestApprovalError(
+                    "You cannot approve a Change Request revision that "
+                    "you submitted."
+                )
+
+            existing_approval = (
+                ChangeAction.objects
+                .filter(
+                    change_request=change_request,
+                    revision_no=revision_no,
+                    acted_by=approver,
+                    action=ChangeAction.Action.APPROVE,
+                )
+                .exists()
             )
+
+            if existing_approval:
+                raise ChangeRequestApprovalError(
+                    "You have already approved this revision."
+                )
+
+            prior_approvals = list(
+                ChangeAction.objects
+                .filter(
+                    change_request=change_request,
+                    revision_no=revision_no,
+                    action=ChangeAction.Action.APPROVE,
+                )
+                .values_list(
+                    "acted_by_id",
+                    flat=True,
+                )
+            )
+
+            if len(prior_approvals) > 1:
+                raise ChangeRequestApprovalError(
+                    "This revision already has enough approvals and cannot "
+                    "receive another approval."
+                )
+
+            if (
+                prior_approvals
+                and prior_approvals[0] == revision_submitter_id
+            ):
+                raise ChangeRequestApprovalError(
+                    "The existing approval was recorded by the submitter "
+                    "of this revision and cannot count toward approval."
+                )
+
+            grant = (
+                Form1.objects
+                .select_for_update()
+                .get(grant_id=change_request.grant_id)
+            )
+
+            try:
+                validation_result = (
+                    validate_basic_information_change_request(
+                        change_request,
+                        grant=grant,
+                    )
+                )
+
+            except ChangeRequestBaselineMismatchError:
+                detection_result = (
+                    detect_or_get_change_request_integrity_issue(
+                        change_request_id=change_request.id,
+                        detected_by=approver,
+                        detected_during=(
+                            ChangeRequestIntegrityIssue
+                            .DetectedDuring
+                            .APPROVAL
+                        ),
+                    )
+                )
+
+                blocked_integrity_issue_id = (
+                    detection_result.integrity_issue_id
+                )
+                blocked_integrity_issue_created = (
+                    detection_result.created
+                )
+
+            else:
+                ChangeAction.objects.create(
+                    change_request=change_request,
+                    revision_no=revision_no,
+                    acted_by=approver,
+                    action=ChangeAction.Action.APPROVE,
+                    comment="",
+                )
+
+                if not prior_approvals:
+                    approval_result = StandaloneApprovalResult(
+                        change_request_id=change_request.id,
+                        status=change_request.status,
+                        approval_count=1,
+                        changed_fields=(
+                            validation_result.changed_fields
+                        ),
+                        gl_rematch_result=None,
+                    )
+
+                else:
+                    gl_rematch_result = (
+                        _apply_validated_basic_information_values(
+                            grant=grant,
+                            validation_result=validation_result,
+                        )
+                    )
+
+                    change_request.status = (
+                        ChangeRequest.Status.APPROVED
+                    )
+                    change_request.save(
+                        update_fields=["status"]
+                    )
+
+                    approval_result = StandaloneApprovalResult(
+                        change_request_id=change_request.id,
+                        status=change_request.status,
+                        approval_count=2,
+                        changed_fields=(
+                            validation_result.changed_fields
+                        ),
+                        gl_rematch_result=gl_rematch_result,
+                    )
+
+    if blocked_integrity_issue_id is not None:
+        raise ChangeRequestIntegrityBlockedError(
+            blocked_integrity_issue_id,
+            newly_detected=(
+                blocked_integrity_issue_created
+            ),
         )
 
-        change_request.status = ChangeRequest.Status.APPROVED
-        change_request.save(
-            update_fields=["status"]
-        )
-
-        return StandaloneApprovalResult(
-            change_request_id=change_request.id,
-            status=change_request.status,
-            approval_count=2,
-            changed_fields=validation_result.changed_fields,
-            gl_rematch_result=gl_rematch_result,
-        )
+    return approval_result
 
 
 def return_standalone_change_request(
