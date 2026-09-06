@@ -552,10 +552,23 @@ def detect_or_get_change_request_integrity_issue(
         )
 
         try:
-            validate_basic_information_revision_baseline(
-                change_request,
-                grant=grant,
-            )
+            if (
+                    detected_during
+                    == ChangeRequestIntegrityIssue.DetectedDuring.RESUBMIT
+                    and change_request.status
+                    == ChangeRequest.Status.RETURNED
+            ):
+                validate_returned_resubmission_baseline(
+                    change_request,
+                    grant=grant,
+                    lock=True,
+                )
+
+            else:
+                validate_basic_information_revision_baseline(
+                    change_request,
+                    grant=grant,
+                )
 
         except ChangeRequestBaselineMismatchError:
             pass
