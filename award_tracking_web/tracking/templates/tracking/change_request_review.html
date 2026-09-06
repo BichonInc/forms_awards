@@ -67,6 +67,11 @@
             color: white;
         }
 
+        .revise-button {
+            background-color: #6f42c1;
+            color: white;
+        }
+
         .return-section {
             margin-top: 20px;
             padding: 15px;
@@ -146,10 +151,36 @@
             <strong>Revision:</strong>
             {{ change_request.current_revision }}
         </p>
-        <p>
-            <strong>Submitted By:</strong>
-            {{ change_request.submitted_by }}
-        </p>
+        {% if change_request.current_revision == 1 %}
+            <p>
+                <strong>Submitted By:</strong>
+                {{ current_revision_submitter }}
+            </p>
+        {% else %}
+            <p>
+                <strong>Original Submitted By:</strong>
+                {{ change_request.submitted_by }}
+            </p>
+
+            <p>
+                <strong>Current Revision Submitted By:</strong>
+                {{ current_revision_submitter }}
+            </p>
+
+            {% if resubmit_action.comment %}
+                <p>
+                    <strong>Resubmission Comment:</strong><br>
+                    {{ resubmit_action.comment }}
+                </p>
+            {% endif %}
+        {% endif %}
+
+        {% if revision_submitter_error %}
+            <div class="messages error">
+                <strong>Workflow Integrity Error:</strong>
+                {{ revision_submitter_error }}
+            </div>
+        {% endif %}
         <p>
             <strong>Approvals:</strong>
             {{ approval_count }} of 2
@@ -162,7 +193,7 @@
                     {% for approval in approvals %}
                         <li>
                             {{ approval.acted_by.username }}
-                            —
+                            &mdash;
                             {{ approval.acted_at|date:"M j, Y, g:i A" }}
                         </li>
                     {% endfor %}
@@ -214,6 +245,15 @@
     <div style="margin-top: 25px;">
 
         {% if not is_history_request %}
+            {% if can_resubmit %}
+                <a
+                    href="{% url 'resubmit_grant_change_request' change_request.id %}"
+                    class="button-common revise-button"
+                >
+                    Revise and Resubmit
+                </a>
+            {% endif %}
+
             {% if can_approve %}
                 <form
                     method="post"

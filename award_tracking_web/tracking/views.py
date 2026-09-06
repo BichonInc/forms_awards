@@ -50,6 +50,7 @@ from .change_request_workflow import (
     return_standalone_change_request,
     serialize_change_request_value,
     validate_basic_information_revision_baseline,
+    get_revision_submitter_id,
 )
 from django.core.files.storage import default_storage
 import pandas as pd
@@ -1783,6 +1784,52 @@ def change_request_review(request, request_id):
 
     revision_no = change_request.current_revision
 
+    revision_submitter_error = ""
+
+    try:
+        revision_submitter_id = get_revision_submitter_id(
+            change_request
+        )
+    except ChangeRequestApprovalError as exc:
+        revision_submitter_id = None
+        revision_submitter_error = str(exc)
+
+    if revision_no == 1:
+        current_revision_submitter = (
+            change_request.submitted_by
+            if (
+                revision_submitter_id
+                == change_request.submitted_by_id
+            )
+            else None
+        )
+        resubmit_action = None
+    else:
+        resubmit_actions = list(
+            ChangeAction.objects
+            .filter(
+                change_request=change_request,
+                revision_no=revision_no,
+                action=ChangeAction.Action.RESUBMIT,
+            )
+            .select_related("acted_by")
+        )
+
+        if len(resubmit_actions) == 1:
+            resubmit_action = resubmit_actions[0]
+
+            current_revision_submitter = (
+                resubmit_action.acted_by
+                if (
+                    resubmit_action.acted_by_id
+                    == revision_submitter_id
+                )
+                else None
+            )
+        else:
+            resubmit_action = None
+            current_revision_submitter = None
+
     snapshots = {
         snapshot.field_name: snapshot
         for snapshot in (
@@ -1860,25 +1907,43 @@ def change_request_review(request, request_id):
     )
 
     can_approve = (
-        user_has_any_role(
-            request.user,
-            ROLE_APPROVER,
-        )
-        and change_request.status == ChangeRequest.Status.PENDING
-        and change_request.submitted_by_id != request.user.id
-        and not user_has_approved
-        and approval_count < 2
+            user_has_any_role(
+                request.user,
+                ROLE_APPROVER,
+            )
+            and change_request.status == ChangeRequest.Status.PENDING
+            and revision_submitter_id is not None
+            and revision_submitter_id != request.user.id
+            and not user_has_approved
+            and approval_count < 2
     )
 
     can_return = (
+            user_has_any_role(
+                request.user,
+                ROLE_APPROVER,
+            )
+            and change_request.status == ChangeRequest.Status.PENDING
+            and revision_submitter_id is not None
+            and revision_submitter_id != request.user.id
+            and not user_has_approved
+            and approval_count < 2
+    )
+
+    can_resubmit = (
         user_has_any_role(
             request.user,
-            ROLE_APPROVER,
+            ROLE_EDITOR,
         )
-        and change_request.status == ChangeRequest.Status.PENDING
-        and change_request.submitted_by_id != request.user.id
-        and not user_has_approved
-        and approval_count < 2
+        and (
+            change_request.status
+            == ChangeRequest.Status.RETURNED
+        )
+        and change_request.coordinated_change_id is None
+        and (
+            change_request.request_type
+            == ChangeRequest.RequestType.EDIT_GRANT
+        )
     )
 
     if request.method == "POST":
@@ -2009,6 +2074,14 @@ def change_request_review(request, request_id):
             "can_approve": can_approve,
             "can_return": can_return,
             "is_history_request": is_history_request,
+            "current_revision_submitter": (
+                current_revision_submitter
+            ),
+            "resubmit_action": resubmit_action,
+            "revision_submitter_error": (
+                revision_submitter_error
+            ),
+            "can_resubmit": can_resubmit,
         },
     )
 

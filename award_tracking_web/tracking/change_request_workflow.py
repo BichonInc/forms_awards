@@ -429,7 +429,7 @@ def _apply_validated_basic_information_values(
     )
 
 
-def _get_revision_submitter_id(change_request):
+def get_revision_submitter_id(change_request):
     """
     Return the user responsible for submitting the current revision.
 
@@ -511,7 +511,7 @@ def approve_standalone_change_request(
 
         revision_no = change_request.current_revision
 
-        revision_submitter_id = _get_revision_submitter_id(
+        revision_submitter_id = get_revision_submitter_id(
             change_request
         )
 
@@ -670,7 +670,7 @@ def return_standalone_change_request(
         revision_no = change_request.current_revision
 
         try:
-            revision_submitter_id = _get_revision_submitter_id(
+            revision_submitter_id = get_revision_submitter_id(
                 change_request
             )
         except ChangeRequestApprovalError as exc:
