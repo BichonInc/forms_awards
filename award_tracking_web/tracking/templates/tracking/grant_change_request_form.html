@@ -2,7 +2,9 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Propose Grant Basic Information Changes</title>
+    <title>
+        {{ page_title|default:"Propose Grant Basic Information Changes" }}
+    </title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -15,6 +17,12 @@
         }
         .form-group {
             margin-bottom: 15px;
+        }
+        .form-group textarea {
+            width: 500px;
+            max-width: 100%;
+            box-sizing: border-box;
+            vertical-align: top;
         }
         label {
             display: inline-block;
@@ -340,7 +348,9 @@
 </head>
 <body>
     <div class="container">
-        <h1>Propose Grant Basic Information Changes</h1>
+        <h1>
+            {{ page_title|default:"Propose Grant Basic Information Changes" }}
+        </h1>
         <p>
             <strong>Grant ID:</strong> {{ grant.grant_id }}<br>
             <strong>Program Title:</strong> {{ current_values.program_title }}<br>
@@ -359,15 +369,30 @@
 
         <form
             method="post"
-            action="{% url 'create_grant_change_request' grant.grant_id %}"
+            {% if is_resubmission %}
+                action="{% url 'resubmit_grant_change_request' change_request.id %}"
+            {% else %}
+                action="{% url 'create_grant_change_request' grant.grant_id %}"
+            {% endif %}
             id="grant-change-request-form"
         >
             {% csrf_token %}
-            <input
-                type="hidden"
-                name="snapshot_token"
-                value="{{ snapshot_token }}"
-            >
+            {% if not is_resubmission %}
+                <input
+                    type="hidden"
+                    name="snapshot_token"
+                    value="{{ snapshot_token }}"
+                >
+            {% endif %}
+            {% if is_resubmission and return_action %}
+                <div class="messages info">
+                    <strong>Return for Revision Feedback:</strong><br>
+                    {{ return_action.comment }}
+                    <br><br>
+                    <strong>Returned By:</strong>
+                    {{ return_action.acted_by.username }}
+                </div>
+            {% endif %}
             {% if form.non_field_errors %}
                 <div class="error-message">
                     {{ form.non_field_errors }}
@@ -493,17 +518,45 @@
                 {% endif %}
             </div>
 
+            {% if is_resubmission %}
+                <div class="form-group">
+                    <label for="resubmission-comment">
+                        Resubmission Comment:
+                    </label>
+
+                    <textarea
+                        id="resubmission-comment"
+                        name="comment"
+                        rows="4"
+                        maxlength="500"
+                    >{{ resubmission_comment }}</textarea>
+
+                    <div class="help-text">
+                        Optional. Briefly describe what you revised.
+                    </div>
+                </div>
+            {% endif %}
+
             <div class="buttons">
                 <button type="submit" id="save-button">
-                    Submit Change Request
+                    {{ submit_button_text|default:"Submit Change Request" }}
                 </button>
 
-                <a
-                    href="{% url 'grant_detail' grant.grant_id %}"
-                    id="back-button"
-                >
-                    Cancel
-                </a>
+                {% if is_resubmission %}
+                    <a
+                        href="{% url 'change_request_review' change_request.id %}"
+                        id="back-button"
+                    >
+                        Cancel
+                    </a>
+                {% else %}
+                    <a
+                        href="{% url 'grant_detail' grant.grant_id %}"
+                        id="back-button"
+                    >
+                        Cancel
+                    </a>
+                {% endif %}
             </div>
         </form>
     </div>

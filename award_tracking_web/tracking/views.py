@@ -41,11 +41,15 @@ from .forms import (
 )
 from .change_request_workflow import (
     ChangeRequestApprovalError,
+    ChangeRequestBaselineMismatchError,
+    ChangeRequestResubmitError,
     ChangeRequestReturnError,
     ChangeRequestValidationError,
     approve_standalone_change_request,
+    resubmit_standalone_change_request,
     return_standalone_change_request,
     serialize_change_request_value,
+    validate_basic_information_revision_baseline,
 )
 from django.core.files.storage import default_storage
 import pandas as pd
@@ -1458,6 +1462,228 @@ def create_grant_change_request(request, grant_id):
             "form": form,
             "snapshot_token": snapshot_token,
             "current_values": current_values,
+        },
+    )
+
+
+@role_required(ROLE_EDITOR)
+def resubmit_grant_change_request(request, request_id):
+    change_request = get_object_or_404(
+        ChangeRequest,
+        id=request_id,
+    )
+
+    if change_request.coordinated_change_id is not None:
+        raise PermissionDenied(
+            "Coordinated Change Requests use a separate workflow."
+        )
+
+    if (
+        change_request.request_type
+        != ChangeRequest.RequestType.EDIT_GRANT
+    ):
+        raise PermissionDenied(
+            "This page supports only existing-grant "
+            "Basic Information Change Requests."
+        )
+
+    if change_request.status != ChangeRequest.Status.RETURNED:
+        messages.error(
+            request,
+            "Only a Change Request that has been returned for revision "
+            "can be revised and resubmitted.",
+        )
+        return redirect(
+            "change_request_review",
+            request_id=change_request.id,
+        )
+
+    grant = get_object_or_404(
+        Form1,
+        grant_id=change_request.grant_id,
+    )
+
+    try:
+        grant, snapshots_by_field = (
+            validate_basic_information_revision_baseline(
+                change_request,
+                grant=grant,
+            )
+        )
+
+    except ChangeRequestValidationError as exc:
+        messages.error(
+            request,
+            str(exc),
+        )
+        return redirect(
+            "change_request_review",
+            request_id=change_request.id,
+        )
+
+    # Capture authoritative display values before binding a ModelForm.
+    # ModelForm validation may update its instance in memory.
+    current_values = {
+        field_name: serialize_change_request_value(
+            getattr(grant, field_name)
+        )
+        for field_name
+        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    }
+
+    previous_proposed_values = {}
+
+    for field_name in GRANT_BASIC_INFORMATION_CHANGE_FIELDS:
+        snapshot = snapshots_by_field[field_name]
+
+        if snapshot.proposed_value is None:
+            previous_proposed_values[field_name] = (
+                snapshot.current_value
+            )
+        else:
+            previous_proposed_values[field_name] = (
+                snapshot.proposed_value
+            )
+
+    return_action = (
+        ChangeAction.objects
+        .filter(
+            change_request=change_request,
+            revision_no=change_request.current_revision,
+            action=ChangeAction.Action.RETURN,
+        )
+        .select_related("acted_by")
+        .order_by("-acted_at", "-id")
+        .first()
+    )
+
+    if request.method == "POST":
+        form = GrantBasicInformationChangeForm(
+            request.POST,
+            instance=grant,
+        )
+
+        resubmission_comment = request.POST.get(
+            "comment",
+            "",
+        )
+
+        if form.is_valid():
+            try:
+                result = resubmit_standalone_change_request(
+                    change_request_id=change_request.id,
+                    resubmitter=request.user,
+                    proposed_form_data=request.POST,
+                    comment=resubmission_comment,
+                )
+
+            except ChangeRequestBaselineMismatchError as exc:
+                messages.error(
+                    request,
+                    str(exc),
+                )
+                return redirect(
+                    "change_request_review",
+                    request_id=change_request.id,
+                )
+
+            except ChangeRequestResubmitError as exc:
+                messages.error(
+                    request,
+                    str(exc),
+                )
+                return redirect(
+                    "change_request_review",
+                    request_id=change_request.id,
+                )
+
+            except ChangeRequestValidationError as exc:
+                form.add_error(
+                    None,
+                    str(exc),
+                )
+
+            except IntegrityError:
+                messages.error(
+                    request,
+                    (
+                        "The Change Request could not be resubmitted "
+                        "because it changed. Please review it again."
+                    ),
+                )
+                return redirect(
+                    "change_request_review",
+                    request_id=change_request.id,
+                )
+
+            else:
+                messages.success(
+                    request,
+                    (
+                        "Revision "
+                        f"{result.revision_no} has been submitted "
+                        "for approval."
+                    ),
+                )
+
+                return redirect(
+                    "change_request_review",
+                    request_id=change_request.id,
+                )
+
+    else:
+        form = GrantBasicInformationChangeForm(
+            instance=grant,
+            initial=previous_proposed_values,
+        )
+
+        #
+        # A value proposed through "Add New" may not exist in Form1 yet,
+        # so it will not appear among GrantForm's dynamically generated
+        # select choices. Reconstruct the original Add New UI state.
+        #
+        add_new_fields = (
+            ("program_title", "new_program_title"),
+            ("contracting_agency", "new_contracting_agency"),
+            ("federal_grantor", "new_federal_grantor"),
+            ("federal_aln", "new_federal_aln"),
+        )
+
+        for field_name, new_field_name in add_new_fields:
+            desired_value = previous_proposed_values.get(
+                field_name
+            )
+
+            if desired_value in (None, ""):
+                continue
+
+            choice_values = {
+                str(value)
+                for value, _label
+                in form.fields[field_name].widget.choices
+            }
+
+            if str(desired_value) not in choice_values:
+                form.initial[field_name] = "Add New"
+                form.initial[new_field_name] = desired_value
+
+        resubmission_comment = ""
+
+    return render(
+        request,
+        "tracking/grant_change_request_form.html",
+        {
+            "grant": grant,
+            "change_request": change_request,
+            "form": form,
+            "current_values": current_values,
+            "return_action": return_action,
+            "resubmission_comment": resubmission_comment,
+            "is_resubmission": True,
+            "page_title": (
+                "Revise and Resubmit Grant Basic Information"
+            ),
+            "submit_button_text": "Resubmit Change Request",
         },
     )
 

@@ -20,6 +20,11 @@ urlpatterns = [
         name='change_request_history',
     ),
     path(
+        'change-requests/<int:request_id>/resubmit/',
+        views.resubmit_grant_change_request,
+        name='resubmit_grant_change_request',
+    ),
+    path(
         'change-requests/<int:request_id>/review/',
         views.change_request_review,
         name='change_request_review',
