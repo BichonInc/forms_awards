@@ -1666,7 +1666,10 @@ def change_request_review(request, request_id):
                     comment=request.POST.get("comment", ""),
                 )
 
-            except ChangeRequestReturnError as exc:
+            except (
+                ChangeRequestReturnError,
+                ChangeRequestValidationError,
+            ) as exc:
                 messages.error(
                     request,
                     str(exc),

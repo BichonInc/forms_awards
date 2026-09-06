@@ -658,6 +658,17 @@ def return_standalone_change_request(
                 "A fully approved revision cannot be returned for changes."
             )
 
+        grant = (
+            Form1.objects
+            .select_for_update()
+            .get(grant_id=change_request.grant_id)
+        )
+
+        validate_basic_information_revision_baseline(
+            change_request,
+            grant=grant,
+        )
+
         ChangeAction.objects.create(
             change_request=change_request,
             revision_no=revision_no,
