@@ -917,6 +917,10 @@ def return_standalone_change_request(
 
     The current revision and any approvals already recorded for it remain
     historical. No authoritative Form1 values are changed.
+
+    If an authoritative Basic Information baseline mismatch is detected,
+    the integrity incident is committed first and the normal Return for
+    Revision action is then blocked outside the transaction.
     """
     feedback = (comment or "").strip()
 
@@ -929,6 +933,10 @@ def return_standalone_change_request(
         raise ChangeRequestReturnError(
             "Return for Revision feedback cannot exceed 500 characters."
         )
+
+    blocked_integrity_issue_id = None
+    blocked_integrity_issue_created = False
+    return_result = None
 
     with transaction.atomic():
         change_request = (
@@ -957,77 +965,126 @@ def return_standalone_change_request(
                 "This Change Request is no longer pending review."
             )
 
-        revision_no = change_request.current_revision
-
-        try:
-            revision_submitter_id = get_revision_submitter_id(
-                change_request
+        existing_integrity_issue = (
+            get_open_change_request_integrity_issue(
+                change_request,
+                lock=True,
             )
-        except ChangeRequestApprovalError as exc:
-            raise ChangeRequestReturnError(
-                str(exc)
-            ) from exc
+        )
 
-        if revision_submitter_id == approver.id:
-            raise ChangeRequestReturnError(
-                "You cannot return a Change Request revision that you "
-                "submitted."
+        if existing_integrity_issue is not None:
+            blocked_integrity_issue_id = (
+                existing_integrity_issue.id
+            )
+            blocked_integrity_issue_created = False
+
+        else:
+            revision_no = change_request.current_revision
+
+            try:
+                revision_submitter_id = get_revision_submitter_id(
+                    change_request
+                )
+            except ChangeRequestApprovalError as exc:
+                raise ChangeRequestReturnError(
+                    str(exc)
+                ) from exc
+
+            if revision_submitter_id == approver.id:
+                raise ChangeRequestReturnError(
+                    "You cannot return a Change Request revision that you "
+                    "submitted."
+                )
+
+            user_has_approved = ChangeAction.objects.filter(
+                change_request=change_request,
+                revision_no=revision_no,
+                acted_by=approver,
+                action=ChangeAction.Action.APPROVE,
+            ).exists()
+
+            if user_has_approved:
+                raise ChangeRequestReturnError(
+                    "You have already approved this revision and cannot "
+                    "return the same revision for changes."
+                )
+
+            approval_count = ChangeAction.objects.filter(
+                change_request=change_request,
+                revision_no=revision_no,
+                action=ChangeAction.Action.APPROVE,
+            ).count()
+
+            if approval_count >= 2:
+                raise ChangeRequestReturnError(
+                    "A fully approved revision cannot be returned for "
+                    "changes."
+                )
+
+            grant = (
+                Form1.objects
+                .select_for_update()
+                .get(grant_id=change_request.grant_id)
             )
 
-        user_has_approved = ChangeAction.objects.filter(
-            change_request=change_request,
-            revision_no=revision_no,
-            acted_by=approver,
-            action=ChangeAction.Action.APPROVE,
-        ).exists()
+            try:
+                validate_basic_information_revision_baseline(
+                    change_request,
+                    grant=grant,
+                )
 
-        if user_has_approved:
-            raise ChangeRequestReturnError(
-                "You have already approved this revision and cannot return "
-                "the same revision for changes."
-            )
+            except ChangeRequestBaselineMismatchError:
+                detection_result = (
+                    detect_or_get_change_request_integrity_issue(
+                        change_request_id=change_request.id,
+                        detected_by=approver,
+                        detected_during=(
+                            ChangeRequestIntegrityIssue
+                            .DetectedDuring
+                            .RETURN
+                        ),
+                    )
+                )
 
-        approval_count = ChangeAction.objects.filter(
-            change_request=change_request,
-            revision_no=revision_no,
-            action=ChangeAction.Action.APPROVE,
-        ).count()
+                blocked_integrity_issue_id = (
+                    detection_result.integrity_issue_id
+                )
+                blocked_integrity_issue_created = (
+                    detection_result.created
+                )
 
-        if approval_count >= 2:
-            raise ChangeRequestReturnError(
-                "A fully approved revision cannot be returned for changes."
-            )
+            else:
+                ChangeAction.objects.create(
+                    change_request=change_request,
+                    revision_no=revision_no,
+                    acted_by=approver,
+                    action=ChangeAction.Action.RETURN,
+                    comment=feedback,
+                )
 
-        grant = (
-            Form1.objects
-            .select_for_update()
-            .get(grant_id=change_request.grant_id)
+                change_request.status = (
+                    ChangeRequest.Status.RETURNED
+                )
+                change_request.save(
+                    update_fields=["status"]
+                )
+
+                return_result = StandaloneReturnResult(
+                    change_request_id=change_request.id,
+                    status=change_request.status,
+                    revision_no=revision_no,
+                    approval_count=approval_count,
+                )
+
+    if blocked_integrity_issue_id is not None:
+        raise ChangeRequestIntegrityBlockedError(
+            blocked_integrity_issue_id,
+            newly_detected=(
+                blocked_integrity_issue_created
+            ),
         )
 
-        validate_basic_information_revision_baseline(
-            change_request,
-            grant=grant,
-        )
-
-        ChangeAction.objects.create(
-            change_request=change_request,
-            revision_no=revision_no,
-            acted_by=approver,
-            action=ChangeAction.Action.RETURN,
-            comment=feedback,
-        )
-
-        change_request.status = ChangeRequest.Status.RETURNED
-        change_request.save(
-            update_fields=["status"]
-        )
-
-        return StandaloneReturnResult(
-            change_request_id=change_request.id,
-            status=change_request.status,
-            revision_no=revision_no,
-            approval_count=approval_count,
-        )
+    return return_result
 
 
 def resubmit_standalone_change_request(
