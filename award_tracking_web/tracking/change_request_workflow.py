@@ -30,6 +30,25 @@ class ChangeRequestValidationError(Exception):
     """
 
 
+class ChangeRequestBaselineMismatchError(
+        ChangeRequestValidationError
+):
+    """
+    Raised when authoritative Form1 values no longer match the current
+    revision's recorded authoritative baseline.
+    """
+
+    def __init__(self, stale_fields):
+        self.stale_fields = tuple(stale_fields)
+
+        super().__init__(
+            "The authoritative grant no longer matches the current-value "
+            "snapshot for this revision. Stale fields: "
+            + ", ".join(self.stale_fields)
+            + "."
+        )
+
+
 class ChangeRequestApprovalError(Exception):
     """
     Raised when a Change Request cannot receive the requested approval.
@@ -85,22 +104,25 @@ def serialize_change_request_value(value):
     return str(value)
 
 
-def validate_basic_information_change_request(change_request):
+def validate_basic_information_revision_baseline(
+        change_request,
+        *,
+        grant=None,
+):
     """
-    Revalidate the current revision of an existing-grant Basic Information
-    Change Request without writing anything to the database.
+    Validate the structural snapshot and authoritative baseline for the
+    current Basic Information revision without writing to the database.
 
     This verifies that:
       1. the revision has one snapshot for every expected Basic Information
-         field;
+         field; and
       2. authoritative Form1 values still match the revision's stored
-         current-value snapshot;
-      3. the complete proposed Form1 state still passes the same form
-         validation used during submission;
-      4. the proposed Award Code / Internal GL date range does not overlap
-         another authoritative grant.
+         current-value snapshot.
 
-    Returns a BasicInformationValidationResult when safe to continue.
+    The optional grant argument allows a caller that already locked Form1
+    to validate that same authoritative record.
+
+    Returns the authoritative grant and the snapshots keyed by field name.
     """
     revision_no = change_request.current_revision
 
@@ -111,14 +133,22 @@ def validate_basic_information_change_request(change_request):
         ).order_by("field_name")
     )
 
-    expected_fields = set(GRANT_BASIC_INFORMATION_CHANGE_FIELDS)
+    expected_fields = set(
+        GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    )
+
     snapshot_fields = {
         snapshot.field_name
         for snapshot in snapshots
     }
 
-    missing_fields = sorted(expected_fields - snapshot_fields)
-    unexpected_fields = sorted(snapshot_fields - expected_fields)
+    missing_fields = sorted(
+        expected_fields - snapshot_fields
+    )
+
+    unexpected_fields = sorted(
+        snapshot_fields - expected_fields
+    )
 
     if missing_fields or unexpected_fields:
         details = []
@@ -130,7 +160,8 @@ def validate_basic_information_change_request(change_request):
 
         if unexpected_fields:
             details.append(
-                "unexpected fields: " + ", ".join(unexpected_fields)
+                "unexpected fields: "
+                + ", ".join(unexpected_fields)
             )
 
         raise ChangeRequestValidationError(
@@ -144,9 +175,15 @@ def validate_basic_information_change_request(change_request):
         for snapshot in snapshots
     }
 
-    grant = Form1.objects.get(
-        grant_id=change_request.grant_id,
-    )
+    if grant is None:
+        grant = Form1.objects.get(
+            grant_id=change_request.grant_id,
+        )
+    elif grant.grant_id != change_request.grant_id:
+        raise ChangeRequestValidationError(
+            "The authoritative grant does not belong to this "
+            "Change Request."
+        )
 
     stale_fields = []
 
@@ -154,6 +191,7 @@ def validate_basic_information_change_request(change_request):
         authoritative_value = serialize_change_request_value(
             getattr(grant, field_name)
         )
+
         snapshot_current_value = (
             snapshots_by_field[field_name].current_value
         )
@@ -162,12 +200,40 @@ def validate_basic_information_change_request(change_request):
             stale_fields.append(field_name)
 
     if stale_fields:
-        raise ChangeRequestValidationError(
-            "The authoritative grant no longer matches the current-value "
-            "snapshot for this revision. Stale fields: "
-            + ", ".join(stale_fields)
-            + "."
+        raise ChangeRequestBaselineMismatchError(
+            stale_fields
         )
+
+    return grant, snapshots_by_field
+
+
+def validate_basic_information_change_request(
+        change_request,
+        *,
+        grant=None,
+):
+    """
+    Fully revalidate the current revision of an existing-grant Basic
+    Information Change Request without writing anything to the database.
+
+    This verifies that:
+      1. the revision has one snapshot for every expected Basic Information
+         field;
+      2. authoritative Form1 values still match the revision's stored
+         current-value snapshot;
+      3. the complete proposed Form1 state still passes the same form
+         validation used during submission; and
+      4. the proposed Award Code / Internal GL date range does not overlap
+         another authoritative grant.
+
+    Returns a BasicInformationValidationResult when safe to continue.
+    """
+    _, snapshots_by_field = (
+        validate_basic_information_revision_baseline(
+            change_request,
+            grant=grant,
+        )
+    )
 
     proposed_form_data = {}
 
@@ -175,9 +241,13 @@ def validate_basic_information_change_request(change_request):
         snapshot = snapshots_by_field[field_name]
 
         if snapshot.proposed_value is None:
-            proposed_form_data[field_name] = snapshot.current_value
+            proposed_form_data[field_name] = (
+                snapshot.current_value
+            )
         else:
-            proposed_form_data[field_name] = snapshot.proposed_value
+            proposed_form_data[field_name] = (
+                snapshot.proposed_value
+            )
 
     # Use a fresh model instance because ModelForm validation may update its
     # instance in memory even when save() is never called.
@@ -228,20 +298,34 @@ def validate_basic_information_change_request(change_request):
 
     changed_fields = tuple(
         field_name
-        for field_name in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
-        if snapshots_by_field[field_name].proposed_value is not None
+        for field_name
+        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        if (
+            snapshots_by_field[field_name]
+            .proposed_value
+            is not None
+        )
     )
+
+    if not changed_fields:
+        raise ChangeRequestValidationError(
+            "The Change Request contains no proposed Basic Information "
+            "changes."
+        )
 
     proposed_values = {
         field_name: form.cleaned_data.get(field_name)
-        for field_name in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        for field_name
+        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
     }
 
     return BasicInformationValidationResult(
         proposed_values=proposed_values,
         changed_fields=changed_fields,
         gl_rematch_required=bool(
-            GL_ASSIGNMENT_FIELDS.intersection(changed_fields)
+            GL_ASSIGNMENT_FIELDS.intersection(
+                changed_fields
+            )
         ),
     )
 
@@ -338,11 +422,15 @@ def approve_standalone_change_request(
         approver,
 ):
     """
-    Record approval #2 and atomically apply a standalone Basic Information
-    Change Request.
+    Record an approval for a standalone Basic Information Change Request.
+
+    Approval #1 records the approval and leaves the request PENDING.
+
+    Approval #2 revalidates and atomically applies the approved Basic
+    Information proposal to Form1, then marks the request APPROVED.
 
     This service is intentionally limited to standalone EDIT_GRANT requests.
-    Coordinated requests use a separate group-level application workflow.
+    Coordinated requests use a separate group-level approval workflow.
     """
     with transaction.atomic():
         change_request = (
@@ -353,7 +441,7 @@ def approve_standalone_change_request(
 
         if change_request.coordinated_change_id is not None:
             raise ChangeRequestApprovalError(
-                "A coordinated Change Request cannot be finalized through "
+                "A coordinated Change Request cannot be approved through "
                 "the standalone approval workflow."
             )
 
@@ -383,12 +471,16 @@ def approve_standalone_change_request(
                 "submitted."
             )
 
-        existing_approval = ChangeAction.objects.filter(
-            change_request=change_request,
-            revision_no=revision_no,
-            acted_by=approver,
-            action=ChangeAction.Action.APPROVE,
-        ).exists()
+        existing_approval = (
+            ChangeAction.objects
+            .filter(
+                change_request=change_request,
+                revision_no=revision_no,
+                acted_by=approver,
+                action=ChangeAction.Action.APPROVE,
+            )
+            .exists()
+        )
 
         if existing_approval:
             raise ChangeRequestApprovalError(
@@ -396,26 +488,31 @@ def approve_standalone_change_request(
             )
 
         prior_approvals = list(
-            ChangeAction.objects.filter(
+            ChangeAction.objects
+            .filter(
                 change_request=change_request,
                 revision_no=revision_no,
                 action=ChangeAction.Action.APPROVE,
-            ).values_list(
+            )
+            .values_list(
                 "acted_by_id",
                 flat=True,
             )
         )
 
-        if len(prior_approvals) != 1:
+        if len(prior_approvals) > 1:
             raise ChangeRequestApprovalError(
-                "Final approval requires exactly one existing approval "
-                "for the current revision."
+                "This revision already has enough approvals and cannot "
+                "receive another approval."
             )
 
-        if prior_approvals[0] == revision_submitter_id:
+        if (
+            prior_approvals
+            and prior_approvals[0] == revision_submitter_id
+        ):
             raise ChangeRequestApprovalError(
-                "The existing approval was recorded by the submitter of this "
-                "revision and cannot count toward final approval."
+                "The existing approval was recorded by the submitter of "
+                "this revision and cannot count toward approval."
             )
 
         grant = (
@@ -426,7 +523,8 @@ def approve_standalone_change_request(
 
         validation_result = (
             validate_basic_information_change_request(
-                change_request
+                change_request,
+                grant=grant,
             )
         )
 
@@ -437,6 +535,15 @@ def approve_standalone_change_request(
             action=ChangeAction.Action.APPROVE,
             comment="",
         )
+
+        if not prior_approvals:
+            return StandaloneApprovalResult(
+                change_request_id=change_request.id,
+                status=change_request.status,
+                approval_count=1,
+                changed_fields=validation_result.changed_fields,
+                gl_rematch_result=None,
+            )
 
         gl_rematch_result = (
             _apply_validated_basic_information_values(

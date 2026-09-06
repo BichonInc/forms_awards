@@ -1712,94 +1712,13 @@ def change_request_review(request, request_id):
                 request_id=request_id,
             )
 
-        final_approval_result = None
-
         try:
-            with transaction.atomic():
-                locked_request = (
-                    ChangeRequest.objects
-                    .select_for_update()
-                    .get(id=request_id)
+            approval_result = (
+                approve_standalone_change_request(
+                    change_request_id=change_request.id,
+                    approver=request.user,
                 )
-
-                if (
-                    locked_request.status
-                    != ChangeRequest.Status.PENDING
-                ):
-                    messages.error(
-                        request,
-                        (
-                            "This Change Request is no longer "
-                            "pending approval."
-                        ),
-                    )
-                    return redirect(
-                        "change_request_review",
-                        request_id=request_id,
-                    )
-
-                if locked_request.submitted_by_id == request.user.id:
-                    messages.error(
-                        request,
-                        (
-                            "You cannot approve a Change Request "
-                            "that you submitted."
-                        ),
-                    )
-                    return redirect(
-                        "change_request_review",
-                        request_id=request_id,
-                    )
-
-                existing_approval = (
-                    ChangeAction.objects
-                    .filter(
-                        change_request=locked_request,
-                        revision_no=locked_request.current_revision,
-                        acted_by=request.user,
-                        action=ChangeAction.Action.APPROVE,
-                    )
-                    .exists()
-                )
-
-                if existing_approval:
-                    messages.info(
-                        request,
-                        (
-                            "You have already approved this "
-                            "revision."
-                        ),
-                    )
-                    return redirect(
-                        "change_request_review",
-                        request_id=request_id,
-                    )
-
-                approval_count_before = (
-                    ChangeAction.objects
-                    .filter(
-                        change_request=locked_request,
-                        revision_no=locked_request.current_revision,
-                        action=ChangeAction.Action.APPROVE,
-                    )
-                    .count()
-                )
-
-                if approval_count_before == 0:
-                    ChangeAction.objects.create(
-                        change_request=locked_request,
-                        revision_no=locked_request.current_revision,
-                        acted_by=request.user,
-                        action=ChangeAction.Action.APPROVE,
-                        comment="",
-                    )
-                else:
-                    final_approval_result = (
-                        approve_standalone_change_request(
-                            change_request_id=locked_request.id,
-                            approver=request.user,
-                        )
-                    )
+            )
 
         except (
             ChangeRequestApprovalError,
@@ -1827,7 +1746,7 @@ def change_request_review(request, request_id):
                 request_id=request_id,
             )
 
-        if final_approval_result is not None:
+        if approval_result.approval_count == 2:
             messages.success(
                 request,
                 (
