@@ -122,7 +122,7 @@
             color: #0c5460;
         }
 
-                .integrity-alert {
+        .integrity-alert {
             margin-top: 20px;
             margin-bottom: 25px;
             padding: 18px;
@@ -134,6 +134,12 @@
 
         .integrity-alert h2 {
             margin-top: 0;
+        }
+
+        .resolve-integrity-button {
+            background-color: #b02a37;
+            color: white;
+            margin-top: 8px;
         }
 
         .integrity-card {
@@ -315,6 +321,12 @@
                     This incident requires formal integrity
                     disposition before the workflow can resume.
                 </p>
+                <a
+                    href="{% url 'resolve_change_request_integrity_issue' open_integrity_issue.id %}"
+                    class="button-common resolve-integrity-button"
+                >
+                    Resolve Integrity Incident
+                </a>
             {% endif %}
         </div>
     {% endif %}

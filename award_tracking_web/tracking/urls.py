@@ -29,6 +29,14 @@ urlpatterns = [
         views.change_request_review,
         name='change_request_review',
     ),
+    path(
+        (
+            "change-requests/integrity-issues/"
+            "<int:issue_id>/resolve/"
+        ),
+        views.resolve_change_request_integrity_issue_view,
+        name="resolve_change_request_integrity_issue",
+    ),
     path('grants/<str:grant_id>/', views.grant_detail, name='grant_detail'),
     path('refresh_gl_expenditure/', views.refresh_gl_expenditure, name='refresh_gl_expenditure'),
     path('refresh_subsequent_adjustment/', views.refresh_subsequent_adjustment, name='refresh_subsequent_adjustment'),  # Add this line

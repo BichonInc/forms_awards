@@ -1,5 +1,8 @@
 from django import forms
-from .models import Form1
+from .models import (
+    Form1,
+    ChangeRequestIntegrityIssue,
+)
 from django.core.exceptions import ValidationError
 import re
 
@@ -343,3 +346,36 @@ class GrantBasicInformationChangeForm(GrantForm):
         )
 
 
+class IntegrityIssueDispositionForm(forms.Form):
+    """
+    Administrator decision form for an OPEN Change Request
+    integrity incident.
+    """
+
+    classification = forms.ChoiceField(
+        choices=(
+            ChangeRequestIntegrityIssue
+            .Classification
+            .choices
+        ),
+        widget=forms.RadioSelect,
+        required=True,
+        label="Classification",
+    )
+
+    comment = forms.CharField(
+        required=True,
+        max_length=1000,
+        label="Administrator Explanation",
+        widget=forms.Textarea(
+            attrs={
+                "rows": 6,
+                "maxlength": "1000",
+            }
+        ),
+    )
+
+    reviewed_snapshot = forms.CharField(
+        widget=forms.HiddenInput,
+        required=True,
+    )

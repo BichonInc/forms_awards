@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Resolve Integrity Incident</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 1200px;
+            margin: auto;
+        }
+
+        .summary {
+            padding: 18px;
+            margin-bottom: 20px;
+            background-color: #e9f3fb;
+            border-radius: 5px;
+        }
+
+        .warning {
+            padding: 18px;
+            margin-bottom: 20px;
+            border: 2px solid #b02a37;
+            border-radius: 5px;
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+
+        .decision-section {
+            margin-top: 25px;
+            padding: 18px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+            margin-top: 20px;
+        }
+
+        th,
+        td {
+            border: 1px solid #ccc;
+            padding: 10px;
+            text-align: left;
+            vertical-align: top;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        th {
+            background-color: #f2f2f2;
+        }
+
+        .detection-mismatch {
+            font-weight: bold;
+            background-color: #fff3cd;
+        }
+
+        .changed-since-detection {
+            border-left: 5px solid #b02a37;
+        }
+
+        .messages {
+            margin-bottom: 20px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+
+        .messages.error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+
+        .messages.success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+
+        .messages.info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+        }
+
+        .button-common {
+            display: inline-block;
+            border: none;
+            border-radius: 5px;
+            padding: 10px 20px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 1em;
+        }
+
+        .resolve-button {
+            background-color: #b02a37;
+            color: white;
+        }
+
+        .back-button {
+            background-color: #008CBA;
+            color: white;
+            margin-left: 10px;
+        }
+
+        textarea {
+            width: 100%;
+            max-width: 800px;
+            box-sizing: border-box;
+        }
+
+        .errorlist {
+            color: #721c24;
+        }
+    </style>
+</head>
+
+<body>
+<div class="container">
+
+    <h1>
+        Resolve Integrity Incident
+        #{{ integrity_issue.id }}
+    </h1>
+
+    {% if messages %}
+        {% for message in messages %}
+            <div class="messages {{ message.tags }}">
+                {{ message }}
+            </div>
+        {% endfor %}
+    {% endif %}
+
+    <div class="summary">
+        <p>
+            <strong>Change Request:</strong>
+            #{{ change_request.id }}
+        </p>
+
+        <p>
+            <strong>Grant ID:</strong>
+            {{ grant.grant_id }}
+        </p>
+
+        <p>
+            <strong>Program Title:</strong>
+            {{ grant.program_title }}
+        </p>
+
+        <p>
+            <strong>Contract Number:</strong>
+            {{ grant.contract_number }}
+        </p>
+
+        <p>
+            <strong>Revision:</strong>
+            {{ integrity_issue.revision_no }}
+        </p>
+
+        <p>
+            <strong>Detected During:</strong>
+            {{ integrity_issue.get_detected_during_display }}
+        </p>
+
+        <p>
+            <strong>Detected By:</strong>
+            {% if integrity_issue.detected_by %}
+                {{ integrity_issue.detected_by.username }}
+            {% else %}
+                System / unavailable
+            {% endif %}
+        </p>
+
+        <p>
+            <strong>Detected At:</strong>
+            {{ integrity_issue.detected_at|date:"M j, Y, g:i A" }}
+        </p>
+
+        <p>
+            <strong>Governing Baseline:</strong>
+            {{ baseline_source_label }}
+        </p>
+    </div>
+
+    <div class="warning">
+        <strong>Important:</strong>
+
+        <p>
+            The Current Authoritative Value column below is the
+            exact state being reviewed for Administrator disposition.
+        </p>
+
+        <p>
+            If these values remain unchanged when you submit this
+            decision, all 14 protected values will become immutable
+            Checkpoint B.
+        </p>
+
+        <p>
+            Closing this incident does <strong>not</strong> approve
+            the Change Request, apply the Editor's proposed values,
+            modify Form1, or create an ordinary Return for Revision
+            action.
+        </p>
+
+        <p>
+            Both Legitimate and Illegitimate classifications preserve
+            the current authoritative Form1 state as Checkpoint B.
+            Any necessary correction must then proceed through Editor
+            revision and fresh approvals.
+        </p>
+    </div>
+
+    <h2>Integrity Evidence</h2>
+
+    <table>
+        <thead>
+        <tr>
+            <th>Field</th>
+            <th>Governing Baseline</th>
+            <th>Value at Detection</th>
+            <th>Current Authoritative Value Reviewed</th>
+        </tr>
+        </thead>
+
+        <tbody>
+        {% for row in evidence_rows %}
+            <tr
+                class="
+                    {% if row.detection_mismatch %}
+                        detection-mismatch
+                    {% endif %}
+                    {% if row.changed_since_detection %}
+                        changed-since-detection
+                    {% endif %}
+                "
+            >
+                <td>{{ row.label }}</td>
+                <td>{{ row.baseline_value }}</td>
+                <td>{{ row.detected_value }}</td>
+                <td>{{ row.reviewed_value }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="decision-section">
+        <h2>Administrator Disposition</h2>
+
+        <form method="post">
+            {% csrf_token %}
+
+            {{ form.reviewed_snapshot }}
+
+            {% if form.non_field_errors %}
+                {{ form.non_field_errors }}
+            {% endif %}
+
+            <div>
+                <strong>{{ form.classification.label }}</strong>
+                {{ form.classification.errors }}
+                {{ form.classification }}
+            </div>
+
+            <div style="margin-top: 20px;">
+                <label for="{{ form.comment.id_for_label }}">
+                    <strong>
+                        {{ form.comment.label }}
+                    </strong>
+                </label>
+
+                {{ form.comment.errors }}
+
+                <br>
+
+                {{ form.comment }}
+            </div>
+
+            <div style="margin-top: 20px;">
+                <button
+                    type="submit"
+                    class="button-common resolve-button"
+                >
+                    Close Incident and Return to Editors
+                </button>
+
+                <a
+                    href="{% url 'change_request_review' change_request.id %}"
+                    class="button-common back-button"
+                >
+                    Back to Change Request
+                </a>
+            </div>
+        </form>
+    </div>
+
+</div>
+</body>
+</html>

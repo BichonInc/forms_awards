@@ -39,6 +39,7 @@ from .forms import (
     GRANT_BASIC_INFORMATION_CHANGE_FIELDS,
     GrantBasicInformationChangeForm,
     GrantForm,
+    IntegrityIssueDispositionForm,
 )
 from .change_request_workflow import (
     RESUBMISSION_BASELINE_FORMAL_REVISION,
@@ -46,6 +47,7 @@ from .change_request_workflow import (
     ChangeRequestApprovalError,
     ChangeRequestBaselineMismatchError,
     ChangeRequestIntegrityBlockedError,
+    ChangeRequestIntegrityDispositionError,
     ChangeRequestIntegrityIssueError,
     ChangeRequestResubmitError,
     ChangeRequestReturnError,
@@ -54,6 +56,7 @@ from .change_request_workflow import (
     detect_or_get_change_request_integrity_issue,
     get_change_request_integrity_evidence,
     get_basic_information_revision_snapshots,
+    resolve_change_request_integrity_issue,
     resubmit_standalone_change_request,
     return_standalone_change_request,
     serialize_change_request_value,
@@ -70,6 +73,14 @@ import os
 import logging
 import csv
 from django.http import HttpResponse
+
+
+INTEGRITY_DISPOSITION_REVIEW_SALT = (
+    "tracking.integrity-disposition-review"
+)
+
+INTEGRITY_DISPOSITION_REVIEW_MAX_AGE_SECONDS = 3600
+
 
 # Function to generate new grant_id
 #def generate_new_grant_id():
@@ -2341,6 +2352,327 @@ def change_request_review(request, request_id):
             "is_integrity_administrator": (
                 is_integrity_administrator
             ),
+        },
+    )
+
+
+@role_required(
+    ROLE_ADMINISTRATOR,
+)
+def resolve_change_request_integrity_issue_view(
+        request,
+        issue_id,
+):
+    integrity_issue = get_object_or_404(
+        ChangeRequestIntegrityIssue.objects
+        .select_related(
+            "change_request",
+            "detected_by",
+            "closed_by",
+        ),
+        pk=issue_id,
+    )
+
+    change_request = integrity_issue.change_request
+
+    if (
+        integrity_issue.status
+        != ChangeRequestIntegrityIssue.Status.OPEN
+    ):
+        messages.info(
+            request,
+            "This integrity incident is no longer open.",
+        )
+        return redirect(
+            "change_request_review",
+            request_id=change_request.id,
+        )
+
+    grant = get_object_or_404(
+        Form1,
+        grant_id=change_request.grant_id,
+    )
+
+    try:
+        evidence = (
+            get_change_request_integrity_evidence(
+                integrity_issue
+            )
+        )
+
+    except (
+        ChangeRequestIntegrityIssueError,
+        ChangeRequestValidationError,
+    ) as exc:
+        messages.error(
+            request,
+            str(exc),
+        )
+        return redirect(
+            "change_request_review",
+            request_id=change_request.id,
+        )
+
+    if (
+        evidence.baseline_source
+        == RESUBMISSION_BASELINE_INTEGRITY_DISPOSITION
+    ):
+        baseline_source_label = (
+            "Administrator Integrity Disposition "
+            f"Checkpoint B from Incident "
+            f"#{evidence.baseline_integrity_issue_id}"
+        )
+
+    else:
+        baseline_source_label = (
+            "Formal Revision Snapshot"
+        )
+
+    if request.method == "POST":
+        form = IntegrityIssueDispositionForm(
+            request.POST
+        )
+
+        submitted_token = request.POST.get(
+            "reviewed_snapshot",
+            "",
+        )
+
+        try:
+            signed_payload = signing.loads(
+                submitted_token,
+                salt=(
+                    INTEGRITY_DISPOSITION_REVIEW_SALT
+                ),
+                max_age=(
+                    INTEGRITY_DISPOSITION_REVIEW_MAX_AGE_SECONDS
+                ),
+            )
+
+        except signing.SignatureExpired:
+            messages.error(
+                request,
+                (
+                    "The Administrator review expired. "
+                    "Review the current authoritative values "
+                    "again before resolving the incident."
+                ),
+            )
+            return redirect(
+                "resolve_change_request_integrity_issue",
+                issue_id=integrity_issue.id,
+            )
+
+        except signing.BadSignature:
+            messages.error(
+                request,
+                (
+                    "The Administrator review snapshot is "
+                    "invalid. Review the incident again."
+                ),
+            )
+            return redirect(
+                "resolve_change_request_integrity_issue",
+                issue_id=integrity_issue.id,
+            )
+
+        if not isinstance(
+            signed_payload,
+            dict,
+        ):
+            messages.error(
+                request,
+                "The Administrator review snapshot is invalid.",
+            )
+            return redirect(
+                "resolve_change_request_integrity_issue",
+                issue_id=integrity_issue.id,
+            )
+
+        reviewed_values = signed_payload.get(
+            "authoritative_values"
+        )
+
+        payload_matches_incident = (
+            signed_payload.get(
+                "integrity_issue_id"
+            )
+            == integrity_issue.id
+            and signed_payload.get(
+                "change_request_id"
+            )
+            == change_request.id
+            and signed_payload.get(
+                "revision_no"
+            )
+            == integrity_issue.revision_no
+            and isinstance(
+                reviewed_values,
+                dict,
+            )
+        )
+
+        if not payload_matches_incident:
+            messages.error(
+                request,
+                (
+                    "The Administrator review snapshot does "
+                    "not match this integrity incident. "
+                    "Review the incident again."
+                ),
+            )
+            return redirect(
+                "resolve_change_request_integrity_issue",
+                issue_id=integrity_issue.id,
+            )
+
+        if form.is_valid():
+            try:
+                result = (
+                    resolve_change_request_integrity_issue(
+                        integrity_issue_id=(
+                            integrity_issue.id
+                        ),
+                        administrator=request.user,
+                        classification=(
+                            form.cleaned_data[
+                                "classification"
+                            ]
+                        ),
+                        comment=(
+                            form.cleaned_data[
+                                "comment"
+                            ]
+                        ),
+                        reviewed_authoritative_values=(
+                            reviewed_values
+                        ),
+                    )
+                )
+
+            except ChangeRequestIntegrityDispositionError as exc:
+                messages.error(
+                    request,
+                    str(exc),
+                )
+
+                return redirect(
+                    "resolve_change_request_integrity_issue",
+                    issue_id=integrity_issue.id,
+                )
+
+            messages.success(
+                request,
+                (
+                    f"Integrity Incident #{result.integrity_issue_id} "
+                    "was resolved. The Change Request has been "
+                    "returned to Editors for revision and fresh "
+                    "approval."
+                ),
+            )
+
+            return redirect(
+                "change_request_review",
+                request_id=result.change_request_id,
+            )
+
+    else:
+        reviewed_values = {
+            field_name: serialize_change_request_value(
+                getattr(grant, field_name)
+            )
+            for field_name
+            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        }
+
+        signed_payload = {
+            "integrity_issue_id": integrity_issue.id,
+            "change_request_id": change_request.id,
+            "revision_no": integrity_issue.revision_no,
+            "authoritative_values": reviewed_values,
+        }
+
+        reviewed_snapshot = signing.dumps(
+            signed_payload,
+            salt=(
+                INTEGRITY_DISPOSITION_REVIEW_SALT
+            ),
+        )
+
+        form = IntegrityIssueDispositionForm(
+            initial={
+                "reviewed_snapshot": (
+                    reviewed_snapshot
+                ),
+            }
+        )
+
+    label_form = GrantBasicInformationChangeForm(
+        instance=grant,
+    )
+
+    evidence_rows = []
+
+    for field_name in (
+        GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    ):
+        baseline_value = (
+            evidence.baseline_values[field_name]
+        )
+
+        detected_value = (
+            evidence.detected_values[field_name]
+        )
+
+        reviewed_value = (
+            reviewed_values[field_name]
+        )
+
+        evidence_rows.append(
+            {
+                "field_name": field_name,
+                "label": label_form.fields[field_name].label,
+                "baseline_value": (
+                    format_change_request_display_value(
+                        field_name,
+                        baseline_value,
+                    )
+                ),
+                "detected_value": (
+                    format_change_request_display_value(
+                        field_name,
+                        detected_value,
+                    )
+                ),
+                "reviewed_value": (
+                    format_change_request_display_value(
+                        field_name,
+                        reviewed_value,
+                    )
+                ),
+                "detection_mismatch": (
+                    baseline_value
+                    != detected_value
+                ),
+                "changed_since_detection": (
+                    detected_value
+                    != reviewed_value
+                ),
+            }
+        )
+
+    return render(
+        request,
+        "tracking/integrity_issue_resolution.html",
+        {
+            "integrity_issue": integrity_issue,
+            "change_request": change_request,
+            "grant": grant,
+            "form": form,
+            "baseline_source_label": (
+                baseline_source_label
+            ),
+            "evidence_rows": evidence_rows,
         },
     )
 
