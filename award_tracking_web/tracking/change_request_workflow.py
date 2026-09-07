@@ -1604,9 +1604,20 @@ def resubmit_standalone_change_request(
     Create the next formal revision of a returned standalone Basic
     Information Change Request.
 
-    The previous revision remains immutable. The new revision receives a
-    complete 14-field snapshot, a RESUBMIT action identifying the actual
-    resubmitter, and begins PENDING with zero approvals.
+    An ordinary returned request validates against the current formal
+    revision baseline.
+
+    A request returned through Administrator integrity disposition
+    validates against the latest applicable DISPOSITION checkpoint.
+
+    If an authoritative baseline mismatch is detected, the new integrity
+    incident is committed first and resubmission is then blocked outside
+    the transaction.
+
+    The previous formal revision remains immutable. A successful
+    resubmission creates a complete 14-field snapshot, records the actual
+    resubmitter, moves the request to the next revision, and starts that
+    revision PENDING with zero approvals.
     """
     resubmission_comment = (comment or "").strip()
 
@@ -1614,6 +1625,10 @@ def resubmit_standalone_change_request(
         raise ChangeRequestResubmitError(
             "Resubmission comments cannot exceed 500 characters."
         )
+
+    blocked_integrity_issue_id = None
+    blocked_integrity_issue_created = False
+    resubmit_result = None
 
     with transaction.atomic():
         change_request = (
@@ -1643,154 +1658,280 @@ def resubmit_standalone_change_request(
                 "can be resubmitted."
             )
 
-        previous_revision_no = (
-            change_request.current_revision
-        )
-
-        return_count = (
-            ChangeAction.objects
-            .filter(
-                change_request=change_request,
-                revision_no=previous_revision_no,
-                action=ChangeAction.Action.RETURN,
-            )
-            .count()
-        )
-
-        if return_count != 1:
-            raise ChangeRequestResubmitError(
-                "The returned revision does not have exactly one recorded "
-                "Return for Revision action."
-            )
-
-        approval_count = (
-            ChangeAction.objects
-            .filter(
-                change_request=change_request,
-                revision_no=previous_revision_no,
-                action=ChangeAction.Action.APPROVE,
-            )
-            .count()
-        )
-
-        if approval_count >= 2:
-            raise ChangeRequestResubmitError(
-                "A revision with two approvals cannot be resubmitted."
-            )
-
-        grant = (
-            Form1.objects
-            .select_for_update()
-            .get(grant_id=change_request.grant_id)
-        )
-
-        validate_basic_information_revision_baseline(
-            change_request,
-            grant=grant,
-        )
-
-        validation_result = (
-            _validate_basic_information_proposed_form_data(
-                change_request=change_request,
-                grant=grant,
-                proposed_form_data=proposed_form_data,
+        existing_integrity_issue = (
+            get_open_change_request_integrity_issue(
+                change_request,
+                lock=True,
             )
         )
 
-        new_revision_no = previous_revision_no + 1
-
-        if (
-            ChangeRequestField.objects
-            .filter(
-                change_request=change_request,
-                revision_no=new_revision_no,
+        if existing_integrity_issue is not None:
+            blocked_integrity_issue_id = (
+                existing_integrity_issue.id
             )
-            .exists()
-        ):
-            raise ChangeRequestResubmitError(
-                "The next revision already contains field snapshots."
+            blocked_integrity_issue_created = False
+
+        else:
+            previous_revision_no = (
+                change_request.current_revision
             )
 
-        if (
-            ChangeAction.objects
-            .filter(
-                change_request=change_request,
-                revision_no=new_revision_no,
-            )
-            .exists()
-        ):
-            raise ChangeRequestResubmitError(
-                "The next revision already contains workflow actions."
+            return_count = (
+                ChangeAction.objects
+                .filter(
+                    change_request=change_request,
+                    revision_no=previous_revision_no,
+                    action=ChangeAction.Action.RETURN,
+                )
+                .count()
             )
 
-        current_values = {
-            field_name: serialize_change_request_value(
-                getattr(grant, field_name)
+            if return_count > 1:
+                raise ChangeRequestResubmitError(
+                    "The returned revision contains more than one "
+                    "Return for Revision action."
+                )
+
+            has_closed_integrity_issue = (
+                ChangeRequestIntegrityIssue.objects
+                .filter(
+                    change_request=change_request,
+                    revision_no=previous_revision_no,
+                    status=(
+                        ChangeRequestIntegrityIssue
+                        .Status
+                        .CLOSED
+                    ),
+                )
+                .exists()
             )
-            for field_name
-            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
-        }
 
-        proposed_values = {
-            field_name: serialize_change_request_value(
-                validation_result.proposed_values[field_name]
+            if (
+                not has_closed_integrity_issue
+                and return_count != 1
+            ):
+                raise ChangeRequestResubmitError(
+                    "The returned revision does not have a valid "
+                    "Return for Revision history."
+                )
+
+            approval_count = (
+                ChangeAction.objects
+                .filter(
+                    change_request=change_request,
+                    revision_no=previous_revision_no,
+                    action=ChangeAction.Action.APPROVE,
+                )
+                .count()
             )
-            for field_name
-            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
-        }
 
-        field_snapshots = []
+            if approval_count >= 2:
+                raise ChangeRequestResubmitError(
+                    "A revision with two approvals cannot be resubmitted."
+                )
 
-        for field_name in (
-            GRANT_BASIC_INFORMATION_CHANGE_FIELDS
-        ):
-            current_value = current_values[field_name]
-            proposed_value = proposed_values[field_name]
+            grant = (
+                Form1.objects
+                .select_for_update()
+                .get(grant_id=change_request.grant_id)
+            )
 
-            if proposed_value == current_value:
-                stored_proposed_value = None
+            try:
+                baseline_result = (
+                    validate_returned_resubmission_baseline(
+                        change_request,
+                        grant=grant,
+                        lock=True,
+                    )
+                )
+
+            except ChangeRequestBaselineMismatchError:
+                detection_result = (
+                    detect_or_get_change_request_integrity_issue(
+                        change_request_id=change_request.id,
+                        detected_by=resubmitter,
+                        detected_during=(
+                            ChangeRequestIntegrityIssue
+                            .DetectedDuring
+                            .RESUBMIT
+                        ),
+                    )
+                )
+
+                blocked_integrity_issue_id = (
+                    detection_result.integrity_issue_id
+                )
+                blocked_integrity_issue_created = (
+                    detection_result.created
+                )
+
+            except ChangeRequestIntegrityBlockedError as exc:
+                blocked_integrity_issue_id = (
+                    exc.integrity_issue_id
+                )
+                blocked_integrity_issue_created = False
+
+            except ChangeRequestValidationError as exc:
+                raise ChangeRequestResubmitError(
+                    str(exc)
+                ) from exc
+
             else:
-                stored_proposed_value = proposed_value
+                if (
+                    baseline_result.source
+                    == RESUBMISSION_BASELINE_FORMAL_REVISION
+                ):
+                    if return_count != 1:
+                        raise ChangeRequestResubmitError(
+                            "An ordinary returned revision must have "
+                            "exactly one Return for Revision action."
+                        )
 
-            field_snapshots.append(
-                ChangeRequestField(
+                elif (
+                    baseline_result.source
+                    == RESUBMISSION_BASELINE_INTEGRITY_DISPOSITION
+                ):
+                    if (
+                        baseline_result.integrity_issue_id
+                        is None
+                    ):
+                        raise ChangeRequestResubmitError(
+                            "The integrity disposition baseline does not "
+                            "identify its integrity incident."
+                        )
+
+                else:
+                    raise ChangeRequestResubmitError(
+                        "The returned revision has an unsupported "
+                        "authoritative baseline source."
+                    )
+
+                validation_result = (
+                    _validate_basic_information_proposed_form_data(
+                        change_request=change_request,
+                        grant=grant,
+                        proposed_form_data=proposed_form_data,
+                    )
+                )
+
+                new_revision_no = (
+                    previous_revision_no + 1
+                )
+
+                if (
+                    ChangeRequestField.objects
+                    .filter(
+                        change_request=change_request,
+                        revision_no=new_revision_no,
+                    )
+                    .exists()
+                ):
+                    raise ChangeRequestResubmitError(
+                        "The next revision already contains field "
+                        "snapshots."
+                    )
+
+                if (
+                    ChangeAction.objects
+                    .filter(
+                        change_request=change_request,
+                        revision_no=new_revision_no,
+                    )
+                    .exists()
+                ):
+                    raise ChangeRequestResubmitError(
+                        "The next revision already contains workflow "
+                        "actions."
+                    )
+
+                current_values = {
+                    field_name: serialize_change_request_value(
+                        getattr(grant, field_name)
+                    )
+                    for field_name
+                    in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+                }
+
+                proposed_values = {
+                    field_name: serialize_change_request_value(
+                        validation_result.proposed_values[
+                            field_name
+                        ]
+                    )
+                    for field_name
+                    in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+                }
+
+                field_snapshots = []
+
+                for field_name in (
+                    GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+                ):
+                    current_value = (
+                        current_values[field_name]
+                    )
+                    proposed_value = (
+                        proposed_values[field_name]
+                    )
+
+                    if proposed_value == current_value:
+                        stored_proposed_value = None
+                    else:
+                        stored_proposed_value = (
+                            proposed_value
+                        )
+
+                    field_snapshots.append(
+                        ChangeRequestField(
+                            change_request=change_request,
+                            revision_no=new_revision_no,
+                            field_name=field_name,
+                            current_value=current_value,
+                            proposed_value=stored_proposed_value,
+                        )
+                    )
+
+                ChangeRequestField.objects.bulk_create(
+                    field_snapshots
+                )
+
+                ChangeAction.objects.create(
                     change_request=change_request,
                     revision_no=new_revision_no,
-                    field_name=field_name,
-                    current_value=current_value,
-                    proposed_value=stored_proposed_value,
+                    acted_by=resubmitter,
+                    action=ChangeAction.Action.RESUBMIT,
+                    comment=resubmission_comment,
                 )
-            )
 
-        ChangeRequestField.objects.bulk_create(
-            field_snapshots
+                change_request.current_revision = (
+                    new_revision_no
+                )
+                change_request.status = (
+                    ChangeRequest.Status.PENDING
+                )
+                change_request.save(
+                    update_fields=[
+                        "current_revision",
+                        "status",
+                    ]
+                )
+
+                resubmit_result = StandaloneResubmitResult(
+                    change_request_id=change_request.id,
+                    status=change_request.status,
+                    previous_revision_no=previous_revision_no,
+                    revision_no=new_revision_no,
+                    changed_fields=(
+                        validation_result.changed_fields
+                    ),
+                )
+
+    if blocked_integrity_issue_id is not None:
+        raise ChangeRequestIntegrityBlockedError(
+            blocked_integrity_issue_id,
+            newly_detected=(
+                blocked_integrity_issue_created
+            ),
         )
 
-        ChangeAction.objects.create(
-            change_request=change_request,
-            revision_no=new_revision_no,
-            acted_by=resubmitter,
-            action=ChangeAction.Action.RESUBMIT,
-            comment=resubmission_comment,
-        )
-
-        change_request.current_revision = (
-            new_revision_no
-        )
-        change_request.status = (
-            ChangeRequest.Status.PENDING
-        )
-        change_request.save(
-            update_fields=[
-                "current_revision",
-                "status",
-            ]
-        )
-
-        return StandaloneResubmitResult(
-            change_request_id=change_request.id,
-            status=change_request.status,
-            previous_revision_no=previous_revision_no,
-            revision_no=new_revision_no,
-            changed_fields=validation_result.changed_fields,
-        )
+    return resubmit_result
