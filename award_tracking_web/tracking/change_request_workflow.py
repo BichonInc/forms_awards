@@ -225,6 +225,79 @@ def serialize_change_request_value(value):
     return str(value)
 
 
+def get_basic_information_revision_snapshots(
+        change_request,
+):
+    """
+    Return the current formal revision's Basic Information snapshots
+    keyed by field name.
+
+    This validates snapshot structure without comparing the stored
+    current-value baseline to authoritative Form1.
+    """
+    snapshots = list(
+        ChangeRequestField.objects
+        .filter(
+            change_request=change_request,
+            revision_no=change_request.current_revision,
+        )
+        .order_by("field_name")
+    )
+
+    expected_fields = set(
+        GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    )
+
+    snapshot_fields = {
+        snapshot.field_name
+        for snapshot in snapshots
+    }
+
+    missing_fields = sorted(
+        expected_fields - snapshot_fields
+    )
+
+    unexpected_fields = sorted(
+        snapshot_fields - expected_fields
+    )
+
+    if (
+        len(snapshots) != len(expected_fields)
+        or missing_fields
+        or unexpected_fields
+    ):
+        details = []
+
+        if missing_fields:
+            details.append(
+                "missing fields: "
+                + ", ".join(missing_fields)
+            )
+
+        if unexpected_fields:
+            details.append(
+                "unexpected fields: "
+                + ", ".join(unexpected_fields)
+            )
+
+        if not details:
+            details.append(
+                "the revision does not contain exactly one snapshot "
+                "for every protected field"
+            )
+
+        raise ChangeRequestValidationError(
+            "The Change Request snapshot is incomplete or invalid ("
+            + "; ".join(details)
+            + ")."
+        )
+
+    return {
+        snapshot.field_name: snapshot
+        for snapshot in snapshots
+    }
+
+
 def get_open_change_request_integrity_issue(
         change_request,
         *,
@@ -554,7 +627,14 @@ def detect_or_get_change_request_integrity_issue(
         try:
             if (
                     detected_during
-                    == ChangeRequestIntegrityIssue.DetectedDuring.RESUBMIT
+                    in {
+                        ChangeRequestIntegrityIssue
+                        .DetectedDuring
+                        .RESUBMIT,
+                        ChangeRequestIntegrityIssue
+                        .DetectedDuring
+                        .REVIEW,
+                    }
                     and change_request.status
                     == ChangeRequest.Status.RETURNED
             ):

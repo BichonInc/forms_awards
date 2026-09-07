@@ -42,14 +42,19 @@ from .forms import (
 from .change_request_workflow import (
     ChangeRequestApprovalError,
     ChangeRequestBaselineMismatchError,
+    ChangeRequestIntegrityBlockedError,
+    ChangeRequestIntegrityIssueError,
     ChangeRequestResubmitError,
     ChangeRequestReturnError,
     ChangeRequestValidationError,
     approve_standalone_change_request,
+    detect_or_get_change_request_integrity_issue,
+    get_basic_information_revision_snapshots,
     resubmit_standalone_change_request,
     return_standalone_change_request,
     serialize_change_request_value,
     validate_basic_information_revision_baseline,
+    validate_returned_resubmission_baseline,
     get_revision_submitter_id,
 )
 from django.core.files.storage import default_storage
@@ -1505,11 +1510,67 @@ def resubmit_grant_change_request(request, request_id):
     )
 
     try:
-        grant, snapshots_by_field = (
-            validate_basic_information_revision_baseline(
-                change_request,
-                grant=grant,
+        snapshots_by_field = (
+            get_basic_information_revision_snapshots(
+                change_request
             )
+        )
+
+        validate_returned_resubmission_baseline(
+            change_request,
+            grant=grant,
+        )
+
+    except ChangeRequestIntegrityBlockedError as exc:
+        messages.error(
+            request,
+            str(exc),
+        )
+        return redirect(
+            "change_request_review",
+            request_id=change_request.id,
+        )
+
+    except ChangeRequestBaselineMismatchError:
+        detection_stage = (
+            "RESUBMIT"
+            if request.method == "POST"
+            else "REVIEW"
+        )
+
+        try:
+            detection_result = (
+                detect_or_get_change_request_integrity_issue(
+                    change_request_id=change_request.id,
+                    detected_by=request.user,
+                    detected_during=detection_stage,
+                )
+            )
+
+        except ChangeRequestIntegrityIssueError as exc:
+            messages.error(
+                request,
+                str(exc),
+            )
+
+        else:
+            blocked_error = (
+                ChangeRequestIntegrityBlockedError(
+                    detection_result.integrity_issue_id,
+                    newly_detected=(
+                        detection_result.created
+                    ),
+                )
+            )
+
+            messages.error(
+                request,
+                str(blocked_error),
+            )
+
+        return redirect(
+            "change_request_review",
+            request_id=change_request.id,
         )
 
     except ChangeRequestValidationError as exc:
@@ -1539,7 +1600,7 @@ def resubmit_grant_change_request(request, request_id):
 
         if snapshot.proposed_value is None:
             previous_proposed_values[field_name] = (
-                snapshot.current_value
+                current_values[field_name]
             )
         else:
             previous_proposed_values[field_name] = (
@@ -1576,6 +1637,16 @@ def resubmit_grant_change_request(request, request_id):
                     resubmitter=request.user,
                     proposed_form_data=request.POST,
                     comment=resubmission_comment,
+                )
+
+            except ChangeRequestIntegrityBlockedError as exc:
+                messages.error(
+                    request,
+                    str(exc),
+                )
+                return redirect(
+                    "change_request_review",
+                    request_id=change_request.id,
                 )
 
             except ChangeRequestBaselineMismatchError as exc:
