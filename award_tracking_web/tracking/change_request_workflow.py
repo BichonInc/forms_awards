@@ -896,14 +896,22 @@ def resolve_change_request_integrity_issue(
         administrator,
         classification,
         comment,
+        reviewed_authoritative_values,
 ):
     """
     Resolve an OPEN Basic Information integrity incident.
 
     The Administrator classifies the incident, records a required
-    explanation, captures all current authoritative Form1 values as the
-    DISPOSITION checkpoint, closes the incident, and returns the Change
-    Request to Editors.
+    explanation, and confirms the authoritative Form1 values that were
+    displayed for review.
+
+    Inside the transaction, Form1 is locked and compared with those
+    reviewed values. If any protected Basic Information value changed
+    after the Administrator reviewed the page, disposition is refused.
+
+    When the reviewed values still match authoritative Form1, all current
+    protected values are captured as the immutable DISPOSITION checkpoint,
+    the incident is closed, and the Change Request is returned to Editors.
 
     This service does not modify authoritative Form1 values and does not
     create an ordinary ChangeAction RETURN record.
@@ -939,6 +947,72 @@ def resolve_change_request_integrity_issue(
         raise ChangeRequestIntegrityDispositionError(
             "A valid integrity classification is required."
         )
+
+    if not isinstance(
+        reviewed_authoritative_values,
+        dict,
+    ):
+        raise ChangeRequestIntegrityDispositionError(
+            "The reviewed authoritative Basic Information snapshot "
+            "is invalid."
+        )
+
+    expected_fields = set(
+        GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    )
+
+    reviewed_fields = set(
+        reviewed_authoritative_values.keys()
+    )
+
+    missing_fields = sorted(
+        expected_fields - reviewed_fields
+    )
+
+    unexpected_fields = sorted(
+        reviewed_fields - expected_fields
+    )
+
+    if (
+        missing_fields
+        or unexpected_fields
+        or len(reviewed_authoritative_values)
+        != len(expected_fields)
+    ):
+        details = []
+
+        if missing_fields:
+            details.append(
+                "missing fields: "
+                + ", ".join(missing_fields)
+            )
+
+        if unexpected_fields:
+            details.append(
+                "unexpected fields: "
+                + ", ".join(unexpected_fields)
+            )
+
+        if not details:
+            details.append(
+                "the snapshot does not contain exactly one value "
+                "for every protected field"
+            )
+
+        raise ChangeRequestIntegrityDispositionError(
+            "The reviewed authoritative Basic Information snapshot "
+            "is incomplete or invalid ("
+            + "; ".join(details)
+            + ")."
+        )
+
+    reviewed_values = {
+        field_name: serialize_change_request_value(
+            reviewed_authoritative_values[field_name]
+        )
+        for field_name
+        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    }
 
     with transaction.atomic():
         integrity_issue = (
@@ -1041,6 +1115,26 @@ def resolve_change_request_integrity_issue(
             for field_name
             in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
         }
+
+        stale_review_fields = tuple(
+            field_name
+            for field_name
+            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+            if (
+                reviewed_values[field_name]
+                != disposition_values[field_name]
+            )
+        )
+
+        if stale_review_fields:
+            raise ChangeRequestIntegrityDispositionError(
+                "Authoritative Basic Information changed after the "
+                "Administrator reviewed the integrity incident. "
+                "Disposition was not recorded. Review the incident "
+                "again before resolving it. Changed fields: "
+                + ", ".join(stale_review_fields)
+                + "."
+            )
 
         ChangeRequestIntegritySnapshotField.objects.bulk_create(
             [
