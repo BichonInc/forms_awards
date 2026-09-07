@@ -16,6 +16,7 @@ from .models import (
     ChangeRequest,
     ChangeRequestField,
     ChangeAction,
+    ChangeRequestIntegrityIssue,
     CHANGE_REQUEST_BLOCKING_STATUSES,
     CHANGE_REQUEST_SUBMITTED_STATUSES,
     CHANGE_REQUEST_HISTORY_STATUSES,
@@ -40,6 +41,8 @@ from .forms import (
     GrantForm,
 )
 from .change_request_workflow import (
+    RESUBMISSION_BASELINE_FORMAL_REVISION,
+    RESUBMISSION_BASELINE_INTEGRITY_DISPOSITION,
     ChangeRequestApprovalError,
     ChangeRequestBaselineMismatchError,
     ChangeRequestIntegrityBlockedError,
@@ -49,6 +52,7 @@ from .change_request_workflow import (
     ChangeRequestValidationError,
     approve_standalone_change_request,
     detect_or_get_change_request_integrity_issue,
+    get_change_request_integrity_evidence,
     get_basic_information_revision_snapshots,
     resubmit_standalone_change_request,
     return_standalone_change_request,
@@ -1948,6 +1952,157 @@ def change_request_review(request, request_id):
             }
         )
 
+    integrity_issues = list(
+        ChangeRequestIntegrityIssue.objects
+        .filter(
+            change_request=change_request,
+        )
+        .select_related(
+            "detected_by",
+            "closed_by",
+        )
+        .order_by("-detected_at", "-id")
+    )
+
+    open_integrity_issue = next(
+        (
+            issue
+            for issue in integrity_issues
+            if (
+                issue.status
+                == ChangeRequestIntegrityIssue.Status.OPEN
+            )
+        ),
+        None,
+    )
+
+    integrity_issue_cards = []
+
+    for integrity_issue in integrity_issues:
+        evidence_rows = []
+        evidence_error = ""
+        baseline_source_label = ""
+        baseline_integrity_issue_id = None
+        has_disposition_checkpoint = False
+
+        try:
+            evidence = (
+                get_change_request_integrity_evidence(
+                    integrity_issue
+                )
+            )
+
+        except (
+            ChangeRequestIntegrityIssueError,
+            ChangeRequestValidationError,
+        ) as exc:
+            evidence_error = str(exc)
+
+        else:
+            baseline_integrity_issue_id = (
+                evidence.baseline_integrity_issue_id
+            )
+
+            if (
+                evidence.baseline_source
+                == RESUBMISSION_BASELINE_INTEGRITY_DISPOSITION
+            ):
+                baseline_source_label = (
+                    "Administrator Integrity Disposition "
+                    f"Checkpoint B from Incident "
+                    f"#{baseline_integrity_issue_id}"
+                )
+
+            else:
+                baseline_source_label = (
+                    "Formal Revision Snapshot"
+                )
+
+            has_disposition_checkpoint = (
+                evidence.disposition_values
+                is not None
+            )
+
+            for field_name in (
+                GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+            ):
+                is_mismatch = (
+                    field_name
+                    in evidence.mismatched_fields
+                )
+
+                disposition_value = None
+
+                if evidence.disposition_values is not None:
+                    disposition_value = (
+                        evidence.disposition_values[
+                            field_name
+                        ]
+                    )
+
+                evidence_rows.append(
+                    {
+                        "field_name": field_name,
+                        "label": (
+                            label_form
+                            .fields[field_name]
+                            .label
+                        ),
+                        "baseline_value": (
+                            format_change_request_display_value(
+                                field_name,
+                                evidence.baseline_values[
+                                    field_name
+                                ],
+                            )
+                        ),
+                        "detected_value": (
+                            format_change_request_display_value(
+                                field_name,
+                                evidence.detected_values[
+                                    field_name
+                                ],
+                            )
+                        ),
+                        "disposition_value": (
+                            format_change_request_display_value(
+                                field_name,
+                                disposition_value,
+                            )
+                            if (
+                                disposition_value
+                                is not None
+                            )
+                            else ""
+                        ),
+                        "is_mismatch": is_mismatch,
+                    }
+                )
+
+        integrity_issue_cards.append(
+            {
+                "issue": integrity_issue,
+                "evidence_rows": evidence_rows,
+                "evidence_error": evidence_error,
+                "baseline_source_label": (
+                    baseline_source_label
+                ),
+                "baseline_integrity_issue_id": (
+                    baseline_integrity_issue_id
+                ),
+                "has_disposition_checkpoint": (
+                    has_disposition_checkpoint
+                ),
+            }
+        )
+
+    is_integrity_administrator = (
+        user_has_any_role(
+            request.user,
+            ROLE_ADMINISTRATOR,
+        )
+    )
+
     approvals = (
         ChangeAction.objects
         .filter(
@@ -1987,6 +2142,7 @@ def change_request_review(request, request_id):
             and revision_submitter_id != request.user.id
             and not user_has_approved
             and approval_count < 2
+            and open_integrity_issue is None
     )
 
     can_return = (
@@ -1999,6 +2155,7 @@ def change_request_review(request, request_id):
             and revision_submitter_id != request.user.id
             and not user_has_approved
             and approval_count < 2
+            and open_integrity_issue is None
     )
 
     can_resubmit = (
@@ -2015,7 +2172,29 @@ def change_request_review(request, request_id):
             change_request.request_type
             == ChangeRequest.RequestType.EDIT_GRANT
         )
+        and open_integrity_issue is None
     )
+
+    if (
+        request.method == "POST"
+        and open_integrity_issue is not None
+    ):
+        blocked_error = (
+            ChangeRequestIntegrityBlockedError(
+                open_integrity_issue.id,
+                newly_detected=False,
+            )
+        )
+
+        messages.error(
+            request,
+            str(blocked_error),
+        )
+
+        return redirect(
+            "change_request_review",
+            request_id=request_id,
+        )
 
     if request.method == "POST":
         action = request.POST.get("action")
@@ -2153,6 +2332,15 @@ def change_request_review(request, request_id):
                 revision_submitter_error
             ),
             "can_resubmit": can_resubmit,
+            "integrity_issue_cards": (
+                integrity_issue_cards
+            ),
+            "open_integrity_issue": (
+                open_integrity_issue
+            ),
+            "is_integrity_administrator": (
+                is_integrity_administrator
+            ),
         },
     )
 

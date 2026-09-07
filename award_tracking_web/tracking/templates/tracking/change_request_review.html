@@ -121,6 +121,49 @@
             background-color: #d1ecf1;
             color: #0c5460;
         }
+
+                .integrity-alert {
+            margin-top: 20px;
+            margin-bottom: 25px;
+            padding: 18px;
+            border: 2px solid #b02a37;
+            border-radius: 5px;
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+
+        .integrity-alert h2 {
+            margin-top: 0;
+        }
+
+        .integrity-card {
+            margin-top: 20px;
+            margin-bottom: 30px;
+            padding: 18px;
+            border: 1px solid #aaa;
+            border-radius: 5px;
+        }
+
+        .integrity-card.open {
+            border: 2px solid #b02a37;
+            background-color: #fff5f5;
+        }
+
+        .integrity-card.closed {
+            background-color: #f8f9fa;
+        }
+
+        .integrity-mismatch {
+            font-weight: bold;
+            background-color: #fff3cd;
+        }
+
+        .integrity-resolution {
+            margin-top: 15px;
+            padding: 12px;
+            background-color: #e2f0d9;
+            border-radius: 5px;
+        }
     </style>
 </head>
 
@@ -219,6 +262,187 @@
             </div>
         {% endif %}
     </div>
+
+    {% if open_integrity_issue %}
+        <div class="integrity-alert">
+            <h2>
+                Data Integrity Incident
+                #{{ open_integrity_issue.id }}
+            </h2>
+
+            <p>
+                <strong>
+                    Normal workflow actions are blocked.
+                </strong>
+            </p>
+
+            <p>
+                A protected Basic Information value no longer
+                matched the authoritative workflow baseline.
+                Approval, ordinary Return for Revision, and
+                Editor resubmission cannot continue until an
+                Administrator investigates and resolves this
+                incident.
+            </p>
+
+            <p>
+                <strong>Detected During:</strong>
+                {{ open_integrity_issue.get_detected_during_display }}
+            </p>
+
+            <p>
+                <strong>Affected Revision:</strong>
+                {{ open_integrity_issue.revision_no }}
+            </p>
+
+            <p>
+                <strong>Detected By:</strong>
+                {% if open_integrity_issue.detected_by %}
+                    {{ open_integrity_issue.detected_by.username }}
+                {% else %}
+                    System / unavailable
+                {% endif %}
+            </p>
+
+            <p>
+                <strong>Detected At:</strong>
+                {{ open_integrity_issue.detected_at|date:"M j, Y, g:i A" }}
+            </p>
+
+            {% if is_integrity_administrator %}
+                <p>
+                    <strong>Administrator:</strong>
+                    This incident requires formal integrity
+                    disposition before the workflow can resume.
+                </p>
+            {% endif %}
+        </div>
+    {% endif %}
+
+    {% if integrity_issue_cards %}
+        <h2>Integrity Incident History</h2>
+
+        {% for card in integrity_issue_cards %}
+            <div
+                class="integrity-card
+                {% if card.issue.status == 'OPEN' %}
+                    open
+                {% else %}
+                    closed
+                {% endif %}"
+            >
+                <h3>
+                    Integrity Incident #{{ card.issue.id }}
+                    &mdash;
+                    {{ card.issue.get_status_display }}
+                </h3>
+
+                <p>
+                    <strong>Revision:</strong>
+                    {{ card.issue.revision_no }}
+                </p>
+
+                <p>
+                    <strong>Detected During:</strong>
+                    {{ card.issue.get_detected_during_display }}
+                </p>
+
+                <p>
+                    <strong>Request Status at Detection:</strong>
+                    {{ card.issue.request_status_at_detection }}
+                </p>
+
+                <p>
+                    <strong>Detected By:</strong>
+                    {% if card.issue.detected_by %}
+                        {{ card.issue.detected_by.username }}
+                    {% else %}
+                        System / unavailable
+                    {% endif %}
+                </p>
+
+                <p>
+                    <strong>Detected At:</strong>
+                    {{ card.issue.detected_at|date:"M j, Y, g:i A" }}
+                </p>
+
+                {% if card.evidence_error %}
+                    <div class="messages error">
+                        <strong>
+                            Integrity Evidence Error:
+                        </strong>
+                        {{ card.evidence_error }}
+                    </div>
+
+                {% else %}
+                    <p>
+                        <strong>Governing Baseline:</strong>
+                        {{ card.baseline_source_label }}
+                    </p>
+
+                    <table>
+                        <thead>
+                        <tr>
+                            <th>Field</th>
+                            <th>Governing Baseline</th>
+                            <th>Detected Authoritative Value</th>
+
+                            {% if card.has_disposition_checkpoint %}
+                                <th>
+                                    Disposition Checkpoint B
+                                </th>
+                            {% endif %}
+                        </tr>
+                        </thead>
+
+                        <tbody>
+                        {% for row in card.evidence_rows %}
+                            <tr
+                                {% if row.is_mismatch %}
+                                    class="integrity-mismatch"
+                                {% endif %}
+                            >
+                                <td>{{ row.label }}</td>
+                                <td>{{ row.baseline_value }}</td>
+                                <td>{{ row.detected_value }}</td>
+
+                                {% if card.has_disposition_checkpoint %}
+                                    <td>
+                                        {{ row.disposition_value }}
+                                    </td>
+                                {% endif %}
+                            </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                {% endif %}
+
+                {% if card.issue.status == 'CLOSED' %}
+                    <div class="integrity-resolution">
+                        <p>
+                            <strong>Classification:</strong>
+                            {{ card.issue.get_classification_display }}
+                        </p>
+
+                        <p>
+                            <strong>Resolved By:</strong>
+                            {{ card.issue.closed_by.username }}
+                        </p>
+
+                        <p>
+                            <strong>Resolved At:</strong>
+                            {{ card.issue.closed_at|date:"M j, Y, g:i A" }}
+                        </p>
+
+                        <p>
+                            <strong>Administrator Explanation:</strong><br>
+                            {{ card.issue.resolution_comment }}
+                        </p>
+                    </div>
+                {% endif %}
+            </div>
+        {% endfor %}
+    {% endif %}
 
     <h2>Basic Information</h2>
 

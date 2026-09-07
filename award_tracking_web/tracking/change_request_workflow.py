@@ -206,6 +206,16 @@ class ReturnedResubmissionBaselineResult:
     integrity_issue_id: int | None
 
 
+@dataclass(frozen=True)
+class IntegrityIssueEvidenceResult:
+    baseline_source: str
+    baseline_integrity_issue_id: int | None
+    baseline_values: dict
+    detected_values: dict
+    disposition_values: dict | None
+    mismatched_fields: tuple
+
+
 def serialize_change_request_value(value):
     """
     Convert Basic Information values to stable text for audit storage.
@@ -227,19 +237,35 @@ def serialize_change_request_value(value):
 
 def get_basic_information_revision_snapshots(
         change_request,
+        *,
+        revision_no=None,
 ):
     """
-    Return the current formal revision's Basic Information snapshots
-    keyed by field name.
+    Return one formal Basic Information revision's snapshots keyed by
+    field name.
+
+    By default, use the Change Request's current revision. A specific
+    historical revision may be requested for integrity-audit evidence.
 
     This validates snapshot structure without comparing the stored
     current-value baseline to authoritative Form1.
     """
+    resolved_revision_no = (
+        change_request.current_revision
+        if revision_no is None
+        else revision_no
+    )
+
+    if resolved_revision_no < 1:
+        raise ChangeRequestValidationError(
+            "The requested Change Request revision is invalid."
+        )
+
     snapshots = list(
         ChangeRequestField.objects
         .filter(
             change_request=change_request,
-            revision_no=change_request.current_revision,
+            revision_no=resolved_revision_no,
         )
         .order_by("field_name")
     )
@@ -413,6 +439,143 @@ def get_integrity_snapshot_values(
         snapshot.field_name: snapshot.authoritative_value
         for snapshot in snapshots
     }
+
+
+def get_change_request_integrity_evidence(
+        integrity_issue,
+):
+    """
+    Reconstruct the authoritative baseline that governed an integrity
+    incident and compare it with the immutable DETECTION snapshot.
+
+    Approval/Return incidents are governed by the formal revision
+    snapshot.
+
+    REVIEW/RESUBMIT incidents detected while the request was RETURNED
+    use the latest preceding Administrator DISPOSITION checkpoint when
+    one exists. Otherwise they use the formal revision snapshot.
+
+    For a CLOSED incident, also return that incident's immutable
+    DISPOSITION checkpoint.
+    """
+    change_request = integrity_issue.change_request
+
+    detected_values = get_integrity_snapshot_values(
+        integrity_issue,
+        stage=(
+            ChangeRequestIntegritySnapshotField
+            .Stage
+            .DETECTION
+        ),
+    )
+
+    baseline_source = (
+        RESUBMISSION_BASELINE_FORMAL_REVISION
+    )
+
+    baseline_integrity_issue_id = None
+
+    preceding_disposition_issue = None
+
+    if (
+        integrity_issue.detected_during
+        in {
+            ChangeRequestIntegrityIssue
+            .DetectedDuring
+            .REVIEW,
+            ChangeRequestIntegrityIssue
+            .DetectedDuring
+            .RESUBMIT,
+        }
+        and integrity_issue.request_status_at_detection
+        == ChangeRequest.Status.RETURNED
+    ):
+        preceding_disposition_issue = (
+            ChangeRequestIntegrityIssue.objects
+            .filter(
+                change_request=change_request,
+                revision_no=integrity_issue.revision_no,
+                status=(
+                    ChangeRequestIntegrityIssue
+                    .Status
+                    .CLOSED
+                ),
+                closed_at__lte=integrity_issue.detected_at,
+            )
+            .exclude(pk=integrity_issue.pk)
+            .order_by("-closed_at", "-id")
+            .first()
+        )
+
+    if preceding_disposition_issue is not None:
+        baseline_source = (
+            RESUBMISSION_BASELINE_INTEGRITY_DISPOSITION
+        )
+
+        baseline_integrity_issue_id = (
+            preceding_disposition_issue.id
+        )
+
+        baseline_values = get_integrity_snapshot_values(
+            preceding_disposition_issue,
+            stage=(
+                ChangeRequestIntegritySnapshotField
+                .Stage
+                .DISPOSITION
+            ),
+        )
+
+    else:
+        revision_snapshots = (
+            get_basic_information_revision_snapshots(
+                change_request,
+                revision_no=integrity_issue.revision_no,
+            )
+        )
+
+        baseline_values = {
+            field_name: revision_snapshots[
+                field_name
+            ].current_value
+            for field_name
+            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        }
+
+    mismatched_fields = tuple(
+        field_name
+        for field_name
+        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        if (
+            baseline_values[field_name]
+            != detected_values[field_name]
+        )
+    )
+
+    disposition_values = None
+
+    if (
+        integrity_issue.status
+        == ChangeRequestIntegrityIssue.Status.CLOSED
+    ):
+        disposition_values = get_integrity_snapshot_values(
+            integrity_issue,
+            stage=(
+                ChangeRequestIntegritySnapshotField
+                .Stage
+                .DISPOSITION
+            ),
+        )
+
+    return IntegrityIssueEvidenceResult(
+        baseline_source=baseline_source,
+        baseline_integrity_issue_id=(
+            baseline_integrity_issue_id
+        ),
+        baseline_values=baseline_values,
+        detected_values=detected_values,
+        disposition_values=disposition_values,
+        mismatched_fields=mismatched_fields,
+    )
 
 
 def validate_returned_resubmission_baseline(
