@@ -335,6 +335,10 @@ class CoordinatedChange(models.Model):
         default=Status.DRAFT,
     )
 
+    current_revision = models.PositiveIntegerField(
+        default=1,
+    )
+
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -412,6 +416,72 @@ class CoordinatedChange(models.Model):
         return (
             f"Coordinated Change {self.id} "
             f"({self.get_status_display()})"
+        )
+
+
+class CoordinatedChangeAction(models.Model):
+    class Action(models.TextChoices):
+        APPROVE = "APPROVE", "Approve"
+        RETURN = "RETURN", "Return for Revision"
+        DENY = "DENY", "Deny"
+        RESUBMIT = "RESUBMIT", "Resubmit"
+
+    coordinated_change = models.ForeignKey(
+        CoordinatedChange,
+        on_delete=models.PROTECT,
+        related_name="actions",
+    )
+
+    revision_no = models.PositiveIntegerField(
+        default=1,
+    )
+
+    acted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="coordinated_change_actions",
+    )
+
+    action = models.CharField(
+        max_length=10,
+        choices=Action.choices,
+    )
+
+    acted_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    comment = models.TextField(
+        blank=True,
+        default="",
+        max_length=500,
+    )
+
+    class Meta:
+        db_table = "coordinated_change_action"
+        ordering = ["acted_at", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=[
+                    "coordinated_change",
+                    "revision_no",
+                    "acted_by",
+                ],
+                condition=models.Q(
+                    action="APPROVE"
+                ),
+                name=(
+                    "unique_coordinated_approval_"
+                    "per_user_per_revision"
+                ),
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"Coordinated Change "
+            f"{self.coordinated_change_id}: "
+            f"{self.action} by {self.acted_by}"
         )
 
 
