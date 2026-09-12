@@ -16,6 +16,7 @@ from .models import (
     ChangeRequestField,
     ChangeRequestIntegrityIssue,
     ChangeRequestIntegritySnapshotField,
+    CoordinatedChange,
     Form1,
 )
 
@@ -38,6 +39,31 @@ RESUBMISSION_BASELINE_FORMAL_REVISION = (
 RESUBMISSION_BASELINE_INTEGRITY_DISPOSITION = (
     "INTEGRITY_DISPOSITION"
 )
+
+
+COORDINATED_CHILD_STATUS_BY_PARENT = {
+    CoordinatedChange.Status.DRAFT: (
+        ChangeRequest.Status.DRAFT
+    ),
+    CoordinatedChange.Status.PENDING: (
+        ChangeRequest.Status.PENDING
+    ),
+    CoordinatedChange.Status.RETURNED: (
+        ChangeRequest.Status.RETURNED
+    ),
+    CoordinatedChange.Status.APPLIED: (
+        ChangeRequest.Status.APPROVED
+    ),
+    CoordinatedChange.Status.DENIED: (
+        ChangeRequest.Status.DENIED
+    ),
+    CoordinatedChange.Status.CANCELLED: (
+        ChangeRequest.Status.CANCELLED
+    ),
+    CoordinatedChange.Status.WITHDRAWN: (
+        ChangeRequest.Status.WITHDRAWN
+    ),
+}
 
 
 class ChangeRequestValidationError(Exception):
@@ -149,6 +175,14 @@ class ChangeRequestIntegrityDispositionError(Exception):
     """
 
 
+class CoordinatedChangeValidationError(
+        ChangeRequestValidationError
+):
+    """
+    Raised when a coordinated package is structurally invalid.
+    """
+
+
 @dataclass(frozen=True)
 class BasicInformationValidationResult:
     proposed_values: dict
@@ -214,6 +248,15 @@ class IntegrityIssueEvidenceResult:
     detected_values: dict
     disposition_values: dict | None
     mismatched_fields: tuple
+
+
+@dataclass(frozen=True)
+class CoordinatedChangeStructureResult:
+    coordinated_change_id: int
+    status: str
+    revision_no: int
+    change_requests: tuple
+    grant_ids: tuple
 
 
 def serialize_change_request_value(value):
@@ -322,6 +365,280 @@ def get_basic_information_revision_snapshots(
         snapshot.field_name: snapshot
         for snapshot in snapshots
     }
+
+
+def validate_coordinated_change_structure(
+        coordinated_change,
+        *,
+        require_current_revision_snapshots=True,
+        lock_children=False,
+):
+    """
+    Validate the structural integrity of a coordinated package.
+
+    This function validates package composition and synchronization.
+    It does not validate proposed business values, GL overlap rules,
+    or authoritative Form1 baseline integrity.
+
+    A coordinated package must:
+      1. contain at least two child Change Requests;
+      2. contain unique grant IDs;
+      3. keep every child on the package's current revision;
+      4. keep child statuses synchronized with the package status;
+      5. contain only supported NEW_GRANT or EDIT_GRANT requests;
+      6. reference an existing Form1 record for EDIT_GRANT;
+      7. not reference an existing Form1 record for NEW_GRANT; and
+      8. when required, contain one complete 14-field snapshot for
+         every child at the current package revision.
+
+    lock_children=True is intended for callers already operating inside
+    transaction.atomic(). It locks the child ChangeRequest rows before
+    returning them.
+    """
+    if coordinated_change.pk is None:
+        raise CoordinatedChangeValidationError(
+            "The coordinated package has not been saved."
+        )
+
+    revision_no = coordinated_change.current_revision
+
+    if revision_no < 1:
+        raise CoordinatedChangeValidationError(
+            "The coordinated package revision is invalid."
+        )
+
+    expected_child_status = (
+        COORDINATED_CHILD_STATUS_BY_PARENT.get(
+            coordinated_change.status
+        )
+    )
+
+    if expected_child_status is None:
+        raise CoordinatedChangeValidationError(
+            "The coordinated package has an unsupported status."
+        )
+
+    child_query = (
+        ChangeRequest.objects
+        .filter(
+            coordinated_change=coordinated_change
+        )
+        .order_by("id")
+    )
+
+    if lock_children:
+        child_query = (
+            child_query.select_for_update()
+        )
+
+    change_requests = tuple(
+        child_query
+    )
+
+    if len(change_requests) < 2:
+        raise CoordinatedChangeValidationError(
+            "A coordinated package must contain at least "
+            "two Change Requests."
+        )
+
+    grant_ids = tuple(
+        change_request.grant_id
+        for change_request
+        in change_requests
+    )
+
+    duplicate_grant_ids = sorted(
+        {
+            grant_id
+            for grant_id in grant_ids
+            if grant_ids.count(grant_id) > 1
+        }
+    )
+
+    if duplicate_grant_ids:
+        raise CoordinatedChangeValidationError(
+            "A coordinated package cannot contain the same "
+            "grant more than once. Duplicate grant IDs: "
+            + ", ".join(duplicate_grant_ids)
+            + "."
+        )
+
+    revision_mismatches = [
+        (
+            change_request.id,
+            change_request.current_revision,
+        )
+        for change_request
+        in change_requests
+        if (
+            change_request.current_revision
+            != revision_no
+        )
+    ]
+
+    if revision_mismatches:
+        details = ", ".join(
+            (
+                f"Request #{request_id} "
+                f"is revision {child_revision}"
+            )
+            for request_id, child_revision
+            in revision_mismatches
+        )
+
+        raise CoordinatedChangeValidationError(
+            "The coordinated package and its child "
+            "Change Requests are not on the same revision. "
+            f"Package revision: {revision_no}; "
+            + details
+            + "."
+        )
+
+    status_mismatches = [
+        (
+            change_request.id,
+            change_request.status,
+        )
+        for change_request
+        in change_requests
+        if (
+            change_request.status
+            != expected_child_status
+        )
+    ]
+
+    if status_mismatches:
+        details = ", ".join(
+            (
+                f"Request #{request_id} "
+                f"has status {child_status}"
+            )
+            for request_id, child_status
+            in status_mismatches
+        )
+
+        raise CoordinatedChangeValidationError(
+            "The coordinated package and its child "
+            "Change Requests have inconsistent statuses. "
+            f"Package status {coordinated_change.status} "
+            f"requires child status {expected_child_status}; "
+            + details
+            + "."
+        )
+
+    supported_request_types = {
+        ChangeRequest.RequestType.NEW_GRANT,
+        ChangeRequest.RequestType.EDIT_GRANT,
+    }
+
+    invalid_request_types = [
+        change_request.id
+        for change_request
+        in change_requests
+        if (
+            change_request.request_type
+            not in supported_request_types
+        )
+    ]
+
+    if invalid_request_types:
+        raise CoordinatedChangeValidationError(
+            "The coordinated package contains unsupported "
+            "Change Request types. Request IDs: "
+            + ", ".join(
+                str(request_id)
+                for request_id
+                in invalid_request_types
+            )
+            + "."
+        )
+
+    existing_grant_ids = set(
+        Form1.objects
+        .filter(
+            grant_id__in=grant_ids
+        )
+        .values_list(
+            "grant_id",
+            flat=True,
+        )
+    )
+
+    edit_requests_without_grants = [
+        change_request.id
+        for change_request
+        in change_requests
+        if (
+            change_request.request_type
+            == ChangeRequest.RequestType.EDIT_GRANT
+            and change_request.grant_id
+            not in existing_grant_ids
+        )
+    ]
+
+    if edit_requests_without_grants:
+        raise CoordinatedChangeValidationError(
+            "An EDIT_GRANT request must reference an "
+            "existing authoritative Form1 record. "
+            "Invalid Request IDs: "
+            + ", ".join(
+                str(request_id)
+                for request_id
+                in edit_requests_without_grants
+            )
+            + "."
+        )
+
+    new_requests_with_existing_grants = [
+        change_request.id
+        for change_request
+        in change_requests
+        if (
+            change_request.request_type
+            == ChangeRequest.RequestType.NEW_GRANT
+            and change_request.grant_id
+            in existing_grant_ids
+        )
+    ]
+
+    if new_requests_with_existing_grants:
+        raise CoordinatedChangeValidationError(
+            "A NEW_GRANT request cannot reference a grant "
+            "that already exists in authoritative Form1. "
+            "Invalid Request IDs: "
+            + ", ".join(
+                str(request_id)
+                for request_id
+                in new_requests_with_existing_grants
+            )
+            + "."
+        )
+
+    if require_current_revision_snapshots:
+        for change_request in change_requests:
+            try:
+                get_basic_information_revision_snapshots(
+                    change_request,
+                    revision_no=revision_no,
+                )
+
+            except ChangeRequestValidationError as exc:
+                raise CoordinatedChangeValidationError(
+                    f"Child Change Request "
+                    f"#{change_request.id} has an invalid "
+                    f"revision-{revision_no} snapshot: "
+                    + str(exc)
+                ) from exc
+
+    return CoordinatedChangeStructureResult(
+        coordinated_change_id=(
+            coordinated_change.id
+        ),
+        status=coordinated_change.status,
+        revision_no=revision_no,
+        change_requests=change_requests,
+        grant_ids=grant_ids,
+    )
 
 
 def get_open_change_request_integrity_issue(
