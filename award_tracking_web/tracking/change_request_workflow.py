@@ -315,6 +315,15 @@ class CoordinatedBasicInformationValidationResult:
     children: tuple
 
 
+@dataclass(frozen=True)
+class CoordinatedFinalGLAssignment:
+    grant_id: str
+    change_request_id: int | None
+    award_code: str
+    gl_start_date: date
+    gl_end_date: date
+
+
 def serialize_change_request_value(value):
     """
     Convert Basic Information values to stable text for audit storage.
@@ -2162,6 +2171,317 @@ def validate_coordinated_gl_relationship(
             "The coordinated package does not form one connected "
             "GL relationship. Related grant groups: "
             + "; ".join(component_descriptions)
+            + "."
+        )
+
+    return validation_result
+
+
+def _coordinated_final_gl_assignment_from_child(
+        child_result,
+):
+    """
+    Build one child's proposed final GL assignment.
+
+    Final-state validation uses only the child's proposed Award Code and
+    proposed GL dates. Its current assignment is intentionally excluded.
+    """
+    proposed_values = (
+        child_result.validation_result.proposed_values
+    )
+
+    award_code = str(
+        proposed_values["internal_award_code"]
+        or ""
+    ).strip()
+
+    gl_start_date = (
+        _coordinated_gl_calendar_date(
+            proposed_values["internal_gl_start_date"]
+        )
+    )
+
+    gl_end_date = (
+        _coordinated_gl_calendar_date(
+            proposed_values["internal_gl_end_date"]
+        )
+    )
+
+    if (
+        not award_code
+        or gl_start_date is None
+        or gl_end_date is None
+    ):
+        raise CoordinatedChangeBusinessValidationError(
+            f"Child Change Request "
+            f"#{child_result.change_request_id} does not contain "
+            "a complete proposed final GL assignment."
+        )
+
+    return CoordinatedFinalGLAssignment(
+        grant_id=child_result.grant_id,
+        change_request_id=(
+            child_result.change_request_id
+        ),
+        award_code=award_code,
+        gl_start_date=gl_start_date,
+        gl_end_date=gl_end_date,
+    )
+
+
+def _coordinated_final_gl_assignment_from_grant(
+        grant,
+):
+    """
+    Build an authoritative current GL assignment for an unaffected grant.
+
+    Incomplete legacy assignments are ignored, matching the practical
+    behavior of the existing standalone overlap query.
+    """
+    award_code = str(
+        grant.internal_award_code or ""
+    ).strip()
+
+    gl_start_date = (
+        _coordinated_gl_calendar_date(
+            grant.internal_gl_start_date
+        )
+    )
+
+    gl_end_date = (
+        _coordinated_gl_calendar_date(
+            grant.internal_gl_end_date
+        )
+    )
+
+    if (
+        not award_code
+        or gl_start_date is None
+        or gl_end_date is None
+    ):
+        return None
+
+    return CoordinatedFinalGLAssignment(
+        grant_id=grant.grant_id,
+        change_request_id=None,
+        award_code=award_code,
+        gl_start_date=gl_start_date,
+        gl_end_date=gl_end_date,
+    )
+
+
+def _coordinated_gl_periods_overlap(
+        *,
+        left_start_date,
+        left_end_date,
+        right_start_date,
+        right_end_date,
+):
+    """
+    Return True when two inclusive final GL periods actually overlap.
+
+    Unlike relationship validation, directly adjacent periods do not
+    conflict.
+    """
+    return (
+        left_start_date <= right_end_date
+        and right_start_date <= left_end_date
+    )
+
+
+def validate_coordinated_final_gl_state(
+        validation_result,
+        *,
+        lock_outside_grants=False,
+):
+    """
+    Validate the hypothetical post-package GL assignment state.
+
+    Coordinated children are represented only by their proposed final
+    assignments. Their current assignments are intentionally excluded.
+
+    Unaffected Form1 grants remain represented by their current
+    authoritative assignments.
+
+    This rejects:
+      - final overlap between two coordinated children; and
+      - final overlap between a coordinated child and an unaffected
+        authoritative grant.
+
+    Existing conflicts solely between unaffected grants are outside this
+    package and are not revalidated here.
+
+    lock_outside_grants=True is intended for callers already operating
+    inside transaction.atomic().
+    """
+    children = tuple(
+        validation_result.children
+    )
+
+    if len(children) < 2:
+        raise CoordinatedChangeBusinessValidationError(
+            "Coordinated final-state validation requires at least two "
+            "validated child Change Requests."
+        )
+
+    child_assignments = tuple(
+        _coordinated_final_gl_assignment_from_child(
+            child_result
+        )
+        for child_result in children
+    )
+
+    conflicts = []
+
+    # ---------------------------------------------------------
+    # Package child versus package child.
+    # ---------------------------------------------------------
+
+    for left_index in range(
+            len(child_assignments)
+    ):
+        for right_index in range(
+                left_index + 1,
+                len(child_assignments),
+        ):
+            left_assignment = (
+                child_assignments[left_index]
+            )
+
+            right_assignment = (
+                child_assignments[right_index]
+            )
+
+            if (
+                left_assignment.award_code
+                != right_assignment.award_code
+            ):
+                continue
+
+            if _coordinated_gl_periods_overlap(
+                left_start_date=(
+                    left_assignment.gl_start_date
+                ),
+                left_end_date=(
+                    left_assignment.gl_end_date
+                ),
+                right_start_date=(
+                    right_assignment.gl_start_date
+                ),
+                right_end_date=(
+                    right_assignment.gl_end_date
+                ),
+            ):
+                conflicts.append(
+                    (
+                        left_assignment.award_code,
+                        left_assignment.grant_id,
+                        right_assignment.grant_id,
+                        "package",
+                    )
+                )
+
+    package_grant_ids = {
+        assignment.grant_id
+        for assignment in child_assignments
+    }
+
+    affected_award_codes = {
+        assignment.award_code
+        for assignment in child_assignments
+    }
+
+    outside_grant_query = (
+        Form1.objects
+        .filter(
+            internal_award_code__in=(
+                affected_award_codes
+            )
+        )
+        .exclude(
+            grant_id__in=package_grant_ids
+        )
+        .order_by("grant_id")
+    )
+
+    if lock_outside_grants:
+        outside_grant_query = (
+            outside_grant_query.select_for_update()
+        )
+
+    # ---------------------------------------------------------
+    # Package child versus unaffected authoritative Form1.
+    # ---------------------------------------------------------
+
+    for outside_grant in outside_grant_query:
+        outside_assignment = (
+            _coordinated_final_gl_assignment_from_grant(
+                outside_grant
+            )
+        )
+
+        if outside_assignment is None:
+            continue
+
+        for child_assignment in child_assignments:
+
+            if (
+                child_assignment.award_code
+                != outside_assignment.award_code
+            ):
+                continue
+
+            if _coordinated_gl_periods_overlap(
+                left_start_date=(
+                    child_assignment.gl_start_date
+                ),
+                left_end_date=(
+                    child_assignment.gl_end_date
+                ),
+                right_start_date=(
+                    outside_assignment.gl_start_date
+                ),
+                right_end_date=(
+                    outside_assignment.gl_end_date
+                ),
+            ):
+                conflicts.append(
+                    (
+                        child_assignment.award_code,
+                        child_assignment.grant_id,
+                        outside_assignment.grant_id,
+                        "outside",
+                    )
+                )
+
+    if conflicts:
+        conflict_descriptions = []
+
+        for (
+            award_code,
+            left_grant_id,
+            right_grant_id,
+            conflict_type,
+        ) in sorted(conflicts):
+
+            if conflict_type == "package":
+                conflict_descriptions.append(
+                    f"Award Code {award_code}: "
+                    f"package grants {left_grant_id} and "
+                    f"{right_grant_id} overlap"
+                )
+
+            else:
+                conflict_descriptions.append(
+                    f"Award Code {award_code}: "
+                    f"package grant {left_grant_id} overlaps "
+                    f"authoritative grant {right_grant_id}"
+                )
+
+        raise CoordinatedChangeBusinessValidationError(
+            "The proposed final coordinated GL state contains "
+            "overlapping assignments: "
+            + "; ".join(conflict_descriptions)
             + "."
         )
 
