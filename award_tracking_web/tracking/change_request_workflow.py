@@ -2488,6 +2488,47 @@ def validate_coordinated_final_gl_state(
     return validation_result
 
 
+def validate_coordinated_basic_information_change(
+        coordinated_change,
+        *,
+        lock_records=False,
+):
+    """
+    Fully validate one coordinated existing-grant Basic Information
+    package without writing to the database.
+
+    Validation occurs in this order:
+
+      1. reconstruct and validate every child's proposed final values;
+      2. verify that all children form one coordinated GL relationship;
+      3. verify that the hypothetical post-package GL state contains no
+         overlapping assignments.
+
+    When lock_records=True, package children, authoritative package
+    grants, and relevant unaffected authoritative grants are locked for
+    update. The caller must already be operating inside
+    transaction.atomic().
+    """
+    validation_result = (
+        validate_coordinated_basic_information_proposals(
+            coordinated_change,
+            lock_children=lock_records,
+            lock_grants=lock_records,
+        )
+    )
+
+    validate_coordinated_gl_relationship(
+        validation_result
+    )
+
+    validate_coordinated_final_gl_state(
+        validation_result,
+        lock_outside_grants=lock_records,
+    )
+
+    return validation_result
+
+
 def validate_basic_information_change_request(
         change_request,
         *,
