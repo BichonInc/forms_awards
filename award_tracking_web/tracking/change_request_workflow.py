@@ -1579,6 +1579,51 @@ def validate_basic_information_revision_baseline(
     return grant, snapshots_by_field
 
 
+def _validate_standalone_basic_information_overlap(
+        *,
+        change_request,
+        proposed_values,
+):
+    """
+    Validate one standalone edit's proposed Internal Award Code and
+    Internal GL date range against authoritative Form1 records.
+
+    Coordinated packages must not use this helper because their final
+    GL assignments must be validated as one proposed package state.
+    """
+    overlapping_grants = (
+        Form1.objects
+        .filter(
+            internal_award_code=proposed_values[
+                "internal_award_code"
+            ],
+            internal_gl_end_date__gte=proposed_values[
+                "internal_gl_start_date"
+            ],
+            internal_gl_start_date__lte=proposed_values[
+                "internal_gl_end_date"
+            ],
+        )
+        .exclude(
+            grant_id=change_request.grant_id
+        )
+        .order_by("grant_id")
+    )
+
+    if overlapping_grants.exists():
+        conflicting_grant_ids = ", ".join(
+            overlapping_grants.values_list(
+                "grant_id",
+                flat=True,
+            )
+        )
+
+        raise ChangeRequestValidationError(
+            "The proposed Internal Award Code and GL date range overlap "
+            f"with: {conflicting_grant_ids}."
+        )
+
+
 def _validate_basic_information_proposed_form_data(
         *,
         change_request,
@@ -1586,12 +1631,14 @@ def _validate_basic_information_proposed_form_data(
         proposed_form_data,
 ):
     """
-    Fully validate proposed Basic Information form data against the
-    authoritative grant without writing to Form1.
+    Validate complete proposed Basic Information form data without
+    writing to Form1 or performing GL-overlap validation.
 
     The caller is responsible for performing any required authoritative
-    baseline check before calling this helper.
+    baseline check and the appropriate standalone or coordinated
+    GL-assignment validation.
     """
+
     if grant.grant_id != change_request.grant_id:
         raise ChangeRequestValidationError(
             "The authoritative grant does not belong to this "
@@ -1613,36 +1660,6 @@ def _validate_basic_information_proposed_form_data(
         raise ChangeRequestValidationError(
             "The proposed Basic Information does not pass validation: "
             + form.errors.as_text()
-        )
-
-    overlapping_grants = (
-        Form1.objects
-        .filter(
-            internal_award_code=form.cleaned_data[
-                "internal_award_code"
-            ],
-            internal_gl_end_date__gte=form.cleaned_data[
-                "internal_gl_start_date"
-            ],
-            internal_gl_start_date__lte=form.cleaned_data[
-                "internal_gl_end_date"
-            ],
-        )
-        .exclude(grant_id=change_request.grant_id)
-        .order_by("grant_id")
-    )
-
-    if overlapping_grants.exists():
-        conflicting_grant_ids = ", ".join(
-            overlapping_grants.values_list(
-                "grant_id",
-                flat=True,
-            )
-        )
-
-        raise ChangeRequestValidationError(
-            "The proposed Internal Award Code and GL date range overlap "
-            f"with: {conflicting_grant_ids}."
         )
 
     proposed_values = {
@@ -1730,11 +1747,20 @@ def validate_basic_information_change_request(
                 snapshot.proposed_value
             )
 
-    return _validate_basic_information_proposed_form_data(
-        change_request=change_request,
-        grant=grant,
-        proposed_form_data=proposed_form_data,
+    validation_result = (
+        _validate_basic_information_proposed_form_data(
+            change_request=change_request,
+            grant=grant,
+            proposed_form_data=proposed_form_data,
+        )
     )
+
+    _validate_standalone_basic_information_overlap(
+        change_request=change_request,
+        proposed_values=validation_result.proposed_values,
+    )
+
+    return validation_result
 
 
 def _apply_validated_basic_information_values(
@@ -2434,6 +2460,13 @@ def resubmit_standalone_change_request(
                         grant=grant,
                         proposed_form_data=proposed_form_data,
                     )
+                )
+
+                _validate_standalone_basic_information_overlap(
+                    change_request=change_request,
+                    proposed_values=(
+                        validation_result.proposed_values
+                    ),
                 )
 
                 new_revision_no = (
