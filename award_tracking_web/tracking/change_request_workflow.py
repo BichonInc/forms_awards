@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from django.db import IntegrityError, transaction
@@ -1907,6 +1907,265 @@ def validate_coordinated_basic_information_proposals(
         ),
         children=tuple(child_results),
     )
+
+
+def _coordinated_gl_calendar_date(value):
+    """
+    Normalize a GL assignment date/datetime to its calendar date.
+
+    Form1 stores the GL fields as DateTimeField values, while the business
+    rule is date-based. Normalizing here prevents timezone offsets or DST
+    transitions from changing whether two GL periods overlap or touch.
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        return value.date()
+
+    if isinstance(value, date):
+        return value
+
+    raise CoordinatedChangeBusinessValidationError(
+        "A coordinated GL assignment contains an unsupported date value."
+    )
+
+
+def _coordinated_child_gl_assignments(child_result):
+    """
+    Return the usable current and proposed GL assignments for one child.
+
+    Current legacy assignments may be incomplete, so an incomplete
+    current assignment does not create a relationship edge. The proposed
+    assignment has already passed the shared Basic Information form
+    validation.
+    """
+    proposed_values = (
+        child_result.validation_result.proposed_values
+    )
+
+    raw_assignments = (
+        (
+            child_result.current_award_code,
+            child_result.current_gl_start_date,
+            child_result.current_gl_end_date,
+        ),
+        (
+            proposed_values["internal_award_code"],
+            proposed_values["internal_gl_start_date"],
+            proposed_values["internal_gl_end_date"],
+        ),
+    )
+
+    assignments = []
+
+    for award_code, gl_start_date, gl_end_date in raw_assignments:
+        normalized_award_code = str(
+            award_code or ""
+        ).strip()
+
+        normalized_start_date = (
+            _coordinated_gl_calendar_date(
+                gl_start_date
+            )
+        )
+
+        normalized_end_date = (
+            _coordinated_gl_calendar_date(
+                gl_end_date
+            )
+        )
+
+        if (
+            not normalized_award_code
+            or normalized_start_date is None
+            or normalized_end_date is None
+        ):
+            continue
+
+        assignment = (
+            normalized_award_code,
+            normalized_start_date,
+            normalized_end_date,
+        )
+
+        if assignment not in assignments:
+            assignments.append(assignment)
+
+    return tuple(assignments)
+
+
+def _coordinated_gl_periods_overlap_or_touch(
+        *,
+        left_start_date,
+        left_end_date,
+        right_start_date,
+        right_end_date,
+):
+    """
+    Return True when two inclusive calendar-date GL periods overlap or
+    are directly adjacent.
+
+    Direct adjacency means one period begins on the calendar day
+    immediately after the other period ends.
+    """
+    return (
+        left_start_date
+        <= right_end_date + timedelta(days=1)
+        and right_start_date
+        <= left_end_date + timedelta(days=1)
+    )
+
+
+def _coordinated_children_are_gl_related(
+        left_child,
+        right_child,
+):
+    """
+    Return True when two coordinated children share a temporally related
+    Award Code through any combination of current and proposed states.
+    """
+    left_assignments = (
+        _coordinated_child_gl_assignments(
+            left_child
+        )
+    )
+
+    right_assignments = (
+        _coordinated_child_gl_assignments(
+            right_child
+        )
+    )
+
+    for (
+        left_award_code,
+        left_start_date,
+        left_end_date,
+    ) in left_assignments:
+        for (
+            right_award_code,
+            right_start_date,
+            right_end_date,
+        ) in right_assignments:
+
+            if left_award_code != right_award_code:
+                continue
+
+            if _coordinated_gl_periods_overlap_or_touch(
+                left_start_date=left_start_date,
+                left_end_date=left_end_date,
+                right_start_date=right_start_date,
+                right_end_date=right_end_date,
+            ):
+                return True
+
+    return False
+
+
+def validate_coordinated_gl_relationship(
+        validation_result,
+):
+    """
+    Require all children to form one connected coordinated GL
+    relationship.
+
+    Two children are directly related when any current/proposed GL
+    assignment from one child and any current/proposed assignment from
+    the other child:
+
+      1. use the same Internal Award Code; and
+      2. have overlapping or directly adjacent calendar-date GL periods.
+
+    Direct pairwise relationship is not required between every child.
+    Chained relationships are valid as long as the whole package forms
+    one connected component.
+    """
+    children = tuple(validation_result.children)
+
+    if len(children) < 2:
+        raise CoordinatedChangeBusinessValidationError(
+            "A coordinated GL relationship requires at least two "
+            "validated child Change Requests."
+        )
+
+    related_indexes = {
+        index: set()
+        for index in range(len(children))
+    }
+
+    for left_index in range(len(children)):
+        for right_index in range(
+                left_index + 1,
+                len(children),
+        ):
+            if _coordinated_children_are_gl_related(
+                children[left_index],
+                children[right_index],
+            ):
+                related_indexes[left_index].add(
+                    right_index
+                )
+                related_indexes[right_index].add(
+                    left_index
+                )
+
+    unvisited_indexes = set(
+        range(len(children))
+    )
+
+    components = []
+
+    while unvisited_indexes:
+        starting_index = min(
+            unvisited_indexes
+        )
+
+        component = set()
+        pending_indexes = [
+            starting_index
+        ]
+
+        while pending_indexes:
+            current_index = (
+                pending_indexes.pop()
+            )
+
+            if current_index in component:
+                continue
+
+            component.add(current_index)
+            unvisited_indexes.discard(
+                current_index
+            )
+
+            pending_indexes.extend(
+                related_indexes[current_index]
+                - component
+            )
+
+        components.append(component)
+
+    if len(components) > 1:
+        component_descriptions = []
+
+        for component in components:
+            grant_ids = sorted(
+                children[index].grant_id
+                for index in component
+            )
+
+            component_descriptions.append(
+                ", ".join(grant_ids)
+            )
+
+        raise CoordinatedChangeBusinessValidationError(
+            "The coordinated package does not form one connected "
+            "GL relationship. Related grant groups: "
+            + "; ".join(component_descriptions)
+            + "."
+        )
+
+    return validation_result
 
 
 def validate_basic_information_change_request(
