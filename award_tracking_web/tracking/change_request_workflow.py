@@ -380,16 +380,16 @@ def validate_coordinated_change_structure(
     It does not validate proposed business values, GL overlap rules,
     or authoritative Form1 baseline integrity.
 
-    A coordinated package must:
+        A coordinated package must:
       1. contain at least two child Change Requests;
       2. contain unique grant IDs;
       3. keep every child on the package's current revision;
       4. keep child statuses synchronized with the package status;
-      5. contain only supported NEW_GRANT or EDIT_GRANT requests;
-      6. reference an existing Form1 record for EDIT_GRANT;
-      7. not reference an existing Form1 record for NEW_GRANT; and
-      8. when required, contain one complete 14-field snapshot for
-         every child at the current package revision.
+      5. contain only EDIT_GRANT requests;
+      6. reference an existing authoritative Form1 record for every
+         child; and
+      7. when required, contain one complete Basic Information
+         snapshot for every child at the current package revision.
 
     lock_children=True is intended for callers already operating inside
     transaction.atomic(). It locks the child ChangeRequest rows before
@@ -526,29 +526,24 @@ def validate_coordinated_change_structure(
             + "."
         )
 
-    supported_request_types = {
-        ChangeRequest.RequestType.NEW_GRANT,
-        ChangeRequest.RequestType.EDIT_GRANT,
-    }
-
-    invalid_request_types = [
+    non_edit_request_ids = [
         change_request.id
         for change_request
         in change_requests
         if (
-            change_request.request_type
-            not in supported_request_types
+                change_request.request_type
+                != ChangeRequest.RequestType.EDIT_GRANT
         )
     ]
 
-    if invalid_request_types:
+    if non_edit_request_ids:
         raise CoordinatedChangeValidationError(
-            "The coordinated package contains unsupported "
-            "Change Request types. Request IDs: "
+            "A coordinated package may contain only "
+            "EDIT_GRANT Change Requests. Invalid Request IDs: "
             + ", ".join(
                 str(request_id)
                 for request_id
-                in invalid_request_types
+                in non_edit_request_ids
             )
             + "."
         )
@@ -564,52 +559,25 @@ def validate_coordinated_change_structure(
         )
     )
 
-    edit_requests_without_grants = [
+    requests_without_grants = [
         change_request.id
         for change_request
         in change_requests
         if (
-            change_request.request_type
-            == ChangeRequest.RequestType.EDIT_GRANT
-            and change_request.grant_id
-            not in existing_grant_ids
+                change_request.grant_id
+                not in existing_grant_ids
         )
     ]
 
-    if edit_requests_without_grants:
+    if requests_without_grants:
         raise CoordinatedChangeValidationError(
-            "An EDIT_GRANT request must reference an "
-            "existing authoritative Form1 record. "
-            "Invalid Request IDs: "
+            "Every coordinated EDIT_GRANT request must "
+            "reference an existing authoritative Form1 "
+            "record. Invalid Request IDs: "
             + ", ".join(
                 str(request_id)
                 for request_id
-                in edit_requests_without_grants
-            )
-            + "."
-        )
-
-    new_requests_with_existing_grants = [
-        change_request.id
-        for change_request
-        in change_requests
-        if (
-            change_request.request_type
-            == ChangeRequest.RequestType.NEW_GRANT
-            and change_request.grant_id
-            in existing_grant_ids
-        )
-    ]
-
-    if new_requests_with_existing_grants:
-        raise CoordinatedChangeValidationError(
-            "A NEW_GRANT request cannot reference a grant "
-            "that already exists in authoritative Form1. "
-            "Invalid Request IDs: "
-            + ", ".join(
-                str(request_id)
-                for request_id
-                in new_requests_with_existing_grants
+                in requests_without_grants
             )
             + "."
         )
