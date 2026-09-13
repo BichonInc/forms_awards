@@ -380,7 +380,7 @@ def validate_coordinated_change_structure(
     It does not validate proposed business values, GL overlap rules,
     or authoritative Form1 baseline integrity.
 
-        A coordinated package must:
+    A coordinated package must:
       1. contain at least two child Change Requests;
       2. contain unique grant IDs;
       3. keep every child on the package's current revision;
@@ -531,8 +531,8 @@ def validate_coordinated_change_structure(
         for change_request
         in change_requests
         if (
-                change_request.request_type
-                != ChangeRequest.RequestType.EDIT_GRANT
+            change_request.request_type
+            != ChangeRequest.RequestType.EDIT_GRANT
         )
     ]
 
@@ -564,8 +564,8 @@ def validate_coordinated_change_structure(
         for change_request
         in change_requests
         if (
-                change_request.grant_id
-                not in existing_grant_ids
+            change_request.grant_id
+            not in existing_grant_ids
         )
     ]
 
