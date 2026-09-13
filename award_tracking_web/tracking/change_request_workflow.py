@@ -183,6 +183,45 @@ class CoordinatedChangeValidationError(
     """
 
 
+class CoordinatedChangeBusinessValidationError(
+        ChangeRequestValidationError
+):
+    """
+    Raised when a structurally valid coordinated package fails
+    coordinated business validation.
+    """
+
+
+class CoordinatedChangeChildBaselineMismatchError(
+        ChangeRequestBaselineMismatchError
+):
+    """
+    Raised when one coordinated child no longer matches its
+    authoritative Form1 baseline.
+    """
+
+    def __init__(
+            self,
+            change_request_id,
+            stale_fields,
+            *,
+            baseline_description=None,
+    ):
+        self.change_request_id = change_request_id
+
+        super().__init__(
+            stale_fields,
+            baseline_description=baseline_description,
+        )
+
+        original_message = str(self)
+
+        self.args = (
+            f"Child Change Request #{change_request_id}: "
+            + original_message,
+        )
+
+
 @dataclass(frozen=True)
 class BasicInformationValidationResult:
     proposed_values: dict
@@ -257,6 +296,23 @@ class CoordinatedChangeStructureResult:
     revision_no: int
     change_requests: tuple
     grant_ids: tuple
+
+
+@dataclass(frozen=True)
+class CoordinatedChildBasicInformationValidationResult:
+    change_request_id: int
+    grant_id: str
+    current_award_code: str
+    current_gl_start_date: datetime | None
+    current_gl_end_date: datetime | None
+    validation_result: BasicInformationValidationResult
+
+
+@dataclass(frozen=True)
+class CoordinatedBasicInformationValidationResult:
+    coordinated_change_id: int
+    revision_no: int
+    children: tuple
 
 
 def serialize_change_request_value(value):
@@ -1702,6 +1758,154 @@ def _validate_basic_information_proposed_form_data(
                 changed_fields
             )
         ),
+    )
+
+
+def validate_coordinated_basic_information_proposals(
+        coordinated_change,
+        *,
+        lock_children=False,
+        lock_grants=False,
+):
+    """
+    Validate every child proposal in a coordinated Basic Information
+    package without performing package-wide GL-overlap validation.
+
+    This function:
+      - validates coordinated package structure;
+      - validates every child's authoritative revision baseline;
+      - reconstructs each child's complete proposed Form1 state;
+      - applies the shared Basic Information form validation; and
+      - requires every child to change at least one GL-assignment field.
+
+    It does not determine whether the package's combined final GL
+    assignments are valid. That is a separate coordinated validation
+    step.
+
+    lock_children=True and lock_grants=True are intended for callers
+    already operating inside transaction.atomic().
+    """
+    structure_result = (
+        validate_coordinated_change_structure(
+            coordinated_change,
+            require_current_revision_snapshots=True,
+            lock_children=lock_children,
+        )
+    )
+
+    grant_query = (
+        Form1.objects
+        .filter(
+            grant_id__in=structure_result.grant_ids
+        )
+        .order_by("grant_id")
+    )
+
+    if lock_grants:
+        grant_query = (
+            grant_query.select_for_update()
+        )
+
+    grants_by_id = {
+        grant.grant_id: grant
+        for grant in grant_query
+    }
+
+    if (
+        len(grants_by_id)
+        != len(structure_result.grant_ids)
+    ):
+        raise CoordinatedChangeBusinessValidationError(
+            "One or more authoritative grants required by the "
+            "coordinated package are missing."
+        )
+
+    child_results = []
+
+    for change_request in (
+        structure_result.change_requests
+    ):
+        grant = grants_by_id[
+            change_request.grant_id
+        ]
+
+        try:
+            _, snapshots_by_field = (
+                validate_basic_information_revision_baseline(
+                    change_request,
+                    grant=grant,
+                )
+            )
+
+        except ChangeRequestBaselineMismatchError as exc:
+            raise (
+                CoordinatedChangeChildBaselineMismatchError(
+                    change_request.id,
+                    exc.stale_fields,
+                    baseline_description=(
+                        exc.baseline_description
+                    ),
+                )
+            ) from exc
+
+        proposed_form_data = {}
+
+        for field_name in (
+            GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        ):
+            snapshot = snapshots_by_field[field_name]
+
+            if snapshot.proposed_value is None:
+                proposed_form_data[field_name] = (
+                    snapshot.current_value
+                )
+            else:
+                proposed_form_data[field_name] = (
+                    snapshot.proposed_value
+                )
+
+        validation_result = (
+            _validate_basic_information_proposed_form_data(
+                change_request=change_request,
+                grant=grant,
+                proposed_form_data=proposed_form_data,
+            )
+        )
+
+        if not validation_result.gl_rematch_required:
+            raise CoordinatedChangeBusinessValidationError(
+                f"Child Change Request "
+                f"#{change_request.id} does not change "
+                "Internal Award Code, Internal GL Start Date, "
+                "or Internal GL End Date. Every coordinated "
+                "child must contain a GL-assignment change."
+            )
+
+        child_results.append(
+            CoordinatedChildBasicInformationValidationResult(
+                change_request_id=change_request.id,
+                grant_id=change_request.grant_id,
+                current_award_code=(
+                    grant.internal_award_code
+                ),
+                current_gl_start_date=(
+                    grant.internal_gl_start_date
+                ),
+                current_gl_end_date=(
+                    grant.internal_gl_end_date
+                ),
+                validation_result=validation_result,
+            )
+        )
+
+    return CoordinatedBasicInformationValidationResult(
+        coordinated_change_id=(
+            coordinated_change.id
+        ),
+        revision_no=(
+            structure_result.revision_no
+        ),
+        children=tuple(child_results),
     )
 
 
