@@ -390,6 +390,75 @@ def serialize_change_request_value(value):
     return str(value)
 
 
+def build_basic_information_field_snapshot_values(
+        *,
+        grant,
+        proposed_values,
+):
+    """
+    Build one complete set of serialized Basic Information field values.
+
+    The returned values may be used for either mutable coordinated draft
+    working rows or immutable formal revision snapshots.
+
+    ChangeRequestField.proposed_value uses None to mean "unchanged".
+    An actual proposed blank value remains the empty string.
+    """
+    missing_fields = [
+        field_name
+        for field_name
+        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        if field_name not in proposed_values
+    ]
+
+    if missing_fields:
+        raise ChangeRequestValidationError(
+            "The proposed Basic Information values are incomplete. "
+            "Missing fields: "
+            + ", ".join(missing_fields)
+            + "."
+        )
+
+    field_snapshot_values = []
+
+    for field_name in (
+        GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    ):
+        current_value = (
+            serialize_change_request_value(
+                getattr(
+                    grant,
+                    field_name,
+                )
+            )
+        )
+
+        proposed_value = (
+            serialize_change_request_value(
+                proposed_values[field_name]
+            )
+        )
+
+        if proposed_value == current_value:
+            stored_proposed_value = None
+        else:
+            stored_proposed_value = proposed_value
+
+        field_snapshot_values.append(
+            {
+                "field_name": field_name,
+                "current_value": current_value,
+                "proposed_value": (
+                    stored_proposed_value
+                ),
+            }
+        )
+
+    return tuple(
+        field_snapshot_values
+    )
+
+
 def get_basic_information_revision_snapshots(
         change_request,
         *,
@@ -1741,10 +1810,15 @@ def _validate_basic_information_proposed_form_data(
         change_request,
         grant,
         proposed_form_data,
+        require_changes=True,
 ):
     """
     Validate complete proposed Basic Information form data without
     writing to Form1 or performing GL-overlap validation.
+
+    By default, at least one Basic Information field must change.
+    Mutable coordinated draft callers may set require_changes=False
+    while the draft is still being prepared.
 
     The caller is responsible for performing any required authoritative
     baseline check and the appropriate standalone or coordinated
@@ -1800,7 +1874,7 @@ def _validate_basic_information_proposed_form_data(
         )
     )
 
-    if not changed_fields:
+    if require_changes and not changed_fields:
         raise ChangeRequestValidationError(
             "The Change Request contains no proposed Basic Information "
             "changes."
@@ -3665,52 +3739,32 @@ def resubmit_standalone_change_request(
                         "actions."
                     )
 
-                current_values = {
-                    field_name: serialize_change_request_value(
-                        getattr(grant, field_name)
+                field_snapshot_values = (
+                    build_basic_information_field_snapshot_values(
+                        grant=grant,
+                        proposed_values=(
+                            validation_result.proposed_values
+                        ),
                     )
-                    for field_name
-                    in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
-                }
+                )
 
-                proposed_values = {
-                    field_name: serialize_change_request_value(
-                        validation_result.proposed_values[
-                            field_name
-                        ]
+                field_snapshots = [
+                    ChangeRequestField(
+                        change_request=change_request,
+                        revision_no=new_revision_no,
+                        field_name=(
+                            snapshot["field_name"]
+                        ),
+                        current_value=(
+                            snapshot["current_value"]
+                        ),
+                        proposed_value=(
+                            snapshot["proposed_value"]
+                        ),
                     )
-                    for field_name
-                    in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
-                }
-
-                field_snapshots = []
-
-                for field_name in (
-                    GRANT_BASIC_INFORMATION_CHANGE_FIELDS
-                ):
-                    current_value = (
-                        current_values[field_name]
-                    )
-                    proposed_value = (
-                        proposed_values[field_name]
-                    )
-
-                    if proposed_value == current_value:
-                        stored_proposed_value = None
-                    else:
-                        stored_proposed_value = (
-                            proposed_value
-                        )
-
-                    field_snapshots.append(
-                        ChangeRequestField(
-                            change_request=change_request,
-                            revision_no=new_revision_no,
-                            field_name=field_name,
-                            current_value=current_value,
-                            proposed_value=stored_proposed_value,
-                        )
-                    )
+                    for snapshot
+                    in field_snapshot_values
+                ]
 
                 ChangeRequestField.objects.bulk_create(
                     field_snapshots
