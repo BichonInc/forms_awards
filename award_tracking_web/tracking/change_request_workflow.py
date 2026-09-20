@@ -222,6 +222,29 @@ class CoordinatedChangeChildBaselineMismatchError(
         )
 
 
+class CoordinatedDraftConcurrencyError(
+        CoordinatedChangeValidationError
+):
+    """
+    Raised when a coordinated draft was saved after the caller loaded it.
+    """
+
+    def __init__(
+            self,
+            *,
+            expected_version,
+            actual_version,
+    ):
+        self.expected_version = expected_version
+        self.actual_version = actual_version
+
+        super().__init__(
+            "The coordinated draft changed after this page was loaded. "
+            f"Expected draft version {expected_version}, "
+            f"but the current version is {actual_version}."
+        )
+
+
 @dataclass(frozen=True)
 class BasicInformationValidationResult:
     proposed_values: dict
@@ -322,6 +345,30 @@ class CoordinatedFinalGLAssignment:
     award_code: str
     gl_start_date: date
     gl_end_date: date
+
+
+@dataclass(frozen=True)
+class CoordinatedDraftBaselineDifference:
+    change_request_id: int
+    grant_id: str
+    field_name: str
+    saved_baseline_value: str | None
+    authoritative_value: str | None
+    draft_proposed_value: str | None
+
+
+@dataclass(frozen=True)
+class CoordinatedDraftStalenessResult:
+    coordinated_change_id: int
+    revision_no: int
+    concurrency_version: int
+    baseline_differences: tuple
+
+    @property
+    def has_authoritative_changes(self):
+        return bool(
+            self.baseline_differences
+        )
 
 
 def serialize_change_request_value(value):
@@ -2527,6 +2574,301 @@ def validate_coordinated_basic_information_change(
     )
 
     return validation_result
+
+
+def inspect_coordinated_draft_staleness(
+        *,
+        coordinated_change_id,
+        expected_concurrency_version,
+        lock_records=False,
+):
+    """
+    Inspect whether a coordinated draft is stale.
+
+    This performs two independent checks, in order:
+
+      1. verify that the caller loaded the current saved draft version;
+      2. compare each saved child baseline with authoritative Form1.
+
+    A draft concurrency mismatch raises
+    CoordinatedDraftConcurrencyError immediately.
+
+    Authoritative Form1 differences are returned for review. They are
+    not integrity incidents because the coordinated package is still
+    DRAFT and its working baseline remains mutable.
+
+    When lock_records=True, the package, child Change Requests, and
+    authoritative Form1 rows are locked. The caller must already be
+    inside transaction.atomic().
+    """
+    try:
+        expected_version = int(
+            expected_concurrency_version
+        )
+    except (TypeError, ValueError) as exc:
+        raise CoordinatedChangeValidationError(
+            "The expected coordinated draft version is invalid."
+        ) from exc
+
+    if expected_version < 1:
+        raise CoordinatedChangeValidationError(
+            "The expected coordinated draft version is invalid."
+        )
+
+    coordinated_change_query = (
+        CoordinatedChange.objects
+    )
+
+    if lock_records:
+        coordinated_change_query = (
+            coordinated_change_query
+            .select_for_update()
+        )
+
+    try:
+        coordinated_change = (
+            coordinated_change_query.get(
+                pk=coordinated_change_id
+            )
+        )
+    except CoordinatedChange.DoesNotExist as exc:
+        raise CoordinatedChangeValidationError(
+            "The coordinated draft does not exist."
+        ) from exc
+
+    if (
+        coordinated_change.status
+        != CoordinatedChange.Status.DRAFT
+    ):
+        raise CoordinatedChangeValidationError(
+            "Draft staleness can be inspected only while the "
+            "coordinated package is in Draft status."
+        )
+
+    # ---------------------------------------------------------
+    # Check draft-to-draft concurrency FIRST.
+    # ---------------------------------------------------------
+
+    if (
+        coordinated_change.concurrency_version
+        != expected_version
+    ):
+        raise CoordinatedDraftConcurrencyError(
+            expected_version=expected_version,
+            actual_version=(
+                coordinated_change.concurrency_version
+            ),
+        )
+
+    revision_no = (
+        coordinated_change.current_revision
+    )
+
+    child_query = (
+        ChangeRequest.objects
+        .filter(
+            coordinated_change=coordinated_change
+        )
+        .order_by("id")
+    )
+
+    if lock_records:
+        child_query = (
+            child_query.select_for_update()
+        )
+
+    change_requests = tuple(
+        child_query
+    )
+
+    # A working DRAFT may legitimately contain zero or one child.
+    # Submit-time structural validation will require at least two.
+
+    duplicate_grant_ids = sorted(
+        {
+            change_request.grant_id
+            for change_request in change_requests
+            if sum(
+                1
+                for other_request in change_requests
+                if (
+                    other_request.grant_id
+                    == change_request.grant_id
+                )
+            ) > 1
+        }
+    )
+
+    if duplicate_grant_ids:
+        raise CoordinatedChangeValidationError(
+            "A coordinated draft cannot contain the same grant "
+            "more than once. Duplicate grant IDs: "
+            + ", ".join(duplicate_grant_ids)
+            + "."
+        )
+
+    for change_request in change_requests:
+
+        if (
+            change_request.status
+            != ChangeRequest.Status.DRAFT
+        ):
+            raise CoordinatedChangeValidationError(
+                f"Child Change Request #{change_request.id} "
+                "is not in Draft status."
+            )
+
+        if (
+            change_request.current_revision
+            != revision_no
+        ):
+            raise CoordinatedChangeValidationError(
+                f"Child Change Request #{change_request.id} "
+                f"is revision {change_request.current_revision}, "
+                f"but the coordinated draft is revision "
+                f"{revision_no}."
+            )
+
+        if (
+            change_request.request_type
+            != ChangeRequest.RequestType.EDIT_GRANT
+        ):
+            raise CoordinatedChangeValidationError(
+                f"Child Change Request #{change_request.id} "
+                "is not an existing-grant edit request."
+            )
+
+    grant_ids = tuple(
+        change_request.grant_id
+        for change_request in change_requests
+    )
+
+    grant_query = (
+        Form1.objects
+        .filter(
+            grant_id__in=grant_ids
+        )
+        .order_by("grant_id")
+    )
+
+    if lock_records:
+        grant_query = (
+            grant_query.select_for_update()
+        )
+
+    grants_by_id = {
+        grant.grant_id: grant
+        for grant in grant_query
+    }
+
+    missing_grant_ids = sorted(
+        set(grant_ids)
+        - set(grants_by_id)
+    )
+
+    if missing_grant_ids:
+        raise CoordinatedChangeValidationError(
+            "One or more coordinated draft grants no longer "
+            "exist in authoritative Form1. Missing grant IDs: "
+            + ", ".join(missing_grant_ids)
+            + "."
+        )
+
+    baseline_differences = []
+
+    # ---------------------------------------------------------
+    # Compare the latest saved working baseline to Form1.
+    # ---------------------------------------------------------
+
+    for change_request in change_requests:
+
+        try:
+            snapshots_by_field = (
+                get_basic_information_revision_snapshots(
+                    change_request,
+                    revision_no=revision_no,
+                )
+            )
+        except ChangeRequestValidationError as exc:
+            raise CoordinatedChangeValidationError(
+                f"Child Change Request "
+                f"#{change_request.id} has an invalid "
+                f"revision-{revision_no} working snapshot: "
+                + str(exc)
+            ) from exc
+
+        grant = grants_by_id[
+            change_request.grant_id
+        ]
+
+        for field_name in (
+            GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        ):
+            snapshot = (
+                snapshots_by_field[field_name]
+            )
+
+            authoritative_value = (
+                serialize_change_request_value(
+                    getattr(
+                        grant,
+                        field_name,
+                    )
+                )
+            )
+
+            saved_baseline_value = (
+                snapshot.current_value
+            )
+
+            if (
+                authoritative_value
+                == saved_baseline_value
+            ):
+                continue
+
+            if snapshot.proposed_value is None:
+                draft_proposed_value = (
+                    saved_baseline_value
+                )
+            else:
+                draft_proposed_value = (
+                    snapshot.proposed_value
+                )
+
+            baseline_differences.append(
+                CoordinatedDraftBaselineDifference(
+                    change_request_id=(
+                        change_request.id
+                    ),
+                    grant_id=(
+                        change_request.grant_id
+                    ),
+                    field_name=field_name,
+                    saved_baseline_value=(
+                        saved_baseline_value
+                    ),
+                    authoritative_value=(
+                        authoritative_value
+                    ),
+                    draft_proposed_value=(
+                        draft_proposed_value
+                    ),
+                )
+            )
+
+    return CoordinatedDraftStalenessResult(
+        coordinated_change_id=(
+            coordinated_change.id
+        ),
+        revision_no=revision_no,
+        concurrency_version=(
+            coordinated_change.concurrency_version
+        ),
+        baseline_differences=tuple(
+            baseline_differences
+        ),
+    )
 
 
 def validate_basic_information_change_request(
