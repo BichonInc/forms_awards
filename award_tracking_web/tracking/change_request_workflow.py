@@ -11,6 +11,7 @@ from .forms import (
 )
 from .gl_assignment import rematch_gl_expenditures
 from .models import (
+    CHANGE_REQUEST_BLOCKING_STATUSES,
     ChangeAction,
     ChangeRequest,
     ChangeRequestField,
@@ -369,6 +370,16 @@ class CoordinatedDraftStalenessResult:
         return bool(
             self.baseline_differences
         )
+
+
+@dataclass(frozen=True)
+class CoordinatedDraftCreationResult:
+    coordinated_change_id: int
+    status: str
+    revision_no: int
+    concurrency_version: int
+    change_request_ids: tuple
+    grant_ids: tuple
 
 
 def serialize_change_request_value(value):
@@ -2943,6 +2954,298 @@ def inspect_coordinated_draft_staleness(
             baseline_differences
         ),
     )
+
+
+def create_coordinated_basic_information_draft(
+        *,
+        created_by,
+        proposed_form_data_by_grant=None,
+):
+    """
+    Create the initial mutable coordinated Basic Information draft.
+
+    This is the first Save Draft operation. Because no coordinated
+    package exists yet, there is no concurrency version to compare.
+
+    A draft may contain zero, one, or multiple existing grants while it
+    is being prepared. Each included child must contain complete,
+    individually valid Basic Information form data, but it is not yet
+    required to contain a change or a GL-assignment change.
+
+    Package-level coordinated relationship and hypothetical final-state
+    validation are intentionally deferred until submission.
+
+    proposed_form_data_by_grant maps grant_id to one complete Basic
+    Information form-data dictionary.
+    """
+    if proposed_form_data_by_grant is None:
+        proposed_form_data_by_grant = {}
+
+    try:
+        proposal_items = tuple(
+            proposed_form_data_by_grant.items()
+        )
+    except AttributeError as exc:
+        raise CoordinatedChangeValidationError(
+            "Coordinated draft proposals must be provided by grant ID."
+        ) from exc
+
+    normalized_proposals = []
+
+    for grant_id, proposed_form_data in proposal_items:
+        normalized_grant_id = str(
+            grant_id
+        ).strip()
+
+        if not normalized_grant_id:
+            raise CoordinatedChangeValidationError(
+                "Every coordinated draft child must identify a grant."
+            )
+
+        normalized_proposals.append(
+            (
+                normalized_grant_id,
+                proposed_form_data,
+            )
+        )
+
+    grant_ids = tuple(
+        grant_id
+        for grant_id, _
+        in normalized_proposals
+    )
+
+    duplicate_grant_ids = sorted(
+        {
+            grant_id
+            for grant_id in grant_ids
+            if grant_ids.count(grant_id) > 1
+        }
+    )
+
+    if duplicate_grant_ids:
+        raise CoordinatedChangeValidationError(
+            "A coordinated draft cannot contain the same grant "
+            "more than once. Duplicate grant IDs: "
+            + ", ".join(duplicate_grant_ids)
+            + "."
+        )
+
+    with transaction.atomic():
+
+        # Lock authoritative grants in deterministic order before
+        # creating any child requests or working snapshots.
+        grant_query = (
+            Form1.objects
+            .filter(
+                grant_id__in=grant_ids
+            )
+            .order_by("grant_id")
+        )
+
+        if grant_ids:
+            grant_query = (
+                grant_query.select_for_update()
+            )
+
+        grants = tuple(
+            grant_query
+        )
+
+        grants_by_id = {
+            grant.grant_id: grant
+            for grant in grants
+        }
+
+        missing_grant_ids = sorted(
+            set(grant_ids)
+            - set(grants_by_id)
+        )
+
+        if missing_grant_ids:
+            raise CoordinatedChangeValidationError(
+                "Every coordinated draft child must reference "
+                "an existing authoritative grant. Missing grant IDs: "
+                + ", ".join(missing_grant_ids)
+                + "."
+            )
+
+        # Existing active requests cannot be absorbed into a new
+        # coordinated package.
+        active_requests = tuple(
+            ChangeRequest.objects
+            .filter(
+                grant_id__in=grant_ids,
+                status__in=(
+                    CHANGE_REQUEST_BLOCKING_STATUSES
+                ),
+            )
+            .order_by(
+                "grant_id",
+                "id",
+            )
+        )
+
+        if active_requests:
+            active_descriptions = [
+                (
+                    f"{change_request.grant_id} "
+                    f"(Request #{change_request.id})"
+                )
+                for change_request
+                in active_requests
+            ]
+
+            raise CoordinatedChangeValidationError(
+                "One or more grants already have an active "
+                "Change Request: "
+                + ", ".join(active_descriptions)
+                + "."
+            )
+
+        coordinated_change = (
+            CoordinatedChange.objects.create(
+                status=(
+                    CoordinatedChange.Status.DRAFT
+                ),
+                current_revision=1,
+                concurrency_version=1,
+                created_by=created_by,
+            )
+        )
+
+        change_request_ids = []
+
+        for (
+            grant_id,
+            proposed_form_data,
+        ) in normalized_proposals:
+
+            grant = grants_by_id[
+                grant_id
+            ]
+
+            try:
+                with transaction.atomic():
+                    change_request = (
+                        ChangeRequest.objects.create(
+                            grant_id=grant_id,
+                            request_type=(
+                                ChangeRequest
+                                .RequestType
+                                .EDIT_GRANT
+                            ),
+                            status=(
+                                ChangeRequest.Status.DRAFT
+                            ),
+                            coordinated_change=(
+                                coordinated_change
+                            ),
+                            current_revision=1,
+                        )
+                    )
+
+            except IntegrityError as exc:
+                conflicting_request = (
+                    ChangeRequest.objects
+                    .filter(
+                        grant_id=grant_id,
+                        status__in=(
+                            CHANGE_REQUEST_BLOCKING_STATUSES
+                        ),
+                    )
+                    .order_by("id")
+                    .first()
+                )
+
+                if conflicting_request is not None:
+                    raise CoordinatedChangeValidationError(
+                        f"Grant {grant_id} acquired another active "
+                        "Change Request while this coordinated draft "
+                        "was being saved. Conflicting Request #"
+                        f"{conflicting_request.id}."
+                    ) from exc
+
+                raise
+
+            try:
+                validation_result = (
+                    _validate_basic_information_proposed_form_data(
+                        change_request=change_request,
+                        grant=grant,
+                        proposed_form_data=(
+                            proposed_form_data
+                        ),
+                        require_changes=False,
+                    )
+                )
+
+            except ChangeRequestValidationError as exc:
+                raise CoordinatedChangeValidationError(
+                    f"Grant {grant_id} has invalid Basic Information "
+                    "draft data: "
+                    + str(exc)
+                ) from exc
+
+            field_snapshot_values = (
+                build_basic_information_field_snapshot_values(
+                    grant=grant,
+                    proposed_values=(
+                        validation_result.proposed_values
+                    ),
+                )
+            )
+
+            ChangeRequestField.objects.bulk_create(
+                [
+                    ChangeRequestField(
+                        change_request=(
+                            change_request
+                        ),
+                        revision_no=1,
+                        field_name=(
+                            snapshot[
+                                "field_name"
+                            ]
+                        ),
+                        current_value=(
+                            snapshot[
+                                "current_value"
+                            ]
+                        ),
+                        proposed_value=(
+                            snapshot[
+                                "proposed_value"
+                            ]
+                        ),
+                    )
+                    for snapshot
+                    in field_snapshot_values
+                ]
+            )
+
+            change_request_ids.append(
+                change_request.id
+            )
+
+        return CoordinatedDraftCreationResult(
+            coordinated_change_id=(
+                coordinated_change.id
+            ),
+            status=(
+                coordinated_change.status
+            ),
+            revision_no=(
+                coordinated_change.current_revision
+            ),
+            concurrency_version=(
+                coordinated_change.concurrency_version
+            ),
+            change_request_ids=tuple(
+                change_request_ids
+            ),
+            grant_ids=grant_ids,
+        )
 
 
 def validate_basic_information_change_request(
