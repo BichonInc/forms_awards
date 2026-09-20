@@ -246,6 +246,30 @@ class CoordinatedDraftConcurrencyError(
         )
 
 
+class CoordinatedDraftAuthoritativeChangeError(
+        CoordinatedChangeValidationError
+):
+    """
+    Raised when authoritative Form1 changed beneath a saved draft.
+    """
+
+    def __init__(
+            self,
+            *,
+            staleness_result,
+    ):
+        self.staleness_result = staleness_result
+        self.baseline_differences = (
+            staleness_result.baseline_differences
+        )
+
+        super().__init__(
+            "Authoritative Basic Information changed after this "
+            "coordinated draft was saved. Review the authoritative "
+            "changes before saving the draft."
+        )
+
+
 @dataclass(frozen=True)
 class BasicInformationValidationResult:
     proposed_values: dict
@@ -380,6 +404,20 @@ class CoordinatedDraftCreationResult:
     concurrency_version: int
     change_request_ids: tuple
     grant_ids: tuple
+
+
+@dataclass(frozen=True)
+class CoordinatedDraftSaveResult:
+    coordinated_change_id: int
+    status: str
+    revision_no: int
+    previous_concurrency_version: int
+    concurrency_version: int
+    change_request_ids: tuple
+    grant_ids: tuple
+    added_grant_ids: tuple
+    retained_grant_ids: tuple
+    removed_grant_ids: tuple
 
 
 def serialize_change_request_value(value):
@@ -3245,6 +3283,701 @@ def create_coordinated_basic_information_draft(
                 change_request_ids
             ),
             grant_ids=grant_ids,
+        )
+
+
+def save_coordinated_basic_information_draft(
+        *,
+        coordinated_change_id,
+        expected_concurrency_version,
+        proposed_form_data_by_grant=None,
+):
+    """
+    Save a later version of an existing coordinated Basic Information
+    draft.
+
+    The package concurrency version is checked first. Existing saved
+    child baselines are then compared with authoritative Form1 before
+    any draft mutation occurs.
+
+    If authoritative Form1 changed beneath an existing child, ordinary
+    Save Draft is blocked so the editor can explicitly review and
+    rebase that draft.
+
+    proposed_form_data_by_grant represents the desired complete draft
+    membership:
+      - an existing grant that remains present is updated;
+      - a new grant is added to the draft;
+      - an existing grant that is omitted is removed from the request.
+
+    Existing children's current_value baselines are never rewritten by
+    ordinary Save Draft. Only their proposed_value working state may
+    change.
+
+    A successful save increments concurrency_version exactly once.
+    """
+    with transaction.atomic():
+
+        # ---------------------------------------------------------
+        # Concurrency MUST be checked first, followed by the
+        # authoritative baseline check. This call locks the parent
+        # first, then existing children and their Form1 records.
+        # ---------------------------------------------------------
+
+        staleness_result = (
+            inspect_coordinated_draft_staleness(
+                coordinated_change_id=(
+                    coordinated_change_id
+                ),
+                expected_concurrency_version=(
+                    expected_concurrency_version
+                ),
+                lock_records=True,
+            )
+        )
+
+        if staleness_result.has_authoritative_changes:
+            raise CoordinatedDraftAuthoritativeChangeError(
+                staleness_result=staleness_result
+            )
+
+        coordinated_change = (
+            CoordinatedChange.objects.get(
+                pk=coordinated_change_id
+            )
+        )
+
+        revision_no = (
+            coordinated_change.current_revision
+        )
+
+        previous_concurrency_version = (
+            coordinated_change.concurrency_version
+        )
+
+        # ---------------------------------------------------------
+        # Normalize the desired complete draft membership only
+        # AFTER concurrency and baseline staleness have passed.
+        # ---------------------------------------------------------
+
+        if proposed_form_data_by_grant is None:
+            proposed_form_data_by_grant = {}
+
+        try:
+            proposal_items = tuple(
+                proposed_form_data_by_grant.items()
+            )
+        except AttributeError as exc:
+            raise CoordinatedChangeValidationError(
+                "Coordinated draft proposals must be provided by "
+                "grant ID."
+            ) from exc
+
+        normalized_proposals = []
+
+        for grant_id, proposed_form_data in proposal_items:
+            normalized_grant_id = str(
+                grant_id
+            ).strip()
+
+            if not normalized_grant_id:
+                raise CoordinatedChangeValidationError(
+                    "Every coordinated draft child must identify "
+                    "a grant."
+                )
+
+            normalized_proposals.append(
+                (
+                    normalized_grant_id,
+                    proposed_form_data,
+                )
+            )
+
+        desired_grant_ids = tuple(
+            grant_id
+            for grant_id, _
+            in normalized_proposals
+        )
+
+        duplicate_grant_ids = sorted(
+            {
+                grant_id
+                for grant_id in desired_grant_ids
+                if desired_grant_ids.count(
+                    grant_id
+                ) > 1
+            }
+        )
+
+        if duplicate_grant_ids:
+            raise CoordinatedChangeValidationError(
+                "A coordinated draft cannot contain the same grant "
+                "more than once. Duplicate grant IDs: "
+                + ", ".join(
+                    duplicate_grant_ids
+                )
+                + "."
+            )
+
+        proposed_form_data_by_normalized_grant = {
+            grant_id: proposed_form_data
+            for grant_id, proposed_form_data
+            in normalized_proposals
+        }
+
+        # ---------------------------------------------------------
+        # Reload existing children. They are already protected by
+        # the parent-first locking path above.
+        # ---------------------------------------------------------
+
+        existing_children = tuple(
+            ChangeRequest.objects
+            .select_for_update()
+            .filter(
+                coordinated_change=(
+                    coordinated_change
+                )
+            )
+            .order_by("id")
+        )
+
+        existing_children_by_grant = {
+            change_request.grant_id: (
+                change_request
+            )
+            for change_request
+            in existing_children
+        }
+
+        existing_grant_ids = tuple(
+            change_request.grant_id
+            for change_request
+            in existing_children
+        )
+
+        desired_grant_id_set = set(
+            desired_grant_ids
+        )
+
+        existing_grant_id_set = set(
+            existing_grant_ids
+        )
+
+        retained_grant_ids = tuple(
+            grant_id
+            for grant_id
+            in desired_grant_ids
+            if grant_id in existing_grant_id_set
+        )
+
+        added_grant_ids = tuple(
+            grant_id
+            for grant_id
+            in desired_grant_ids
+            if grant_id not in existing_grant_id_set
+        )
+
+        removed_grant_ids = tuple(
+            grant_id
+            for grant_id
+            in existing_grant_ids
+            if grant_id not in desired_grant_id_set
+        )
+
+        # ---------------------------------------------------------
+        # Reject obvious active-request collisions before acquiring
+        # locks on newly added grants.
+        #
+        # The database uniqueness constraint remains the final
+        # defense against a request created after this precheck.
+        # ---------------------------------------------------------
+
+        active_requests = tuple(
+            ChangeRequest.objects
+            .filter(
+                grant_id__in=added_grant_ids,
+                status__in=(
+                    CHANGE_REQUEST_BLOCKING_STATUSES
+                ),
+            )
+            .order_by(
+                "grant_id",
+                "id",
+            )
+        )
+
+        if active_requests:
+            active_descriptions = [
+                (
+                    f"{change_request.grant_id} "
+                    f"(Request #{change_request.id})"
+                )
+                for change_request
+                in active_requests
+            ]
+
+            raise CoordinatedChangeValidationError(
+                "One or more newly added grants already have an "
+                "active Change Request: "
+                + ", ".join(
+                    active_descriptions
+                )
+                + "."
+            )
+
+        # ---------------------------------------------------------
+        # Lock authoritative Form1 rows for newly added grants.
+        # Existing grants were already locked by the staleness
+        # inspection.
+        # ---------------------------------------------------------
+
+        added_grant_query = (
+            Form1.objects
+            .filter(
+                grant_id__in=added_grant_ids
+            )
+            .order_by("grant_id")
+        )
+
+        if added_grant_ids:
+            added_grant_query = (
+                added_grant_query.select_for_update()
+            )
+
+        added_grants = tuple(
+            added_grant_query
+        )
+
+        added_grants_by_id = {
+            grant.grant_id: grant
+            for grant in added_grants
+        }
+
+        missing_added_grant_ids = sorted(
+            set(added_grant_ids)
+            - set(added_grants_by_id)
+        )
+
+        if missing_added_grant_ids:
+            raise CoordinatedChangeValidationError(
+                "Every newly added coordinated draft child must "
+                "reference an existing authoritative grant. Missing "
+                "grant IDs: "
+                + ", ".join(
+                    missing_added_grant_ids
+                )
+                + "."
+            )
+
+        # ---------------------------------------------------------
+        # Validate retained children's new working proposal state.
+        #
+        # IMPORTANT:
+        # current_value remains the original saved draft baseline.
+        # Ordinary Save Draft changes proposed_value only.
+        # ---------------------------------------------------------
+
+        retained_snapshot_updates = []
+
+        for grant_id in retained_grant_ids:
+
+            change_request = (
+                existing_children_by_grant[
+                    grant_id
+                ]
+            )
+
+            try:
+                grant = (
+                    Form1.objects.get(
+                        grant_id=grant_id
+                    )
+                )
+
+                validation_result = (
+                    _validate_basic_information_proposed_form_data(
+                        change_request=change_request,
+                        grant=grant,
+                        proposed_form_data=(
+                            proposed_form_data_by_normalized_grant[
+                                grant_id
+                            ]
+                        ),
+                        require_changes=False,
+                    )
+                )
+
+            except ChangeRequestValidationError as exc:
+                raise CoordinatedChangeValidationError(
+                    f"Grant {grant_id} has invalid Basic Information "
+                    "draft data: "
+                    + str(exc)
+                ) from exc
+
+            snapshots_by_field = (
+                get_basic_information_revision_snapshots(
+                    change_request,
+                    revision_no=revision_no,
+                )
+            )
+
+            for field_name in (
+                GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+            ):
+                snapshot = (
+                    snapshots_by_field[
+                        field_name
+                    ]
+                )
+
+                proposed_value = (
+                    serialize_change_request_value(
+                        validation_result.proposed_values[
+                            field_name
+                        ]
+                    )
+                )
+
+                if (
+                    proposed_value
+                    == snapshot.current_value
+                ):
+                    stored_proposed_value = None
+                else:
+                    stored_proposed_value = (
+                        proposed_value
+                    )
+
+                if (
+                    snapshot.proposed_value
+                    != stored_proposed_value
+                ):
+                    snapshot.proposed_value = (
+                        stored_proposed_value
+                    )
+
+                    retained_snapshot_updates.append(
+                        snapshot
+                    )
+
+        # ---------------------------------------------------------
+        # Validate newly added children's complete proposed states
+        # before creating their persistent child records.
+        # ---------------------------------------------------------
+
+        added_validation_results = {}
+
+        for grant_id in added_grant_ids:
+
+            grant = added_grants_by_id[
+                grant_id
+            ]
+
+            validation_change_request = (
+                ChangeRequest(
+                    grant_id=grant_id,
+                    request_type=(
+                        ChangeRequest
+                        .RequestType
+                        .EDIT_GRANT
+                    ),
+                    status=(
+                        ChangeRequest.Status.DRAFT
+                    ),
+                    coordinated_change=(
+                        coordinated_change
+                    ),
+                    current_revision=revision_no,
+                )
+            )
+
+            try:
+                validation_result = (
+                    _validate_basic_information_proposed_form_data(
+                        change_request=(
+                            validation_change_request
+                        ),
+                        grant=grant,
+                        proposed_form_data=(
+                            proposed_form_data_by_normalized_grant[
+                                grant_id
+                            ]
+                        ),
+                        require_changes=False,
+                    )
+                )
+
+            except ChangeRequestValidationError as exc:
+                raise CoordinatedChangeValidationError(
+                    f"Grant {grant_id} has invalid Basic Information "
+                    "draft data: "
+                    + str(exc)
+                ) from exc
+
+            added_validation_results[
+                grant_id
+            ] = validation_result
+
+        # ---------------------------------------------------------
+        # Verify that every omitted child is genuinely removable
+        # mutable draft state.
+        #
+        # Normal working field rows are intentionally removable.
+        # Anything that looks like audit/history evidence blocks
+        # physical removal.
+        # ---------------------------------------------------------
+
+        for grant_id in removed_grant_ids:
+
+            change_request = (
+                existing_children_by_grant[
+                    grant_id
+                ]
+            )
+
+            if (
+                change_request.submitted_by_id is not None
+                or change_request.submitted_at is not None
+            ):
+                raise CoordinatedChangeValidationError(
+                    f"Grant {grant_id} cannot be removed from the "
+                    "request because its child Change Request has "
+                    "submission history."
+                )
+
+            if (
+                change_request.field_changes
+                .exclude(
+                    revision_no=revision_no
+                )
+                .exists()
+            ):
+                raise CoordinatedChangeValidationError(
+                    f"Grant {grant_id} cannot be removed from the "
+                    "request because its child Change Request contains "
+                    "historical revision snapshots."
+                )
+
+            if change_request.actions.exists():
+                raise CoordinatedChangeValidationError(
+                    f"Grant {grant_id} cannot be removed from the "
+                    "request because its child Change Request contains "
+                    "workflow actions."
+                )
+
+            if change_request.notes.exists():
+                raise CoordinatedChangeValidationError(
+                    f"Grant {grant_id} cannot be removed from the "
+                    "request because its child Change Request contains "
+                    "notes."
+                )
+
+            if (
+                change_request.integrity_issues
+                .exists()
+            ):
+                raise CoordinatedChangeValidationError(
+                    f"Grant {grant_id} cannot be removed from the "
+                    "request because its child Change Request contains "
+                    "integrity-audit history."
+                )
+
+            if change_request.documents.exists():
+                raise CoordinatedChangeValidationError(
+                    f"Grant {grant_id} cannot be removed from the "
+                    "request because documents are attached to its "
+                    "child Change Request."
+                )
+
+        # ---------------------------------------------------------
+        # All validation has now succeeded. Begin draft mutation.
+        # ---------------------------------------------------------
+
+        if retained_snapshot_updates:
+            ChangeRequestField.objects.bulk_update(
+                retained_snapshot_updates,
+                ["proposed_value"],
+            )
+
+        final_children_by_grant = {
+            grant_id: (
+                existing_children_by_grant[
+                    grant_id
+                ]
+            )
+            for grant_id
+            in retained_grant_ids
+        }
+
+        # ---------------------------------------------------------
+        # Add newly selected grants.
+        # ---------------------------------------------------------
+
+        for grant_id in added_grant_ids:
+
+            grant = added_grants_by_id[
+                grant_id
+            ]
+
+            validation_result = (
+                added_validation_results[
+                    grant_id
+                ]
+            )
+
+            try:
+                with transaction.atomic():
+                    change_request = (
+                        ChangeRequest.objects.create(
+                            grant_id=grant_id,
+                            request_type=(
+                                ChangeRequest
+                                .RequestType
+                                .EDIT_GRANT
+                            ),
+                            status=(
+                                ChangeRequest.Status.DRAFT
+                            ),
+                            coordinated_change=(
+                                coordinated_change
+                            ),
+                            current_revision=revision_no,
+                        )
+                    )
+
+            except IntegrityError as exc:
+                conflicting_request = (
+                    ChangeRequest.objects
+                    .filter(
+                        grant_id=grant_id,
+                        status__in=(
+                            CHANGE_REQUEST_BLOCKING_STATUSES
+                        ),
+                    )
+                    .order_by("id")
+                    .first()
+                )
+
+                if conflicting_request is not None:
+                    raise CoordinatedChangeValidationError(
+                        f"Grant {grant_id} acquired another active "
+                        "Change Request while this coordinated draft "
+                        "was being saved. Conflicting Request #"
+                        f"{conflicting_request.id}."
+                    ) from exc
+
+                raise
+
+            field_snapshot_values = (
+                build_basic_information_field_snapshot_values(
+                    grant=grant,
+                    proposed_values=(
+                        validation_result.proposed_values
+                    ),
+                )
+            )
+
+            ChangeRequestField.objects.bulk_create(
+                [
+                    ChangeRequestField(
+                        change_request=(
+                            change_request
+                        ),
+                        revision_no=revision_no,
+                        field_name=(
+                            snapshot[
+                                "field_name"
+                            ]
+                        ),
+                        current_value=(
+                            snapshot[
+                                "current_value"
+                            ]
+                        ),
+                        proposed_value=(
+                            snapshot[
+                                "proposed_value"
+                            ]
+                        ),
+                    )
+                    for snapshot
+                    in field_snapshot_values
+                ]
+            )
+
+            final_children_by_grant[
+                grant_id
+            ] = change_request
+
+        # ---------------------------------------------------------
+        # Remove omitted grants FROM THE REQUEST.
+        #
+        # Never delete Form1. Only mutable coordinated-draft working
+        # rows and their draft child ChangeRequest are removed.
+        # ---------------------------------------------------------
+
+        for grant_id in removed_grant_ids:
+
+            change_request = (
+                existing_children_by_grant[
+                    grant_id
+                ]
+            )
+
+            change_request.field_changes.filter(
+                revision_no=revision_no
+            ).delete()
+
+            change_request.delete()
+
+        # ---------------------------------------------------------
+        # One successful Save Draft = one concurrency increment.
+        # current_revision remains unchanged.
+        # ---------------------------------------------------------
+
+        coordinated_change.concurrency_version = (
+            previous_concurrency_version + 1
+        )
+
+        coordinated_change.save(
+            update_fields=[
+                "concurrency_version",
+            ]
+        )
+
+        final_change_request_ids = tuple(
+            final_children_by_grant[
+                grant_id
+            ].id
+            for grant_id
+            in desired_grant_ids
+        )
+
+        return CoordinatedDraftSaveResult(
+            coordinated_change_id=(
+                coordinated_change.id
+            ),
+            status=(
+                coordinated_change.status
+            ),
+            revision_no=revision_no,
+            previous_concurrency_version=(
+                previous_concurrency_version
+            ),
+            concurrency_version=(
+                coordinated_change.concurrency_version
+            ),
+            change_request_ids=(
+                final_change_request_ids
+            ),
+            grant_ids=desired_grant_ids,
+            added_grant_ids=added_grant_ids,
+            retained_grant_ids=(
+                retained_grant_ids
+            ),
+            removed_grant_ids=(
+                removed_grant_ids
+            ),
         )
 
 
