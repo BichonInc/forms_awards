@@ -270,6 +270,30 @@ class CoordinatedDraftAuthoritativeChangeError(
         )
 
 
+class CoordinatedDraftReviewMismatchError(
+        CoordinatedChangeValidationError
+):
+    """
+    Raised when authoritative Form1 no longer matches the state that
+    the editor reviewed before requesting a coordinated draft rebase.
+    """
+
+    def __init__(
+            self,
+            *,
+            mismatches,
+    ):
+        self.mismatches = tuple(
+            mismatches
+        )
+
+        super().__init__(
+            "Authoritative Basic Information changed again after it "
+            "was reviewed. Review the current authoritative values "
+            "again before rebasing the coordinated draft."
+        )
+
+
 @dataclass(frozen=True)
 class BasicInformationValidationResult:
     proposed_values: dict
@@ -418,6 +442,26 @@ class CoordinatedDraftSaveResult:
     added_grant_ids: tuple
     retained_grant_ids: tuple
     removed_grant_ids: tuple
+
+
+@dataclass(frozen=True)
+class CoordinatedDraftReviewedAuthoritativeMismatch:
+    grant_id: str
+    field_name: str
+    reviewed_value: str
+    authoritative_value: str
+
+
+@dataclass(frozen=True)
+class CoordinatedDraftRebaseResult:
+    coordinated_change_id: int
+    status: str
+    revision_no: int
+    previous_concurrency_version: int
+    concurrency_version: int
+    change_request_ids: tuple
+    grant_ids: tuple
+    rebased_differences: tuple
 
 
 def serialize_change_request_value(value):
@@ -3977,6 +4021,503 @@ def save_coordinated_basic_information_draft(
             ),
             removed_grant_ids=(
                 removed_grant_ids
+            ),
+        )
+
+
+def rebase_coordinated_basic_information_draft(
+        *,
+        coordinated_change_id,
+        expected_concurrency_version,
+        reviewed_authoritative_values_by_grant,
+):
+    """
+    Rebase an existing coordinated Basic Information draft onto
+    authoritative Form1 values that the editor explicitly reviewed.
+
+    This operation does not accept new draft proposals and does not
+    create a new formal revision.
+
+    Rules:
+
+      1. coordinated draft concurrency is checked first;
+
+      2. the existing draft baselines are compared with authoritative
+         Form1 while the package, child requests, and authoritative
+         grants are locked;
+
+      3. the authoritative values must still exactly match the values
+         the editor reviewed;
+
+      4. stale current_value baselines are replaced with the reviewed
+         authoritative values;
+
+      5. an existing explicit proposed_value remains a proposal unless
+         it now equals the new authoritative value, in which case it
+         becomes None;
+
+      6. a field with proposed_value=None remains None. The old stale
+         baseline is never converted into a proposal;
+
+      7. current_revision is unchanged;
+
+      8. concurrency_version increments exactly once.
+
+    Draft business/form validity is intentionally not revalidated here.
+    An authoritative change may temporarily make an existing proposal
+    inconsistent. After rebase, the editor can correct the proposal
+    through ordinary Save Draft.
+    """
+
+    with transaction.atomic():
+
+        # ---------------------------------------------------------
+        # Concurrency must be checked first.
+        #
+        # The staleness inspection also locks the coordinated parent,
+        # its existing children, and their authoritative Form1 rows.
+        # ---------------------------------------------------------
+
+        staleness_result = (
+            inspect_coordinated_draft_staleness(
+                coordinated_change_id=(
+                    coordinated_change_id
+                ),
+                expected_concurrency_version=(
+                    expected_concurrency_version
+                ),
+                lock_records=True,
+            )
+        )
+
+        if not staleness_result.has_authoritative_changes:
+            raise CoordinatedChangeValidationError(
+                "This coordinated draft does not have authoritative "
+                "Basic Information changes that require review and "
+                "rebase."
+            )
+
+        coordinated_change = (
+            CoordinatedChange.objects.get(
+                pk=coordinated_change_id
+            )
+        )
+
+        revision_no = (
+            coordinated_change.current_revision
+        )
+
+        previous_concurrency_version = (
+            coordinated_change.concurrency_version
+        )
+
+        # ---------------------------------------------------------
+        # Load the existing draft children.
+        #
+        # They were already locked by the staleness inspection; the
+        # explicit select_for_update keeps the mutation boundary clear.
+        # ---------------------------------------------------------
+
+        change_requests = tuple(
+            ChangeRequest.objects
+            .select_for_update()
+            .filter(
+                coordinated_change=(
+                    coordinated_change
+                )
+            )
+            .order_by(
+                "grant_id",
+                "id",
+            )
+        )
+
+        grant_ids = tuple(
+            change_request.grant_id
+            for change_request
+            in change_requests
+        )
+
+        # ---------------------------------------------------------
+        # Normalize the authoritative review snapshot.
+        #
+        # The future view will obtain this mapping from a signed token.
+        # The workflow service still validates its shape independently.
+        # ---------------------------------------------------------
+
+        try:
+            reviewed_grant_items = tuple(
+                reviewed_authoritative_values_by_grant.items()
+            )
+        except AttributeError as exc:
+            raise CoordinatedChangeValidationError(
+                "Reviewed authoritative values must be provided by "
+                "grant ID."
+            ) from exc
+
+        normalized_reviewed_values = {}
+
+        for raw_grant_id, raw_reviewed_values in (
+            reviewed_grant_items
+        ):
+            grant_id = str(
+                raw_grant_id
+            ).strip()
+
+            if not grant_id:
+                raise CoordinatedChangeValidationError(
+                    "Every reviewed authoritative value set must "
+                    "identify a grant."
+                )
+
+            if grant_id in normalized_reviewed_values:
+                raise CoordinatedChangeValidationError(
+                    "The reviewed authoritative snapshot contains "
+                    f"grant {grant_id} more than once."
+                )
+
+            try:
+                reviewed_field_items = tuple(
+                    raw_reviewed_values.items()
+                )
+            except AttributeError as exc:
+                raise CoordinatedChangeValidationError(
+                    f"Reviewed authoritative values for grant "
+                    f"{grant_id} must be provided by field name."
+                ) from exc
+
+            reviewed_field_names = {
+                str(field_name)
+                for field_name, _
+                in reviewed_field_items
+            }
+
+            required_field_names = set(
+                GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+            )
+
+            missing_field_names = sorted(
+                required_field_names
+                - reviewed_field_names
+            )
+
+            unexpected_field_names = sorted(
+                reviewed_field_names
+                - required_field_names
+            )
+
+            if missing_field_names:
+                raise CoordinatedChangeValidationError(
+                    f"Reviewed authoritative values for grant "
+                    f"{grant_id} are incomplete. Missing fields: "
+                    + ", ".join(
+                        missing_field_names
+                    )
+                    + "."
+                )
+
+            if unexpected_field_names:
+                raise CoordinatedChangeValidationError(
+                    f"Reviewed authoritative values for grant "
+                    f"{grant_id} contain unsupported fields: "
+                    + ", ".join(
+                        unexpected_field_names
+                    )
+                    + "."
+                )
+
+            normalized_reviewed_values[
+                grant_id
+            ] = {
+                str(field_name): (
+                    serialize_change_request_value(
+                        value
+                    )
+                )
+                for field_name, value
+                in reviewed_field_items
+            }
+
+        reviewed_grant_ids = set(
+            normalized_reviewed_values
+        )
+
+        expected_grant_ids = set(
+            grant_ids
+        )
+
+        missing_reviewed_grant_ids = sorted(
+            expected_grant_ids
+            - reviewed_grant_ids
+        )
+
+        unexpected_reviewed_grant_ids = sorted(
+            reviewed_grant_ids
+            - expected_grant_ids
+        )
+
+        if missing_reviewed_grant_ids:
+            raise CoordinatedChangeValidationError(
+                "The reviewed authoritative snapshot does not include "
+                "every grant currently in the coordinated draft. "
+                "Missing grant IDs: "
+                + ", ".join(
+                    missing_reviewed_grant_ids
+                )
+                + "."
+            )
+
+        if unexpected_reviewed_grant_ids:
+            raise CoordinatedChangeValidationError(
+                "The reviewed authoritative snapshot contains grants "
+                "that are not currently in the coordinated draft. "
+                "Unexpected grant IDs: "
+                + ", ".join(
+                    unexpected_reviewed_grant_ids
+                )
+                + "."
+            )
+
+        # ---------------------------------------------------------
+        # Confirm that authoritative Form1 still exactly matches the
+        # state that the editor reviewed.
+        #
+        # We compare all 14 fields for every current child, not merely
+        # the fields that were stale during the original review. That
+        # prevents an unrelated authoritative change from slipping
+        # through between review and confirmation.
+        # ---------------------------------------------------------
+
+        authoritative_grants = tuple(
+            Form1.objects
+            .select_for_update()
+            .filter(
+                grant_id__in=grant_ids
+            )
+            .order_by("grant_id")
+        )
+
+        authoritative_grants_by_id = {
+            grant.grant_id: grant
+            for grant in authoritative_grants
+        }
+
+        missing_authoritative_grant_ids = sorted(
+            expected_grant_ids
+            - set(
+                authoritative_grants_by_id
+            )
+        )
+
+        if missing_authoritative_grant_ids:
+            raise CoordinatedChangeValidationError(
+                "Every coordinated draft child must reference an "
+                "existing authoritative grant. Missing grant IDs: "
+                + ", ".join(
+                    missing_authoritative_grant_ids
+                )
+                + "."
+            )
+
+        review_mismatches = []
+
+        for grant_id in grant_ids:
+
+            grant = (
+                authoritative_grants_by_id[
+                    grant_id
+                ]
+            )
+
+            reviewed_values = (
+                normalized_reviewed_values[
+                    grant_id
+                ]
+            )
+
+            for field_name in (
+                GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+            ):
+                authoritative_value = (
+                    serialize_change_request_value(
+                        getattr(
+                            grant,
+                            field_name,
+                        )
+                    )
+                )
+
+                reviewed_value = (
+                    reviewed_values[
+                        field_name
+                    ]
+                )
+
+                if (
+                    authoritative_value
+                    != reviewed_value
+                ):
+                    review_mismatches.append(
+                        CoordinatedDraftReviewedAuthoritativeMismatch(
+                            grant_id=grant_id,
+                            field_name=field_name,
+                            reviewed_value=(
+                                reviewed_value
+                            ),
+                            authoritative_value=(
+                                authoritative_value
+                            ),
+                        )
+                    )
+
+        if review_mismatches:
+            raise CoordinatedDraftReviewMismatchError(
+                mismatches=review_mismatches
+            )
+
+        # ---------------------------------------------------------
+        # Prepare only the stale baseline mutations.
+        #
+        # IMPORTANT:
+        #
+        # proposed_value=None remains None.
+        #
+        # An old stale baseline is NEVER promoted into proposed_value.
+        #
+        # An explicit proposal is preserved unless the new
+        # authoritative value has caught up to that proposal.
+        # ---------------------------------------------------------
+
+        change_requests_by_id = {
+            change_request.id: (
+                change_request
+            )
+            for change_request
+            in change_requests
+        }
+
+        snapshots_by_request_and_field = {}
+
+        for change_request in change_requests:
+
+            snapshots_by_field = (
+                get_basic_information_revision_snapshots(
+                    change_request,
+                    revision_no=revision_no,
+                )
+            )
+
+            for field_name, snapshot in (
+                snapshots_by_field.items()
+            ):
+                snapshots_by_request_and_field[
+                    (
+                        change_request.id,
+                        field_name,
+                    )
+                ] = snapshot
+
+        snapshot_updates = []
+
+        for difference in (
+            staleness_result.baseline_differences
+        ):
+            change_request = (
+                change_requests_by_id.get(
+                    difference.change_request_id
+                )
+            )
+
+            if change_request is None:
+                raise CoordinatedChangeValidationError(
+                    "The coordinated draft changed while its "
+                    "authoritative review was being processed."
+                )
+
+            snapshot_key = (
+                change_request.id,
+                difference.field_name,
+            )
+
+            snapshot = (
+                snapshots_by_request_and_field.get(
+                    snapshot_key
+                )
+            )
+
+            if snapshot is None:
+                raise CoordinatedChangeValidationError(
+                    f"Grant {difference.grant_id} does not contain "
+                    f"the expected {difference.field_name} draft "
+                    "snapshot."
+                )
+
+            new_current_value = (
+                difference.authoritative_value
+            )
+
+            snapshot.current_value = (
+                new_current_value
+            )
+
+            if (
+                snapshot.proposed_value
+                is not None
+                and snapshot.proposed_value
+                == new_current_value
+            ):
+                snapshot.proposed_value = None
+
+            snapshot_updates.append(
+                snapshot
+            )
+
+        if snapshot_updates:
+            ChangeRequestField.objects.bulk_update(
+                snapshot_updates,
+                [
+                    "current_value",
+                    "proposed_value",
+                ],
+            )
+
+        # ---------------------------------------------------------
+        # Rebase is mutable draft work, not a new formal revision.
+        # Advance only the package concurrency version.
+        # ---------------------------------------------------------
+
+        coordinated_change.concurrency_version = (
+            previous_concurrency_version + 1
+        )
+
+        coordinated_change.save(
+            update_fields=[
+                "concurrency_version",
+            ]
+        )
+
+        return CoordinatedDraftRebaseResult(
+            coordinated_change_id=(
+                coordinated_change.id
+            ),
+            status=(
+                coordinated_change.status
+            ),
+            revision_no=revision_no,
+            previous_concurrency_version=(
+                previous_concurrency_version
+            ),
+            concurrency_version=(
+                coordinated_change.concurrency_version
+            ),
+            change_request_ids=tuple(
+                change_request.id
+                for change_request
+                in change_requests
+            ),
+            grant_ids=grant_ids,
+            rebased_differences=(
+                staleness_result.baseline_differences
             ),
         )
 
