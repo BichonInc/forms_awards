@@ -20,6 +20,19 @@ urlpatterns = [
         name='change_request_history',
     ),
     path(
+        "coordinated-changes/new/",
+        views.coordinated_basic_information_draft_editor,
+        name="coordinated_basic_information_draft_new",
+    ),
+    path(
+        (
+            "coordinated-changes/"
+            "<int:coordinated_change_id>/edit/"
+        ),
+        views.coordinated_basic_information_draft_editor,
+        name="coordinated_basic_information_draft_edit",
+    ),
+    path(
         (
             "coordinated-changes/"
             "<int:coordinated_change_id>/"

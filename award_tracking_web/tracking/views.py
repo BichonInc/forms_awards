@@ -56,12 +56,15 @@ from .change_request_workflow import (
     CoordinatedChangeValidationError,
     CoordinatedDraftConcurrencyError,
     CoordinatedDraftReviewMismatchError,
+    CoordinatedDraftAuthoritativeChangeError,
     approve_standalone_change_request,
     detect_or_get_change_request_integrity_issue,
     get_change_request_integrity_evidence,
     get_basic_information_revision_snapshots,
     inspect_coordinated_draft_staleness,
     rebase_coordinated_basic_information_draft,
+    create_coordinated_basic_information_draft,
+    save_coordinated_basic_information_draft,
     resolve_change_request_integrity_issue,
     resubmit_standalone_change_request,
     return_standalone_change_request,
@@ -1786,6 +1789,726 @@ def resubmit_grant_change_request(request, request_id):
     )
 
 
+COORDINATED_DRAFT_ADD_NEW_FIELDS = (
+    ("program_title", "new_program_title"),
+    ("contracting_agency", "new_contracting_agency"),
+    ("federal_grantor", "new_federal_grantor"),
+    ("federal_aln", "new_federal_aln"),
+)
+
+
+def _coordinated_draft_form_prefix(grant_id):
+    return f"grant_{grant_id}"
+
+
+def _restore_coordinated_draft_add_new_state(
+        form,
+        desired_values,
+):
+    """
+    Restore an unsaved Add New proposal when its value is not yet among
+    GrantForm's dynamically generated database choices.
+    """
+
+    for field_name, new_field_name in (
+        COORDINATED_DRAFT_ADD_NEW_FIELDS
+    ):
+        desired_value = desired_values.get(
+            field_name
+        )
+
+        if desired_value in (None, ""):
+            continue
+
+        choice_values = {
+            str(value)
+            for value, _label
+            in form.fields[
+                field_name
+            ].widget.choices
+        }
+
+        if str(desired_value) not in choice_values:
+            form.initial[field_name] = "Add New"
+            form.initial[new_field_name] = (
+                desired_value
+            )
+
+
+def _get_coordinated_draft_saved_values(
+        coordinated_change,
+):
+    """
+    Reconstruct the current desired draft state for every saved child.
+
+    An explicit proposed_value wins. Otherwise the saved working
+    baseline remains the desired value.
+    """
+
+    change_requests = tuple(
+        ChangeRequest.objects
+        .filter(
+            coordinated_change=(
+                coordinated_change
+            )
+        )
+        .order_by(
+            "grant_id",
+            "id",
+        )
+    )
+
+    saved_values_by_grant = {}
+
+    for change_request in change_requests:
+        snapshots = (
+            get_basic_information_revision_snapshots(
+                change_request,
+                revision_no=(
+                    coordinated_change
+                    .current_revision
+                ),
+            )
+        )
+
+        saved_values_by_grant[
+            change_request.grant_id
+        ] = {
+            field_name: (
+                snapshots[
+                    field_name
+                ].proposed_value
+                if snapshots[
+                    field_name
+                ].proposed_value
+                is not None
+                else snapshots[
+                    field_name
+                ].current_value
+            )
+            for field_name
+            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        }
+
+    return (
+        change_requests,
+        saved_values_by_grant,
+    )
+
+
+def _get_unprefixed_coordinated_form_data(
+        form,
+        post_data,
+):
+    """
+    Convert one prefixed grant card back to the unprefixed raw form-data
+    mapping expected by the workflow service.
+
+    Raw values are intentional here. In particular, "Add New" must
+    remain "Add New" so the service can perform its own full validation.
+    """
+
+    form_data = {}
+
+    for field_name in form.fields:
+        prefixed_name = form.add_prefix(
+            field_name
+        )
+
+        if prefixed_name in post_data:
+            form_data[field_name] = (
+                post_data.get(
+                    prefixed_name
+                )
+            )
+
+    return form_data
+
+
+@role_required(ROLE_EDITOR)
+def coordinated_basic_information_draft_editor(
+        request,
+        coordinated_change_id=None,
+):
+    """
+    Create or edit a mutable coordinated Basic Information draft.
+
+    Add Grant and Remove from Request modify only the browser's working
+    membership until Save Draft succeeds.
+
+    Formal submission is intentionally handled separately.
+    """
+
+    coordinated_change = None
+    saved_values_by_grant = {}
+    persisted_grant_ids = set()
+
+    # =========================================================
+    # Load an existing saved draft, if this is the edit route.
+    # =========================================================
+
+    if coordinated_change_id is not None:
+        coordinated_change = get_object_or_404(
+            CoordinatedChange,
+            pk=coordinated_change_id,
+        )
+
+        if (
+            coordinated_change.status
+            != CoordinatedChange.Status.DRAFT
+        ):
+            raise PermissionDenied(
+                "Only coordinated drafts can be edited."
+            )
+
+        expected_version = (
+            request.POST.get(
+                "concurrency_version",
+                "",
+            )
+            if request.method == "POST"
+            else coordinated_change.concurrency_version
+        )
+
+        try:
+            staleness_result = (
+                inspect_coordinated_draft_staleness(
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                    expected_concurrency_version=(
+                        expected_version
+                    ),
+                )
+            )
+
+        except CoordinatedDraftConcurrencyError:
+            messages.error(
+                request,
+                (
+                    "This coordinated draft changed after the page "
+                    "was loaded. Review the latest saved draft before "
+                    "continuing."
+                ),
+            )
+
+            return redirect(
+                "coordinated_basic_information_draft_edit",
+                coordinated_change_id=(
+                    coordinated_change.id
+                ),
+            )
+
+        except CoordinatedChangeValidationError as exc:
+            messages.error(
+                request,
+                str(exc),
+            )
+
+            return redirect(
+                "grant_list"
+            )
+
+        if staleness_result.has_authoritative_changes:
+            messages.info(
+                request,
+                (
+                    "Authoritative Basic Information changed after "
+                    "this coordinated draft was saved. Review and "
+                    "accept the current authoritative values before "
+                    "continuing to edit the draft."
+                ),
+            )
+
+            return redirect(
+                "review_coordinated_draft_authoritative_changes",
+                coordinated_change_id=(
+                    coordinated_change.id
+                ),
+            )
+
+        (
+            saved_change_requests,
+            saved_values_by_grant,
+        ) = _get_coordinated_draft_saved_values(
+            coordinated_change
+        )
+
+        persisted_grant_ids = {
+            change_request.grant_id
+            for change_request
+            in saved_change_requests
+        }
+
+    # =========================================================
+    # Determine the browser's desired working membership.
+    # =========================================================
+
+    newly_added_grant_ids = set()
+
+    if request.method == "POST":
+        membership_grant_ids = [
+            str(grant_id).strip()
+            for grant_id
+            in request.POST.getlist(
+                "grant_ids"
+            )
+            if str(grant_id).strip()
+        ]
+
+        if (
+            len(membership_grant_ids)
+            != len(set(membership_grant_ids))
+        ):
+            messages.error(
+                request,
+                (
+                    "The coordinated draft contains the same grant "
+                    "more than once. Reload the draft and try again."
+                ),
+            )
+
+            if coordinated_change is not None:
+                return redirect(
+                    "coordinated_basic_information_draft_edit",
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                )
+
+            return redirect(
+                "coordinated_basic_information_draft_new"
+            )
+
+    elif coordinated_change is not None:
+        membership_grant_ids = [
+            change_request.grant_id
+            for change_request
+            in saved_change_requests
+        ]
+
+    else:
+        membership_grant_ids = []
+
+    # =========================================================
+    # Browser-only Add Grant.
+    # =========================================================
+
+    action = (
+        request.POST.get(
+            "action",
+            ""
+        )
+        if request.method == "POST"
+        else ""
+    )
+
+    if action == "add_grant":
+        add_grant_id = (
+            request.POST.get(
+                "add_grant_id",
+                ""
+            ).strip()
+        )
+
+        if not add_grant_id:
+            messages.error(
+                request,
+                "Select a grant to add."
+            )
+
+        elif add_grant_id in membership_grant_ids:
+            messages.error(
+                request,
+                (
+                    f"Grant {add_grant_id} is already in "
+                    "this coordinated draft."
+                ),
+            )
+
+        else:
+            candidate_grant = (
+                Form1.objects
+                .filter(
+                    grant_id=add_grant_id
+                )
+                .first()
+            )
+
+            conflicting_request_query = (
+                ChangeRequest.objects
+                .filter(
+                    grant_id=add_grant_id,
+                    status__in=(
+                        CHANGE_REQUEST_BLOCKING_STATUSES
+                    ),
+                )
+            )
+
+            if coordinated_change is not None:
+                conflicting_request_query = (
+                    conflicting_request_query
+                    .exclude(
+                        coordinated_change=(
+                            coordinated_change
+                        )
+                    )
+                )
+
+            if candidate_grant is None:
+                messages.error(
+                    request,
+                    (
+                        f"Grant {add_grant_id} does not exist."
+                    ),
+                )
+
+            elif conflicting_request_query.exists():
+                messages.error(
+                    request,
+                    (
+                        f"Grant {add_grant_id} already has "
+                        "another active Change Request."
+                    ),
+                )
+
+            else:
+                membership_grant_ids.append(
+                    add_grant_id
+                )
+
+                newly_added_grant_ids.add(
+                    add_grant_id
+                )
+
+    # =========================================================
+    # Browser-only Remove from Request.
+    # =========================================================
+
+    remove_grant_id = (
+        request.POST.get(
+            "remove_grant_id",
+            ""
+        ).strip()
+        if request.method == "POST"
+        else ""
+    )
+
+    if remove_grant_id:
+        membership_grant_ids = [
+            grant_id
+            for grant_id
+            in membership_grant_ids
+            if grant_id != remove_grant_id
+        ]
+
+    # =========================================================
+    # Load all grants represented by the browser membership.
+    # =========================================================
+
+    grants_by_id = {
+        grant.grant_id: grant
+        for grant
+        in Form1.objects
+        .filter(
+            grant_id__in=(
+                membership_grant_ids
+            )
+        )
+    }
+
+    missing_grant_ids = [
+        grant_id
+        for grant_id
+        in membership_grant_ids
+        if grant_id not in grants_by_id
+    ]
+
+    if missing_grant_ids:
+        messages.error(
+            request,
+            (
+                "One or more grants in the coordinated draft no "
+                "longer exist: "
+                + ", ".join(
+                    missing_grant_ids
+                )
+                + "."
+            ),
+        )
+
+        if coordinated_change is not None:
+            return redirect(
+                "coordinated_basic_information_draft_edit",
+                coordinated_change_id=(
+                    coordinated_change.id
+                ),
+            )
+
+        return redirect(
+            "coordinated_basic_information_draft_new"
+        )
+
+    # =========================================================
+    # Build one prefixed Basic Information form per grant.
+    # =========================================================
+
+    form_cards = []
+
+    for grant_id in membership_grant_ids:
+        grant = grants_by_id[
+            grant_id
+        ]
+
+        prefix = (
+            _coordinated_draft_form_prefix(
+                grant_id
+            )
+        )
+
+        bind_from_post = (
+            request.method == "POST"
+            and grant_id
+            not in newly_added_grant_ids
+        )
+
+        if bind_from_post:
+            form = (
+                GrantBasicInformationChangeForm(
+                    request.POST,
+                    instance=grant,
+                    prefix=prefix,
+                )
+            )
+
+        else:
+            desired_values = (
+                saved_values_by_grant.get(
+                    grant_id
+                )
+            )
+
+            if desired_values is None:
+                form = (
+                    GrantBasicInformationChangeForm(
+                        instance=grant,
+                        prefix=prefix,
+                    )
+                )
+
+            else:
+                form = (
+                    GrantBasicInformationChangeForm(
+                        instance=grant,
+                        initial=desired_values,
+                        prefix=prefix,
+                    )
+                )
+
+                _restore_coordinated_draft_add_new_state(
+                    form,
+                    desired_values,
+                )
+
+        form_cards.append(
+            {
+                "grant": grant,
+                "form": form,
+                "was_saved": (
+                    grant_id
+                    in persisted_grant_ids
+                ),
+            }
+        )
+
+    # =========================================================
+    # Save Draft.
+    # =========================================================
+
+    if (
+        request.method == "POST"
+        and action == "save_draft"
+    ):
+        forms_are_valid = True
+
+        for card in form_cards:
+            if not card["form"].is_valid():
+                forms_are_valid = False
+
+        if forms_are_valid:
+            proposed_form_data_by_grant = {
+                card["grant"].grant_id: (
+                    _get_unprefixed_coordinated_form_data(
+                        card["form"],
+                        request.POST,
+                    )
+                )
+                for card in form_cards
+            }
+
+            try:
+                if coordinated_change is None:
+                    result = (
+                        create_coordinated_basic_information_draft(
+                            created_by=request.user,
+                            proposed_form_data_by_grant=(
+                                proposed_form_data_by_grant
+                            ),
+                        )
+                    )
+
+                    messages.success(
+                        request,
+                        (
+                            "Coordinated Basic Information draft "
+                            "created and saved."
+                        ),
+                    )
+
+                else:
+                    result = (
+                        save_coordinated_basic_information_draft(
+                            coordinated_change_id=(
+                                coordinated_change.id
+                            ),
+                            expected_concurrency_version=(
+                                request.POST.get(
+                                    "concurrency_version",
+                                    "",
+                                )
+                            ),
+                            proposed_form_data_by_grant=(
+                                proposed_form_data_by_grant
+                            ),
+                        )
+                    )
+
+                    messages.success(
+                        request,
+                        (
+                            "Coordinated Basic Information draft "
+                            "saved."
+                        ),
+                    )
+
+            except CoordinatedDraftAuthoritativeChangeError:
+                messages.info(
+                    request,
+                    (
+                        "Authoritative Basic Information changed "
+                        "after this draft was saved. Review and "
+                        "accept the current authoritative values "
+                        "before saving again."
+                    ),
+                )
+
+                return redirect(
+                    "review_coordinated_draft_authoritative_changes",
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                )
+
+            except CoordinatedDraftConcurrencyError:
+                messages.error(
+                    request,
+                    (
+                        "This coordinated draft changed after the "
+                        "page was loaded. Review the latest saved "
+                        "draft before making more changes."
+                    ),
+                )
+
+                return redirect(
+                    "coordinated_basic_information_draft_edit",
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                )
+
+            except CoordinatedChangeValidationError as exc:
+                messages.error(
+                    request,
+                    str(exc),
+                )
+
+            else:
+                return redirect(
+                    "coordinated_basic_information_draft_edit",
+                    coordinated_change_id=(
+                        result.coordinated_change_id
+                    ),
+                )
+
+    # =========================================================
+    # Add Grant choices.
+    #
+    # When editing an existing package, exclude that package from
+    # blocking-request detection so a browser-removed saved child
+    # can be added back before Save Draft.
+    # =========================================================
+
+    blocking_requests = (
+        ChangeRequest.objects
+        .filter(
+            status__in=(
+                CHANGE_REQUEST_BLOCKING_STATUSES
+            )
+        )
+    )
+
+    if coordinated_change is not None:
+        blocking_requests = (
+            blocking_requests.exclude(
+                coordinated_change=(
+                    coordinated_change
+                )
+            )
+        )
+
+    blocked_grant_ids = set(
+        blocking_requests.values_list(
+            "grant_id",
+            flat=True,
+        )
+    )
+
+    unavailable_grant_ids = (
+        set(membership_grant_ids)
+        | blocked_grant_ids
+    )
+
+    available_grants = (
+        Form1.objects
+        .exclude(
+            grant_id__in=(
+                unavailable_grant_ids
+            )
+        )
+        .order_by(
+            "grant_id"
+        )
+    )
+
+    return render(
+        request,
+        "tracking/coordinated_draft_editor.html",
+        {
+            "coordinated_change": (
+                coordinated_change
+            ),
+            "form_cards": form_cards,
+            "available_grants": (
+                available_grants
+            ),
+            "is_existing_draft": (
+                coordinated_change
+                is not None
+            ),
+        },
+    )
+
+
 @role_required(ROLE_EDITOR)
 def review_coordinated_draft_authoritative_changes(
         request,
@@ -1997,7 +2720,7 @@ def review_coordinated_draft_authoritative_changes(
         )
 
         return redirect(
-            "review_coordinated_draft_authoritative_changes",
+            "coordinated_basic_information_draft_edit",
             coordinated_change_id=(
                 result.coordinated_change_id
             ),
