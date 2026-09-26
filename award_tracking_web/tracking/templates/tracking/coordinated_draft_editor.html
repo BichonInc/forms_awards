@@ -870,6 +870,44 @@
             </a>
         </div>
     </form>
+    {% if is_existing_draft %}
+        <div class="page-actions">
+            <form
+                method="post"
+                onsubmit="return confirm(
+                    'Submit the saved coordinated draft for approval? ' +
+                    'Any unsaved edits on this page will not be included.'
+                );"
+            >
+                {% csrf_token %}
+
+                <input
+                    type="hidden"
+                    name="action"
+                    value="submit_draft"
+                >
+
+                <input
+                    type="hidden"
+                    name="concurrency_version"
+                    value="{{ coordinated_change.concurrency_version }}"
+                >
+
+                <button
+                    type="submit"
+                    class="save-button"
+                >
+                    Submit for Approval
+                </button>
+            </form>
+        </div>
+
+        <div class="help-text">
+            Submit for Approval uses the last saved version of this draft.
+            Save any field, Add Grant, or Remove from Request changes before
+            submitting.
+        </div>
+    {% endif %}
 
 </div>
 </body>

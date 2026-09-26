@@ -464,6 +464,19 @@ class CoordinatedDraftRebaseResult:
     rebased_differences: tuple
 
 
+@dataclass(frozen=True)
+class CoordinatedDraftSubmissionResult:
+    coordinated_change_id: int
+    status: str
+    revision_no: int
+    previous_concurrency_version: int
+    concurrency_version: int
+    change_request_ids: tuple
+    grant_ids: tuple
+    submitted_by_id: int
+    submitted_at: datetime
+
+
 def serialize_change_request_value(value):
     """
     Convert Basic Information values to stable text for audit storage.
@@ -4518,6 +4531,239 @@ def rebase_coordinated_basic_information_draft(
             grant_ids=grant_ids,
             rebased_differences=(
                 staleness_result.baseline_differences
+            ),
+        )
+
+
+def submit_coordinated_basic_information_draft(
+        *,
+        coordinated_change_id,
+        expected_concurrency_version,
+        submitted_by,
+):
+    """
+    Formally submit an existing coordinated Basic Information draft.
+
+    Submission is an atomic transition from DRAFT to PENDING.
+
+    Before any formal submission state is written:
+
+      1. draft concurrency is checked;
+      2. saved draft baselines are compared with authoritative Form1;
+      3. the complete coordinated package passes submit-time structural,
+         business, coordinated-relationship, and final GL-state
+         validation.
+
+    A successful initial submission:
+
+      - does not create a new revision;
+      - does not rewrite ChangeRequestField snapshots;
+      - does not modify authoritative Form1;
+      - records one shared submission timestamp;
+      - records the actual submitter on the coordinated package and
+        every child Change Request;
+      - moves the coordinated package and every child to PENDING; and
+      - increments the package concurrency version exactly once.
+    """
+    if (
+        submitted_by is None
+        or getattr(submitted_by, "pk", None) is None
+    ):
+        raise CoordinatedChangeValidationError(
+            "A saved user is required to submit a coordinated draft."
+        )
+
+    with transaction.atomic():
+
+        # ---------------------------------------------------------
+        # Concurrency and authoritative-baseline checks come first.
+        #
+        # This locks the coordinated package, its current children,
+        # and the authoritative Form1 rows represented by the draft.
+        # ---------------------------------------------------------
+
+        staleness_result = (
+            inspect_coordinated_draft_staleness(
+                coordinated_change_id=(
+                    coordinated_change_id
+                ),
+                expected_concurrency_version=(
+                    expected_concurrency_version
+                ),
+                lock_records=True,
+            )
+        )
+
+        if staleness_result.has_authoritative_changes:
+            raise CoordinatedDraftAuthoritativeChangeError(
+                staleness_result=staleness_result
+            )
+
+        coordinated_change = (
+            CoordinatedChange.objects
+            .select_for_update()
+            .get(
+                pk=coordinated_change_id
+            )
+        )
+
+        previous_concurrency_version = (
+            coordinated_change.concurrency_version
+        )
+
+        revision_no = (
+            coordinated_change.current_revision
+        )
+
+        # ---------------------------------------------------------
+        # An initial DRAFT must not already contain formal submission
+        # history.
+        # ---------------------------------------------------------
+
+        if (
+            coordinated_change.submitted_by_id is not None
+            or coordinated_change.submitted_at is not None
+        ):
+            raise CoordinatedChangeValidationError(
+                "This coordinated draft already contains submission "
+                "history and cannot be submitted as an initial draft."
+            )
+
+        # ---------------------------------------------------------
+        # Full submit-time validation.
+        #
+        # This enforces package structure, complete child proposal
+        # validity, coordinated GL relationship, and the hypothetical
+        # final GL state while all relevant records remain locked.
+        # ---------------------------------------------------------
+
+        validation_result = (
+            validate_coordinated_basic_information_change(
+                coordinated_change,
+                lock_records=True,
+            )
+        )
+
+        change_requests = tuple(
+            ChangeRequest.objects
+            .select_for_update()
+            .filter(
+                coordinated_change=(
+                    coordinated_change
+                )
+            )
+            .order_by(
+                "grant_id",
+                "id",
+            )
+        )
+
+        validation_change_request_ids = {
+            child.change_request_id
+            for child in validation_result.children
+        }
+
+        actual_change_request_ids = {
+            change_request.id
+            for change_request in change_requests
+        }
+
+        if (
+            actual_change_request_ids
+            != validation_change_request_ids
+        ):
+            raise CoordinatedChangeValidationError(
+                "The coordinated draft membership changed while "
+                "submission was being validated."
+            )
+
+        for change_request in change_requests:
+            if (
+                change_request.submitted_by_id is not None
+                or change_request.submitted_at is not None
+            ):
+                raise CoordinatedChangeValidationError(
+                    f"Child Change Request #{change_request.id} "
+                    "already contains submission history."
+                )
+
+        # ---------------------------------------------------------
+        # One formal submission event uses one timestamp everywhere.
+        # ---------------------------------------------------------
+
+        submitted_at = timezone.now()
+
+        for change_request in change_requests:
+            change_request.status = (
+                ChangeRequest.Status.PENDING
+            )
+            change_request.submitted_by_id = (
+                submitted_by.pk
+            )
+            change_request.submitted_at = (
+                submitted_at
+            )
+
+        ChangeRequest.objects.bulk_update(
+            change_requests,
+            [
+                "status",
+                "submitted_by",
+                "submitted_at",
+            ],
+        )
+
+        coordinated_change.status = (
+            CoordinatedChange.Status.PENDING
+        )
+        coordinated_change.submitted_by_id = (
+            submitted_by.pk
+        )
+        coordinated_change.submitted_at = (
+            submitted_at
+        )
+        coordinated_change.concurrency_version = (
+            previous_concurrency_version + 1
+        )
+
+        coordinated_change.save(
+            update_fields=[
+                "status",
+                "submitted_by",
+                "submitted_at",
+                "concurrency_version",
+            ]
+        )
+
+        return CoordinatedDraftSubmissionResult(
+            coordinated_change_id=(
+                coordinated_change.id
+            ),
+            status=(
+                coordinated_change.status
+            ),
+            revision_no=revision_no,
+            previous_concurrency_version=(
+                previous_concurrency_version
+            ),
+            concurrency_version=(
+                coordinated_change.concurrency_version
+            ),
+            change_request_ids=tuple(
+                change_request.id
+                for change_request
+                in change_requests
+            ),
+            grant_ids=tuple(
+                change_request.grant_id
+                for change_request
+                in change_requests
+            ),
+            submitted_by_id=(
+                submitted_by.pk
+            ),
+            submitted_at=(
+                submitted_at
             ),
         )
 

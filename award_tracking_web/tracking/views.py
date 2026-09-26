@@ -57,6 +57,8 @@ from .change_request_workflow import (
     CoordinatedDraftConcurrencyError,
     CoordinatedDraftReviewMismatchError,
     CoordinatedDraftAuthoritativeChangeError,
+    CoordinatedChangeBusinessValidationError,
+    submit_coordinated_basic_information_draft,
     approve_standalone_change_request,
     detect_or_get_change_request_integrity_issue,
     get_change_request_integrity_evidence,
@@ -1943,6 +1945,15 @@ def coordinated_basic_information_draft_editor(
     saved_values_by_grant = {}
     persisted_grant_ids = set()
 
+    action = (
+        request.POST.get(
+            "action",
+            ""
+        )
+        if request.method == "POST"
+        else ""
+    )
+
     # =========================================================
     # Load an existing saved draft, if this is the edit route.
     # =========================================================
@@ -2041,6 +2052,109 @@ def coordinated_basic_information_draft_editor(
         }
 
     # =========================================================
+    # Formal submission of an already-saved draft.
+    #
+    # Submission intentionally uses only persisted draft state.
+    # Browser-only membership changes and unsaved form edits must
+    # first be saved through Save Draft.
+    # =========================================================
+
+    if (
+        request.method == "POST"
+        and action == "submit_draft"
+    ):
+        if coordinated_change is None:
+            messages.error(
+                request,
+                (
+                    "Save the coordinated draft before submitting "
+                    "it for approval."
+                ),
+            )
+
+            return redirect(
+                "coordinated_basic_information_draft_new"
+            )
+
+        try:
+            result = (
+                submit_coordinated_basic_information_draft(
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                    expected_concurrency_version=(
+                        request.POST.get(
+                            "concurrency_version",
+                            "",
+                        )
+                    ),
+                    submitted_by=request.user,
+                )
+            )
+
+        except CoordinatedDraftAuthoritativeChangeError:
+            messages.info(
+                request,
+                (
+                    "Authoritative Basic Information changed after "
+                    "this draft was saved. Review and accept the "
+                    "current authoritative values before submitting."
+                ),
+            )
+
+            return redirect(
+                "review_coordinated_draft_authoritative_changes",
+                coordinated_change_id=(
+                    coordinated_change.id
+                ),
+            )
+
+        except CoordinatedDraftConcurrencyError:
+            messages.error(
+                request,
+                (
+                    "This coordinated draft changed after the page "
+                    "was loaded. Review the latest saved draft before "
+                    "submitting it."
+                ),
+            )
+
+            return redirect(
+                "coordinated_basic_information_draft_edit",
+                coordinated_change_id=(
+                    coordinated_change.id
+                ),
+            )
+
+        except (
+            CoordinatedChangeValidationError,
+            CoordinatedChangeBusinessValidationError,
+        ) as exc:
+            messages.error(
+                request,
+                str(exc),
+            )
+
+            return redirect(
+                "coordinated_basic_information_draft_edit",
+                coordinated_change_id=(
+                    coordinated_change.id
+                ),
+            )
+
+        messages.success(
+            request,
+            (
+                "Coordinated Basic Information request "
+                "submitted for approval."
+            ),
+        )
+
+        return redirect(
+            "grant_list"
+        )
+
+    # =========================================================
     # Determine the browser's desired working membership.
     # =========================================================
 
@@ -2093,15 +2207,6 @@ def coordinated_basic_information_draft_editor(
     # =========================================================
     # Browser-only Add Grant.
     # =========================================================
-
-    action = (
-        request.POST.get(
-            "action",
-            ""
-        )
-        if request.method == "POST"
-        else ""
-    )
 
     if action == "add_grant":
         add_grant_id = (
