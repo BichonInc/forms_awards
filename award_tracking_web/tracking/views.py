@@ -13,6 +13,7 @@ from .models import (
     SubsequentFiscalBreakdown,
     ProgramIncome,
     GrantFiscalExceptionReview,
+    CoordinatedChange,
     ChangeRequest,
     ChangeRequestField,
     ChangeAction,
@@ -52,10 +53,15 @@ from .change_request_workflow import (
     ChangeRequestResubmitError,
     ChangeRequestReturnError,
     ChangeRequestValidationError,
+    CoordinatedChangeValidationError,
+    CoordinatedDraftConcurrencyError,
+    CoordinatedDraftReviewMismatchError,
     approve_standalone_change_request,
     detect_or_get_change_request_integrity_issue,
     get_change_request_integrity_evidence,
     get_basic_information_revision_snapshots,
+    inspect_coordinated_draft_staleness,
+    rebase_coordinated_basic_information_draft,
     resolve_change_request_integrity_issue,
     resubmit_standalone_change_request,
     return_standalone_change_request,
@@ -81,6 +87,11 @@ INTEGRITY_DISPOSITION_REVIEW_SALT = (
 
 INTEGRITY_DISPOSITION_REVIEW_MAX_AGE_SECONDS = 3600
 
+COORDINATED_DRAFT_REBASE_REVIEW_SALT = (
+    "tracking.coordinated-draft-rebase-review"
+)
+
+COORDINATED_DRAFT_REBASE_REVIEW_MAX_AGE_SECONDS = 3600
 
 # Function to generate new grant_id
 #def generate_new_grant_id():
@@ -1771,6 +1782,461 @@ def resubmit_grant_change_request(request, request_id):
                 "Revise and Resubmit Grant Basic Information"
             ),
             "submit_button_text": "Resubmit Change Request",
+        },
+    )
+
+
+@role_required(ROLE_EDITOR)
+def review_coordinated_draft_authoritative_changes(
+        request,
+        coordinated_change_id,
+):
+    """
+    Let an Editor review authoritative Form1 changes that occurred after
+    a coordinated draft baseline was saved, then explicitly accept those
+    values as the draft's new working baseline.
+
+    GET builds a complete signed snapshot of the authoritative values
+    actually shown to the Editor.
+
+    POST verifies that signed review and delegates the atomic rebase to
+    rebase_coordinated_basic_information_draft().
+    """
+
+    coordinated_change = get_object_or_404(
+        CoordinatedChange,
+        pk=coordinated_change_id,
+    )
+
+    if (
+            coordinated_change.status
+            != CoordinatedChange.Status.DRAFT
+    ):
+        raise PermissionDenied(
+            "Only coordinated drafts can review and accept "
+            "authoritative Basic Information changes."
+        )
+
+    # =========================================================
+    # POST - confirm the exact authoritative state the Editor
+    # previously reviewed.
+    # =========================================================
+
+    if request.method == "POST":
+
+        submitted_token = request.POST.get(
+            "reviewed_snapshot",
+            "",
+        )
+
+        try:
+            signed_payload = signing.loads(
+                submitted_token,
+                salt=(
+                    COORDINATED_DRAFT_REBASE_REVIEW_SALT
+                ),
+                max_age=(
+                    COORDINATED_DRAFT_REBASE_REVIEW_MAX_AGE_SECONDS
+                ),
+            )
+
+        except signing.SignatureExpired:
+            messages.error(
+                request,
+                (
+                    "The coordinated draft review expired. "
+                    "Review the current authoritative values again "
+                    "before accepting them."
+                ),
+            )
+
+            return redirect(
+                "review_coordinated_draft_authoritative_changes",
+                coordinated_change_id=coordinated_change.id,
+            )
+
+        except signing.BadSignature:
+            messages.error(
+                request,
+                (
+                    "The coordinated draft review snapshot is invalid. "
+                    "Review the current authoritative values again."
+                ),
+            )
+
+            return redirect(
+                "review_coordinated_draft_authoritative_changes",
+                coordinated_change_id=coordinated_change.id,
+            )
+
+        if not isinstance(
+            signed_payload,
+            dict,
+        ):
+            messages.error(
+                request,
+                "The coordinated draft review snapshot is invalid.",
+            )
+
+            return redirect(
+                "review_coordinated_draft_authoritative_changes",
+                coordinated_change_id=coordinated_change.id,
+            )
+
+        reviewed_values = signed_payload.get(
+            "authoritative_values_by_grant"
+        )
+
+        payload_matches_package = (
+            signed_payload.get(
+                "coordinated_change_id"
+            )
+            == coordinated_change.id
+            and signed_payload.get(
+                "revision_no"
+            )
+            == coordinated_change.current_revision
+            and signed_payload.get(
+                "reviewed_by_user_id"
+            )
+            == request.user.id
+            and isinstance(
+                signed_payload.get(
+                    "concurrency_version"
+                ),
+                int,
+            )
+            and isinstance(
+                reviewed_values,
+                dict,
+            )
+        )
+
+        if not payload_matches_package:
+            messages.error(
+                request,
+                (
+                    "The coordinated draft review snapshot does not "
+                    "match this draft. Review the current authoritative "
+                    "values again."
+                ),
+            )
+
+            return redirect(
+                "review_coordinated_draft_authoritative_changes",
+                coordinated_change_id=coordinated_change.id,
+            )
+
+        try:
+            result = (
+                rebase_coordinated_basic_information_draft(
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                    expected_concurrency_version=(
+                        signed_payload[
+                            "concurrency_version"
+                        ]
+                    ),
+                    reviewed_authoritative_values_by_grant=(
+                        reviewed_values
+                    ),
+                )
+            )
+
+        except CoordinatedDraftConcurrencyError:
+            messages.error(
+                request,
+                (
+                    "The coordinated draft changed after these values "
+                    "were reviewed. Review the current draft and "
+                    "authoritative values again."
+                ),
+            )
+
+            return redirect(
+                "review_coordinated_draft_authoritative_changes",
+                coordinated_change_id=coordinated_change.id,
+            )
+
+        except CoordinatedDraftReviewMismatchError:
+            messages.error(
+                request,
+                (
+                    "Authoritative Basic Information changed again "
+                    "after it was reviewed. Review the latest "
+                    "authoritative values before accepting them."
+                ),
+            )
+
+            return redirect(
+                "review_coordinated_draft_authoritative_changes",
+                coordinated_change_id=coordinated_change.id,
+            )
+
+        except CoordinatedChangeValidationError as exc:
+            messages.error(
+                request,
+                str(exc),
+            )
+
+            return redirect(
+                "review_coordinated_draft_authoritative_changes",
+                coordinated_change_id=coordinated_change.id,
+            )
+
+        messages.success(
+            request,
+            (
+                "The current authoritative Basic Information was "
+                "reviewed and accepted as the coordinated draft's "
+                "new baseline. Existing explicit proposed values "
+                "were preserved unless they already match the "
+                "authoritative value."
+            ),
+        )
+
+        return redirect(
+            "review_coordinated_draft_authoritative_changes",
+            coordinated_change_id=(
+                result.coordinated_change_id
+            ),
+        )
+
+    # =========================================================
+    # GET - construct one stable authoritative state for review.
+    #
+    # Hold the existing coordinated draft/Form1 locks while the
+    # displayed values and signed token are built so they describe
+    # the same database state.
+    # =========================================================
+
+    try:
+        with transaction.atomic():
+
+            coordinated_change = get_object_or_404(
+                CoordinatedChange.objects.select_for_update(),
+                pk=coordinated_change_id,
+            )
+
+            if (
+                    coordinated_change.status
+                    != CoordinatedChange.Status.DRAFT
+            ):
+                raise PermissionDenied(
+                    "Only coordinated drafts can review and accept "
+                    "authoritative Basic Information changes."
+                )
+
+            staleness_result = (
+                inspect_coordinated_draft_staleness(
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                    expected_concurrency_version=(
+                        coordinated_change.concurrency_version
+                    ),
+                    lock_records=True,
+                )
+            )
+
+            change_requests = tuple(
+                ChangeRequest.objects
+                .select_for_update()
+                .filter(
+                    coordinated_change=(
+                        coordinated_change
+                    )
+                )
+                .order_by(
+                    "grant_id",
+                    "id",
+                )
+            )
+
+            grant_ids = tuple(
+                change_request.grant_id
+                for change_request
+                in change_requests
+            )
+
+            grants = tuple(
+                Form1.objects
+                .select_for_update()
+                .filter(
+                    grant_id__in=grant_ids
+                )
+                .order_by("grant_id")
+            )
+
+            grants_by_id = {
+                grant.grant_id: grant
+                for grant
+                in grants
+            }
+
+            if set(grants_by_id) != set(grant_ids):
+                raise CoordinatedChangeValidationError(
+                    "Every coordinated draft child must reference "
+                    "an existing authoritative grant."
+                )
+
+            reviewed_values = {
+                grant_id: {
+                    field_name: (
+                        serialize_change_request_value(
+                            getattr(
+                                grants_by_id[grant_id],
+                                field_name,
+                            )
+                        )
+                    )
+                    for field_name
+                    in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+                }
+                for grant_id
+                in grant_ids
+            }
+
+            snapshots_by_request = {
+                change_request.id: (
+                    get_basic_information_revision_snapshots(
+                        change_request,
+                        revision_no=(
+                            staleness_result.revision_no
+                        ),
+                    )
+                )
+                for change_request
+                in change_requests
+            }
+
+            label_form = (
+                GrantBasicInformationChangeForm(
+                    instance=grants[0]
+                )
+                if grants
+                else GrantBasicInformationChangeForm()
+            )
+
+            review_rows = []
+
+            for difference in (
+                staleness_result.baseline_differences
+            ):
+                snapshot = (
+                    snapshots_by_request[
+                        difference.change_request_id
+                    ][
+                        difference.field_name
+                    ]
+                )
+
+                explicit_proposed_value = (
+                    snapshot.proposed_value
+                )
+
+                review_rows.append(
+                    {
+                        "grant_id": (
+                            difference.grant_id
+                        ),
+                        "field_name": (
+                            difference.field_name
+                        ),
+                        "label": (
+                            label_form.fields[
+                                difference.field_name
+                            ].label
+                        ),
+                        "saved_baseline_value": (
+                            format_change_request_display_value(
+                                difference.field_name,
+                                difference.saved_baseline_value,
+                            )
+                        ),
+                        "authoritative_value": (
+                            format_change_request_display_value(
+                                difference.field_name,
+                                difference.authoritative_value,
+                            )
+                        ),
+                        "has_explicit_proposal": (
+                            explicit_proposed_value
+                            is not None
+                        ),
+                        "proposed_value": (
+                            format_change_request_display_value(
+                                difference.field_name,
+                                explicit_proposed_value,
+                            )
+                            if explicit_proposed_value
+                            is not None
+                            else None
+                        ),
+                        "proposal_matches_authoritative": (
+                            explicit_proposed_value
+                            is not None
+                            and explicit_proposed_value
+                            == difference.authoritative_value
+                        ),
+                    }
+                )
+
+            reviewed_snapshot = ""
+
+            if (
+                staleness_result
+                .has_authoritative_changes
+            ):
+                signed_payload = {
+                    "coordinated_change_id": (
+                        coordinated_change.id
+                    ),
+                    "revision_no": (
+                        staleness_result.revision_no
+                    ),
+                    "concurrency_version": (
+                        staleness_result.concurrency_version
+                    ),
+                    "reviewed_by_user_id": (
+                        request.user.id
+                    ),
+                    "authoritative_values_by_grant": (
+                        reviewed_values
+                    ),
+                }
+
+                reviewed_snapshot = signing.dumps(
+                    signed_payload,
+                    salt=(
+                        COORDINATED_DRAFT_REBASE_REVIEW_SALT
+                    ),
+                )
+
+    except CoordinatedChangeValidationError as exc:
+        messages.error(
+            request,
+            str(exc),
+        )
+        return redirect(
+            "grant_list"
+        )
+
+    return render(
+        request,
+        (
+            "tracking/"
+            "coordinated_draft_authoritative_review.html"
+        ),
+        {
+            "coordinated_change": coordinated_change,
+            "review_rows": review_rows,
+            "reviewed_snapshot": reviewed_snapshot,
+            "has_authoritative_changes": (
+                staleness_result
+                .has_authoritative_changes
+            ),
         },
     )
 
