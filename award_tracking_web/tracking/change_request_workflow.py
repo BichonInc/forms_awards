@@ -201,6 +201,15 @@ class CoordinatedChangeApprovalError(
     """
 
 
+class CoordinatedChangeIntegrityDispositionError(
+        ChangeRequestIntegrityDispositionError
+):
+    """
+    Raised when an integrity incident belonging to a coordinated package
+    cannot receive the requested Administrator disposition.
+    """
+
+
 class CoordinatedChangeReturnError(
         ChangeRequestReturnError
 ):
@@ -504,6 +513,19 @@ class CoordinatedApprovalResult:
     approver_id: int
     applied_at: datetime | None
     gl_rematch_result: object
+
+
+@dataclass(frozen=True)
+class CoordinatedIntegrityDispositionResult:
+    coordinated_change_id: int
+    status: str
+    integrity_issue_id: int
+    change_request_id: int
+    revision_no: int
+    classification: str
+    checkpoint_field_count: int
+    change_request_ids: tuple
+    grant_ids: tuple
 
 
 @dataclass(frozen=True)
@@ -1800,6 +1822,469 @@ def resolve_change_request_integrity_issue(
             change_request_status=change_request.status,
             classification=integrity_issue.classification,
             checkpoint_field_count=len(disposition_values),
+        )
+
+
+def resolve_coordinated_change_request_integrity_issue(
+        *,
+        integrity_issue_id,
+        administrator,
+        classification,
+        comment,
+        reviewed_authoritative_values,
+):
+    """
+    Resolve one OPEN Basic Information integrity incident belonging to a
+    coordinated package and return the entire package to Editors.
+
+    The targeted incident receives its immutable DISPOSITION checkpoint
+    and is closed using the Administrator's classification and explanation.
+
+    The coordinated parent and every child Change Request then move together
+    to RETURNED. No ordinary ChangeAction RETURN record is created because
+    this is an Administrator integrity disposition, not an Approver Return
+    for Revision.
+
+    Other OPEN integrity incidents in the same package are not silently
+    closed. They remain OPEN and continue to block later resubmission until
+    they receive their own Administrator disposition.
+    """
+    if not user_has_any_role(
+        administrator,
+        ROLE_ADMINISTRATOR,
+    ):
+        raise CoordinatedChangeIntegrityDispositionError(
+            "Only an Administrator can resolve an integrity incident."
+        )
+
+    resolution_comment = (comment or "").strip()
+
+    if not resolution_comment:
+        raise CoordinatedChangeIntegrityDispositionError(
+            "Integrity resolution requires an explanation."
+        )
+
+    if len(resolution_comment) > 1000:
+        raise CoordinatedChangeIntegrityDispositionError(
+            "Integrity resolution explanation cannot exceed "
+            "1000 characters."
+        )
+
+    valid_classifications = {
+        value
+        for value, _label
+        in ChangeRequestIntegrityIssue.Classification.choices
+    }
+
+    if classification not in valid_classifications:
+        raise CoordinatedChangeIntegrityDispositionError(
+            "A valid integrity classification is required."
+        )
+
+    if not isinstance(
+        reviewed_authoritative_values,
+        dict,
+    ):
+        raise CoordinatedChangeIntegrityDispositionError(
+            "The reviewed authoritative Basic Information snapshot "
+            "is invalid."
+        )
+
+    expected_fields = set(
+        GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    )
+
+    reviewed_fields = set(
+        reviewed_authoritative_values.keys()
+    )
+
+    missing_fields = sorted(
+        expected_fields - reviewed_fields
+    )
+
+    unexpected_fields = sorted(
+        reviewed_fields - expected_fields
+    )
+
+    if (
+        missing_fields
+        or unexpected_fields
+        or len(reviewed_authoritative_values)
+        != len(expected_fields)
+    ):
+        details = []
+
+        if missing_fields:
+            details.append(
+                "missing fields: "
+                + ", ".join(missing_fields)
+            )
+
+        if unexpected_fields:
+            details.append(
+                "unexpected fields: "
+                + ", ".join(unexpected_fields)
+            )
+
+        if not details:
+            details.append(
+                "the snapshot does not contain exactly one value "
+                "for every protected field"
+            )
+
+        raise CoordinatedChangeIntegrityDispositionError(
+            "The reviewed authoritative Basic Information snapshot "
+            "is incomplete or invalid ("
+            + "; ".join(details)
+            + ")."
+        )
+
+    reviewed_values = {
+        field_name: serialize_change_request_value(
+            reviewed_authoritative_values[field_name]
+        )
+        for field_name
+        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    }
+
+    # ---------------------------------------------------------
+    # First locate the package without taking workflow locks.
+    #
+    # The authoritative transaction below locks the parent first
+    # and then its children, matching the normal coordinated
+    # workflow lock order.
+    # ---------------------------------------------------------
+
+    try:
+        issue_locator = (
+            ChangeRequestIntegrityIssue.objects
+            .select_related(
+                "change_request",
+            )
+            .get(
+                pk=integrity_issue_id
+            )
+        )
+
+    except ChangeRequestIntegrityIssue.DoesNotExist as exc:
+        raise CoordinatedChangeIntegrityDispositionError(
+            "The integrity incident does not exist."
+        ) from exc
+
+    coordinated_change_id = (
+        issue_locator
+        .change_request
+        .coordinated_change_id
+    )
+
+    if coordinated_change_id is None:
+        raise CoordinatedChangeIntegrityDispositionError(
+            "This integrity incident belongs to a standalone "
+            "Change Request and cannot be resolved through the "
+            "coordinated integrity workflow."
+        )
+
+    with transaction.atomic():
+
+        try:
+            coordinated_change = (
+                CoordinatedChange.objects
+                .select_for_update()
+                .get(
+                    pk=coordinated_change_id
+                )
+            )
+
+        except CoordinatedChange.DoesNotExist as exc:
+            raise CoordinatedChangeIntegrityDispositionError(
+                "The coordinated package does not exist."
+            ) from exc
+
+        if coordinated_change.status not in {
+            CoordinatedChange.Status.PENDING,
+            CoordinatedChange.Status.RETURNED,
+        }:
+            raise CoordinatedChangeIntegrityDispositionError(
+                "The coordinated package is not in a state that "
+                "can be returned to Editors through integrity "
+                "resolution."
+            )
+
+        if coordinated_change.applied_at is not None:
+            raise CoordinatedChangeIntegrityDispositionError(
+                "An applied coordinated package cannot be returned "
+                "through integrity resolution."
+            )
+
+        try:
+            structure_result = (
+                validate_coordinated_change_structure(
+                    coordinated_change,
+                    lock_children=True,
+                )
+            )
+
+        except ChangeRequestValidationError as exc:
+            raise CoordinatedChangeIntegrityDispositionError(
+                str(exc)
+            ) from exc
+
+        change_requests = (
+            structure_result.change_requests
+        )
+
+        revision_no = (
+            structure_result.revision_no
+        )
+
+        change_requests_by_id = {
+            change_request.id: change_request
+            for change_request
+            in change_requests
+        }
+
+        # -----------------------------------------------------
+        # Lock the incident after the coordinated parent and
+        # children so workflow locking remains package-first.
+        # -----------------------------------------------------
+
+        try:
+            integrity_issue = (
+                ChangeRequestIntegrityIssue.objects
+                .select_for_update()
+                .get(
+                    pk=integrity_issue_id
+                )
+            )
+
+        except ChangeRequestIntegrityIssue.DoesNotExist as exc:
+            raise CoordinatedChangeIntegrityDispositionError(
+                "The integrity incident no longer exists."
+            ) from exc
+
+        change_request = (
+            change_requests_by_id.get(
+                integrity_issue.change_request_id
+            )
+        )
+
+        if change_request is None:
+            raise CoordinatedChangeIntegrityDispositionError(
+                "The integrity incident does not belong to a child "
+                "Change Request in this coordinated package."
+            )
+
+        if (
+            integrity_issue.status
+            != ChangeRequestIntegrityIssue.Status.OPEN
+        ):
+            raise CoordinatedChangeIntegrityDispositionError(
+                "This integrity incident is no longer open."
+            )
+
+        if (
+            integrity_issue.revision_no
+            != revision_no
+        ):
+            raise CoordinatedChangeIntegrityDispositionError(
+                "The integrity incident does not belong to the "
+                "current coordinated formal revision."
+            )
+
+        if (
+            change_request.request_type
+            != ChangeRequest.RequestType.EDIT_GRANT
+        ):
+            raise CoordinatedChangeIntegrityDispositionError(
+                "This integrity workflow currently supports only "
+                "existing-grant Basic Information Change Requests."
+            )
+
+        try:
+            get_integrity_snapshot_values(
+                integrity_issue,
+                stage=(
+                    ChangeRequestIntegritySnapshotField
+                    .Stage
+                    .DETECTION
+                ),
+                lock=True,
+            )
+
+        except ChangeRequestIntegrityIssueError as exc:
+            raise CoordinatedChangeIntegrityDispositionError(
+                str(exc)
+            ) from exc
+
+        disposition_exists = (
+            ChangeRequestIntegritySnapshotField.objects
+            .filter(
+                integrity_issue=integrity_issue,
+                stage=(
+                    ChangeRequestIntegritySnapshotField
+                    .Stage
+                    .DISPOSITION
+                ),
+            )
+            .exists()
+        )
+
+        if disposition_exists:
+            raise CoordinatedChangeIntegrityDispositionError(
+                "This integrity incident already contains a "
+                "Disposition checkpoint."
+            )
+
+        try:
+            grant = (
+                Form1.objects
+                .select_for_update()
+                .get(
+                    grant_id=change_request.grant_id
+                )
+            )
+
+        except Form1.DoesNotExist as exc:
+            raise CoordinatedChangeIntegrityDispositionError(
+                "The authoritative grant for the integrity incident "
+                "no longer exists."
+            ) from exc
+
+        disposition_values = {
+            field_name: serialize_change_request_value(
+                getattr(
+                    grant,
+                    field_name,
+                )
+            )
+            for field_name
+            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        }
+
+        stale_review_fields = tuple(
+            field_name
+            for field_name
+            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+            if (
+                reviewed_values[field_name]
+                != disposition_values[field_name]
+            )
+        )
+
+        if stale_review_fields:
+            raise CoordinatedChangeIntegrityDispositionError(
+                "Authoritative Basic Information changed after the "
+                "Administrator reviewed the integrity incident. "
+                "Disposition was not recorded. Review the incident "
+                "again before resolving it. Changed fields: "
+                + ", ".join(
+                    stale_review_fields
+                )
+                + "."
+            )
+
+        # -----------------------------------------------------
+        # Record the immutable Administrator disposition
+        # checkpoint for the affected child only.
+        # -----------------------------------------------------
+
+        ChangeRequestIntegritySnapshotField.objects.bulk_create(
+            [
+                ChangeRequestIntegritySnapshotField(
+                    integrity_issue=integrity_issue,
+                    stage=(
+                        ChangeRequestIntegritySnapshotField
+                        .Stage
+                        .DISPOSITION
+                    ),
+                    field_name=field_name,
+                    authoritative_value=(
+                        disposition_values[field_name]
+                    ),
+                )
+                for field_name
+                in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+            ]
+        )
+
+        closed_at = timezone.now()
+
+        integrity_issue.status = (
+            ChangeRequestIntegrityIssue.Status.CLOSED
+        )
+        integrity_issue.classification = classification
+        integrity_issue.closed_by = administrator
+        integrity_issue.closed_at = closed_at
+        integrity_issue.resolution_comment = (
+            resolution_comment
+        )
+
+        integrity_issue.save(
+            update_fields=[
+                "status",
+                "classification",
+                "closed_by",
+                "closed_at",
+                "resolution_comment",
+            ]
+        )
+
+        # -----------------------------------------------------
+        # Integrity disposition returns the WHOLE package.
+        #
+        # No ordinary RETURN ChangeAction is created. The closed
+        # integrity incident is the audit evidence explaining the
+        # package-level return.
+        # -----------------------------------------------------
+
+        for child in change_requests:
+            child.status = (
+                ChangeRequest.Status.RETURNED
+            )
+
+        ChangeRequest.objects.bulk_update(
+            change_requests,
+            ["status"],
+        )
+
+        coordinated_change.status = (
+            CoordinatedChange.Status.RETURNED
+        )
+
+        coordinated_change.save(
+            update_fields=[
+                "status",
+            ]
+        )
+
+        return CoordinatedIntegrityDispositionResult(
+            coordinated_change_id=(
+                coordinated_change.id
+            ),
+            status=coordinated_change.status,
+            integrity_issue_id=(
+                integrity_issue.id
+            ),
+            change_request_id=(
+                change_request.id
+            ),
+            revision_no=revision_no,
+            classification=(
+                integrity_issue.classification
+            ),
+            checkpoint_field_count=(
+                len(disposition_values)
+            ),
+            change_request_ids=tuple(
+                child.id
+                for child
+                in change_requests
+            ),
+            grant_ids=tuple(
+                child.grant_id
+                for child
+                in change_requests
+            ),
         )
 
 
