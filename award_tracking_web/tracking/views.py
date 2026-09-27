@@ -74,6 +74,7 @@ from .change_request_workflow import (
     validate_basic_information_revision_baseline,
     validate_returned_resubmission_baseline,
     get_revision_submitter_id,
+    approve_coordinated_basic_information_change,
 )
 from django.core.files.storage import default_storage
 import pandas as pd
@@ -3102,6 +3103,560 @@ def change_request_history(request, grant_id):
         },
     )
 
+@role_required(
+    ROLE_ADMINISTRATOR,
+    ROLE_VIEWER,
+    ROLE_EDITOR,
+    ROLE_ACCOUNTANT,
+    ROLE_APPROVER,
+)
+def coordinated_change_review(
+        request,
+        coordinated_change_id,
+):
+    coordinated_change = get_object_or_404(
+        CoordinatedChange.objects.select_related(
+            "submitted_by",
+        ),
+        id=coordinated_change_id,
+    )
+
+    is_active_package = (
+        coordinated_change.status
+        == CoordinatedChange.Status.PENDING
+    )
+
+    is_history_package = (
+        coordinated_change.status
+        == CoordinatedChange.Status.APPLIED
+    )
+
+    if is_active_package:
+        if not user_has_any_role(
+            request.user,
+            ROLE_EDITOR,
+            ROLE_APPROVER,
+        ):
+            raise PermissionDenied
+
+    elif is_history_package:
+        pass
+
+    else:
+        raise PermissionDenied(
+            "This coordinated package is not available "
+            "through the approval review page."
+        )
+
+    if (
+        request.method == "POST"
+        and is_history_package
+    ):
+        raise PermissionDenied(
+            "Completed coordinated packages are read-only."
+        )
+
+    if (
+        request.method == "POST"
+        and not user_has_any_role(
+            request.user,
+            ROLE_APPROVER,
+        )
+    ):
+        raise PermissionDenied
+
+    children = tuple(
+        ChangeRequest.objects
+        .filter(
+            coordinated_change=coordinated_change,
+        )
+        .select_related(
+            "submitted_by",
+        )
+        .order_by(
+            "grant_id",
+            "id",
+        )
+    )
+
+    workflow_errors = []
+
+    if len(children) < 2:
+        workflow_errors.append(
+            "The coordinated package does not contain at least "
+            "two child Change Requests."
+        )
+
+    revision_no = (
+        coordinated_change.current_revision
+    )
+
+    revision_mismatches = [
+        child.id
+        for child in children
+        if child.current_revision != revision_no
+    ]
+
+    if revision_mismatches:
+        workflow_errors.append(
+            "The coordinated package and its child Change Requests "
+            "are not on the same revision."
+        )
+
+    expected_child_status = (
+        ChangeRequest.Status.PENDING
+        if is_active_package
+        else ChangeRequest.Status.APPROVED
+    )
+
+    status_mismatches = [
+        child.id
+        for child in children
+        if child.status != expected_child_status
+    ]
+
+    if status_mismatches:
+        workflow_errors.append(
+            "The coordinated package and its child Change Requests "
+            "do not have synchronized statuses."
+        )
+
+    label_form = (
+        GrantBasicInformationChangeForm()
+    )
+
+    child_cards = []
+
+    for child in children:
+
+        grant = (
+            Form1.objects
+            .filter(
+                grant_id=child.grant_id,
+            )
+            .first()
+        )
+
+        snapshots = {
+            snapshot.field_name: snapshot
+            for snapshot in (
+                ChangeRequestField.objects
+                .filter(
+                    change_request=child,
+                    revision_no=revision_no,
+                )
+            )
+        }
+
+        review_rows = []
+
+        for field_name in (
+            GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        ):
+            snapshot = snapshots.get(
+                field_name
+            )
+
+            if snapshot is None:
+                continue
+
+            changed = (
+                snapshot.proposed_value
+                is not None
+            )
+
+            review_rows.append(
+                {
+                    "field_name": field_name,
+                    "label": (
+                        label_form
+                        .fields[field_name]
+                        .label
+                    ),
+                    "current_value": (
+                        format_change_request_display_value(
+                            field_name,
+                            snapshot.current_value,
+                        )
+                    ),
+                    "proposed_value": (
+                        format_change_request_display_value(
+                            field_name,
+                            snapshot.proposed_value,
+                        )
+                        if changed
+                        else "No change"
+                    ),
+                    "changed": changed,
+                }
+            )
+
+        child_cards.append(
+            {
+                "change_request": child,
+                "grant": grant,
+                "review_rows": review_rows,
+            }
+        )
+
+    # ---------------------------------------------------------
+    # Resolve the current revision submitter from every child.
+    #
+    # The approval service requires every child to identify the
+    # same revision submitter. Mirror that invariant on the page.
+    # ---------------------------------------------------------
+
+    revision_submitter_ids = set()
+    revision_submitter_error = ""
+
+    for child in children:
+        try:
+            child_submitter_id = (
+                get_revision_submitter_id(
+                    child
+                )
+            )
+
+        except ChangeRequestApprovalError as exc:
+            revision_submitter_error = (
+                f"Child Change Request #{child.id}: "
+                + str(exc)
+            )
+            break
+
+        revision_submitter_ids.add(
+            child_submitter_id
+        )
+
+    if revision_submitter_error:
+        workflow_errors.append(
+            revision_submitter_error
+        )
+
+    elif len(revision_submitter_ids) != 1:
+        workflow_errors.append(
+            "The coordinated package children do not identify "
+            "the same submitter for the current revision."
+        )
+
+    if len(revision_submitter_ids) == 1:
+        revision_submitter_id = next(
+            iter(revision_submitter_ids)
+        )
+    else:
+        revision_submitter_id = None
+
+    current_revision_submitter = None
+
+    if revision_submitter_id is not None:
+
+        if (
+            coordinated_change.submitted_by_id
+            == revision_submitter_id
+        ):
+            current_revision_submitter = (
+                coordinated_change.submitted_by
+            )
+
+        elif children:
+            resubmit_action = (
+                ChangeAction.objects
+                .filter(
+                    change_request=children[0],
+                    revision_no=revision_no,
+                    action=(
+                        ChangeAction.Action.RESUBMIT
+                    ),
+                    acted_by_id=(
+                        revision_submitter_id
+                    ),
+                )
+                .select_related(
+                    "acted_by",
+                )
+                .order_by(
+                    "-acted_at",
+                    "-id",
+                )
+                .first()
+            )
+
+            if resubmit_action is not None:
+                current_revision_submitter = (
+                    resubmit_action.acted_by
+                )
+
+    # ---------------------------------------------------------
+    # Approval history must be identical on every child.
+    #
+    # Display the first child's actions only after confirming
+    # that the acted_by sequence is synchronized across all
+    # children.
+    # ---------------------------------------------------------
+
+    approval_actions_by_child = {}
+    approval_user_ids_by_child = {}
+
+    for child in children:
+        child_approvals = tuple(
+            ChangeAction.objects
+            .filter(
+                change_request=child,
+                revision_no=revision_no,
+                action=(
+                    ChangeAction.Action.APPROVE
+                ),
+            )
+            .select_related(
+                "acted_by",
+            )
+            .order_by(
+                "acted_at",
+                "id",
+            )
+        )
+
+        approval_actions_by_child[
+            child.id
+        ] = child_approvals
+
+        approval_user_ids_by_child[
+            child.id
+        ] = tuple(
+            approval.acted_by_id
+            for approval
+            in child_approvals
+        )
+
+    approvals = ()
+
+    if children:
+        first_child = children[0]
+
+        first_approval_user_ids = (
+            approval_user_ids_by_child[
+                first_child.id
+            ]
+        )
+
+        approval_histories_synchronized = all(
+            approval_user_ids
+            == first_approval_user_ids
+            for approval_user_ids
+            in approval_user_ids_by_child.values()
+        )
+
+        if approval_histories_synchronized:
+            approvals = (
+                approval_actions_by_child[
+                    first_child.id
+                ]
+            )
+
+        else:
+            workflow_errors.append(
+                "The coordinated package child approval "
+                "histories are not synchronized."
+            )
+
+    approval_count = len(
+        approvals
+    )
+
+    user_has_approved = any(
+        approval.acted_by_id
+        == request.user.id
+        for approval in approvals
+    )
+
+    if approval_count > 2:
+        workflow_errors.append(
+            "The coordinated package contains more than "
+            "two approvals for the current revision."
+        )
+
+    # ---------------------------------------------------------
+    # Any open child integrity incident blocks the package.
+    # ---------------------------------------------------------
+
+    open_integrity_issues = tuple(
+        ChangeRequestIntegrityIssue.objects
+        .filter(
+            change_request__in=children,
+            status=(
+                ChangeRequestIntegrityIssue
+                .Status
+                .OPEN
+            ),
+        )
+        .select_related(
+            "change_request",
+            "detected_by",
+        )
+        .order_by(
+            "change_request__grant_id",
+            "id",
+        )
+    )
+
+    can_approve = (
+        is_active_package
+        and user_has_any_role(
+            request.user,
+            ROLE_APPROVER,
+        )
+        and revision_submitter_id is not None
+        and revision_submitter_id
+        != request.user.id
+        and not user_has_approved
+        and approval_count < 2
+        and not workflow_errors
+        and not open_integrity_issues
+    )
+
+    # ---------------------------------------------------------
+    # Package-level Approve.
+    # ---------------------------------------------------------
+
+    if request.method == "POST":
+
+        action = request.POST.get(
+            "action",
+            "",
+        )
+
+        if action != "approve":
+            messages.error(
+                request,
+                (
+                    "Invalid coordinated Change "
+                    "Request action."
+                ),
+            )
+
+            return redirect(
+                "coordinated_change_review",
+                coordinated_change_id=(
+                    coordinated_change.id
+                ),
+            )
+
+        try:
+            approval_result = (
+                approve_coordinated_basic_information_change(
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                    approver=request.user,
+                )
+            )
+
+        except ChangeRequestIntegrityBlockedError as exc:
+            messages.error(
+                request,
+                str(exc),
+            )
+
+            return redirect(
+                "coordinated_change_review",
+                coordinated_change_id=(
+                    coordinated_change.id
+                ),
+            )
+
+        except (
+            ChangeRequestApprovalError,
+            ChangeRequestValidationError,
+        ) as exc:
+            messages.error(
+                request,
+                str(exc),
+            )
+
+            return redirect(
+                "coordinated_change_review",
+                coordinated_change_id=(
+                    coordinated_change.id
+                ),
+            )
+
+        except IntegrityError:
+            messages.error(
+                request,
+                (
+                    "The coordinated approval could not "
+                    "be recorded because the package "
+                    "changed. Please review it again."
+                ),
+            )
+
+            return redirect(
+                "coordinated_change_review",
+                coordinated_change_id=(
+                    coordinated_change.id
+                ),
+            )
+
+        if approval_result.approval_count == 2:
+            messages.success(
+                request,
+                (
+                    "Final approval recorded. The coordinated "
+                    "package has been approved and all Basic "
+                    "Information changes have been applied."
+                ),
+            )
+
+        else:
+            messages.success(
+                request,
+                (
+                    "Coordinated approval recorded. "
+                    "1 of 2 approvals received."
+                ),
+            )
+
+        return redirect(
+            "coordinated_change_review",
+            coordinated_change_id=(
+                coordinated_change.id
+            ),
+        )
+
+    return render(
+        request,
+        "tracking/coordinated_change_review.html",
+        {
+            "coordinated_change": (
+                coordinated_change
+            ),
+            "child_cards": child_cards,
+            "revision_no": revision_no,
+            "current_revision_submitter": (
+                current_revision_submitter
+            ),
+            "revision_submitter_error": (
+                revision_submitter_error
+            ),
+            "approvals": approvals,
+            "approval_count": approval_count,
+            "user_has_approved": (
+                user_has_approved
+            ),
+            "can_approve": can_approve,
+            "workflow_errors": (
+                workflow_errors
+            ),
+            "open_integrity_issues": (
+                open_integrity_issues
+            ),
+            "is_history_package": (
+                is_history_package
+            ),
+        },
+    )
+
+
 
 @role_required(
     ROLE_ADMINISTRATOR,
@@ -3115,6 +3670,14 @@ def change_request_review(request, request_id):
         ChangeRequest,
         id=request_id,
     )
+
+    if change_request.coordinated_change_id is not None:
+        return redirect(
+            "coordinated_change_review",
+            coordinated_change_id=(
+                change_request.coordinated_change_id
+            ),
+        )
 
     is_history_request = (
         change_request.status

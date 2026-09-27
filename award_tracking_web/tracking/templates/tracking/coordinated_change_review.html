@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Review Coordinated Change Request</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 1200px;
+            margin: auto;
+        }
+
+        .package-summary {
+            padding: 20px;
+            margin-bottom: 25px;
+            background-color: #e9f3fb;
+            border-radius: 5px;
+        }
+
+        .grant-card {
+            margin-top: 25px;
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #aaa;
+            border-radius: 5px;
+        }
+
+        .grant-summary {
+            padding: 12px;
+            margin-bottom: 15px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+            table-layout: fixed;
+        }
+
+        th,
+        td {
+            border: 1px solid #ccc;
+            padding: 10px;
+            text-align: left;
+            vertical-align: top;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        th {
+            background-color: #f2f2f2;
+        }
+
+        .changed-row {
+            font-weight: bold;
+        }
+
+        .button-common {
+            display: inline-block;
+            border: none;
+            border-radius: 5px;
+            padding: 10px 20px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 1em;
+        }
+
+        .approve-button {
+            background-color: #4CAF50;
+            color: white;
+        }
+
+        .back-button {
+            background-color: #008CBA;
+            color: white;
+            margin-left: 10px;
+        }
+
+        .messages {
+            margin-bottom: 20px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+
+        .messages.error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+
+        .messages.success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+
+        .messages.info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+        }
+
+        .workflow-alert {
+            margin-top: 20px;
+            margin-bottom: 25px;
+            padding: 18px;
+            border: 2px solid #b02a37;
+            border-radius: 5px;
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+
+        .integrity-alert {
+            margin-top: 20px;
+            margin-bottom: 25px;
+            padding: 18px;
+            border: 2px solid #b02a37;
+            border-radius: 5px;
+            background-color: #fff3cd;
+            color: #664d03;
+        }
+
+        .action-section {
+            margin-top: 30px;
+            margin-bottom: 30px;
+        }
+
+        .read-only-note {
+            padding: 12px;
+            margin-top: 20px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+
+<body>
+<div class="container">
+
+    <h1>Review Coordinated Basic Information Change Request</h1>
+
+    {% if messages %}
+        {% for message in messages %}
+            <div class="messages {{ message.tags }}">
+                {{ message }}
+            </div>
+        {% endfor %}
+    {% endif %}
+
+    <div class="package-summary">
+
+        <p>
+            <strong>Coordinated Request ID:</strong>
+            {{ coordinated_change.id }}
+        </p>
+
+        <p>
+            <strong>Status:</strong>
+            {{ coordinated_change.get_status_display }}
+        </p>
+
+        <p>
+            <strong>Revision:</strong>
+            {{ revision_no }}
+        </p>
+
+        <p>
+            <strong>Submitted By:</strong>
+            {% if current_revision_submitter %}
+                {{ current_revision_submitter.username }}
+            {% else %}
+                Unavailable
+            {% endif %}
+        </p>
+
+        <p>
+            <strong>Submitted At:</strong>
+            {% if coordinated_change.submitted_at %}
+                {{ coordinated_change.submitted_at|date:"M j, Y, g:i A" }}
+            {% else %}
+                Unavailable
+            {% endif %}
+        </p>
+
+        <p>
+            <strong>Approvals:</strong>
+            {{ approval_count }} of 2
+        </p>
+
+        {% if approvals %}
+            <div>
+                <strong>Package Approval History:</strong>
+
+                <ol>
+                    {% for approval in approvals %}
+                        <li>
+                            {{ approval.acted_by.username }}
+                            &mdash;
+                            {{ approval.acted_at|date:"M j, Y, g:i A" }}
+                        </li>
+                    {% endfor %}
+                </ol>
+
+                <p>
+                    <em>
+                        Each package approval is mirrored on every
+                        child Change Request in this coordinated package.
+                    </em>
+                </p>
+            </div>
+        {% endif %}
+
+    </div>
+
+    {% if workflow_errors %}
+        <div class="workflow-alert">
+
+            <h2>Workflow Integrity Error</h2>
+
+            <p>
+                <strong>
+                    Approval is blocked until the coordinated
+                    package is consistent.
+                </strong>
+            </p>
+
+            <ul>
+                {% for error in workflow_errors %}
+                    <li>{{ error }}</li>
+                {% endfor %}
+            </ul>
+
+        </div>
+    {% endif %}
+
+    {% if open_integrity_issues %}
+        <div class="integrity-alert">
+
+            <h2>Data Integrity Incident</h2>
+
+            <p>
+                <strong>
+                    Coordinated approval is currently blocked.
+                </strong>
+            </p>
+
+            <p>
+                One or more child Change Requests has an open
+                Basic Information integrity incident.
+            </p>
+
+            <ul>
+                {% for issue in open_integrity_issues %}
+                    <li>
+                        Grant
+                        {{ issue.change_request.grant_id }}
+                        &mdash;
+                        Change Request
+                        #{{ issue.change_request.id }}
+                        &mdash;
+                        Integrity Incident
+                        #{{ issue.id }}
+                    </li>
+                {% endfor %}
+            </ul>
+
+        </div>
+    {% endif %}
+
+    <h2>Participating Grants</h2>
+
+    {% for card in child_cards %}
+
+        <div class="grant-card">
+
+            <div class="grant-summary">
+
+                <h3>
+                    Grant {{ card.change_request.grant_id }}
+                </h3>
+
+                <p>
+                    <strong>Child Change Request ID:</strong>
+                    {{ card.change_request.id }}
+                </p>
+
+                <p>
+                    <strong>Status:</strong>
+                    {{ card.change_request.get_status_display }}
+                </p>
+
+                {% if card.grant %}
+
+                    <p>
+                        <strong>Program Title:</strong>
+                        {{ card.grant.program_title }}
+                    </p>
+
+                    <p>
+                        <strong>Contracting Agency:</strong>
+                        {{ card.grant.contracting_agency }}
+                    </p>
+
+                    <p>
+                        <strong>Contract Number:</strong>
+                        {{ card.grant.contract_number }}
+                    </p>
+
+                {% else %}
+
+                    <div class="messages error">
+                        Authoritative Form1 record is unavailable
+                        for this grant.
+                    </div>
+
+                {% endif %}
+
+            </div>
+
+            <table>
+                <thead>
+                <tr>
+                    <th>Field</th>
+                    <th>Current Value at Submission</th>
+                    <th>Proposed Value</th>
+                </tr>
+                </thead>
+
+                <tbody>
+
+                {% for row in card.review_rows %}
+
+                    <tr
+                        {% if row.changed %}
+                            class="changed-row"
+                        {% endif %}
+                    >
+                        <td>{{ row.label }}</td>
+                        <td>{{ row.current_value }}</td>
+                        <td>{{ row.proposed_value }}</td>
+                    </tr>
+
+                {% empty %}
+
+                    <tr>
+                        <td colspan="3">
+                            No Basic Information snapshot is
+                            available for this child request.
+                        </td>
+                    </tr>
+
+                {% endfor %}
+
+                </tbody>
+            </table>
+
+        </div>
+
+    {% empty %}
+
+        <div class="workflow-alert">
+            No child Change Requests are available for this package.
+        </div>
+
+    {% endfor %}
+
+    <div class="action-section">
+
+        {% if not is_history_package %}
+
+            {% if can_approve %}
+
+                <form
+                    method="post"
+                    action="{% url 'coordinated_change_review' coordinated_change.id %}"
+                    style="display:inline;"
+                    onsubmit="return confirm(
+                        'Approve this entire coordinated package?'
+                    );"
+                >
+                    {% csrf_token %}
+
+                    <input
+                        type="hidden"
+                        name="action"
+                        value="approve"
+                    >
+
+                    <button
+                        type="submit"
+                        class="button-common approve-button"
+                    >
+                        Approve Coordinated Package
+                    </button>
+
+                </form>
+
+            {% elif user_has_approved %}
+
+                <strong>
+                    You approved this coordinated package revision.
+                </strong>
+
+            {% elif approval_count == 1 %}
+
+                <strong>
+                    1 of 2 coordinated approvals received.
+                </strong>
+
+            {% endif %}
+
+        {% else %}
+
+            <div class="read-only-note">
+                This coordinated package has been completed and is
+                read-only.
+            </div>
+
+        {% endif %}
+
+        <a
+            href="{% url 'grant_list' %}"
+            class="button-common back-button"
+        >
+            Back to Grant List
+        </a>
+
+    </div>
+
+</div>
+</body>
+</html>
