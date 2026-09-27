@@ -193,6 +193,14 @@ class CoordinatedChangeBusinessValidationError(
     """
 
 
+class CoordinatedChangeApprovalError(
+        ChangeRequestApprovalError
+):
+    """
+    Raised when a coordinated package cannot receive the requested approval.
+    """
+
+
 class CoordinatedChangeChildBaselineMismatchError(
         ChangeRequestBaselineMismatchError
 ):
@@ -475,6 +483,19 @@ class CoordinatedDraftSubmissionResult:
     grant_ids: tuple
     submitted_by_id: int
     submitted_at: datetime
+
+
+@dataclass(frozen=True)
+class CoordinatedApprovalResult:
+    coordinated_change_id: int
+    status: str
+    revision_no: int
+    approval_count: int
+    change_request_ids: tuple
+    grant_ids: tuple
+    approver_id: int
+    applied_at: datetime | None
+    gl_rematch_result: object
 
 
 def serialize_change_request_value(value):
@@ -4766,6 +4787,605 @@ def submit_coordinated_basic_information_draft(
                 submitted_at
             ),
         )
+
+
+def approve_coordinated_basic_information_change(
+        *,
+        coordinated_change_id,
+        approver,
+):
+    """
+    Record one approval for a submitted coordinated Basic Information
+    package.
+
+    Approval #1:
+      - fully revalidates the coordinated package;
+      - records the same approver on every child revision;
+      - leaves the parent and all children PENDING.
+
+    Approval #2:
+      - fully revalidates the entire package again;
+      - records the second approver on every child revision;
+      - applies every validated Form1 change inside one transaction;
+      - rematches affected GL Award Codes only after every Form1 grant
+        has reached its final coordinated state;
+      - marks every child APPROVED and the parent APPLIED.
+
+    Child approval histories must remain synchronized. A package with
+    mixed child approval histories is rejected rather than repaired
+    silently.
+
+    If an authoritative child baseline mismatch is detected, the
+    existing Change Request integrity workflow is used for that child
+    and the coordinated approval is blocked.
+    """
+    if (
+        approver is None
+        or getattr(approver, "pk", None) is None
+    ):
+        raise CoordinatedChangeApprovalError(
+            "A saved user is required to approve a coordinated package."
+        )
+
+    blocked_integrity_issue_id = None
+    blocked_integrity_issue_created = False
+    approval_result = None
+
+    with transaction.atomic():
+
+        try:
+            coordinated_change = (
+                CoordinatedChange.objects
+                .select_for_update()
+                .get(pk=coordinated_change_id)
+            )
+
+        except CoordinatedChange.DoesNotExist as exc:
+            raise CoordinatedChangeApprovalError(
+                "The coordinated package does not exist."
+            ) from exc
+
+        if (
+            coordinated_change.status
+            != CoordinatedChange.Status.PENDING
+        ):
+            raise CoordinatedChangeApprovalError(
+                "This coordinated package is no longer pending approval."
+            )
+
+        if coordinated_change.applied_at is not None:
+            raise CoordinatedChangeApprovalError(
+                "This pending coordinated package already contains "
+                "application history."
+            )
+
+        # -----------------------------------------------------
+        # Lock and structurally validate the package children.
+        # -----------------------------------------------------
+
+        structure_result = (
+            validate_coordinated_change_structure(
+                coordinated_change,
+                lock_children=True,
+            )
+        )
+
+        change_requests = (
+            structure_result.change_requests
+        )
+
+        revision_no = (
+            structure_result.revision_no
+        )
+
+        # -----------------------------------------------------
+        # Revision 1 submission metadata must agree across the
+        # parent and all children.
+        # -----------------------------------------------------
+
+        if revision_no == 1:
+
+            if (
+                coordinated_change.submitted_by_id is None
+                or coordinated_change.submitted_at is None
+            ):
+                raise CoordinatedChangeApprovalError(
+                    "This coordinated package has incomplete "
+                    "submission history."
+                )
+
+            submission_metadata_matches = all(
+                (
+                    change_request.submitted_by_id
+                    == coordinated_change.submitted_by_id
+                    and change_request.submitted_at
+                    == coordinated_change.submitted_at
+                )
+                for change_request
+                in change_requests
+            )
+
+            if not submission_metadata_matches:
+                raise CoordinatedChangeApprovalError(
+                    "The coordinated package and its child Change "
+                    "Requests do not have synchronized submission "
+                    "history."
+                )
+
+        # -----------------------------------------------------
+        # Existing integrity incidents block the package.
+        # -----------------------------------------------------
+
+        for change_request in change_requests:
+
+            existing_integrity_issue = (
+                get_open_change_request_integrity_issue(
+                    change_request,
+                    lock=True,
+                )
+            )
+
+            if existing_integrity_issue is not None:
+                blocked_integrity_issue_id = (
+                    existing_integrity_issue.id
+                )
+                blocked_integrity_issue_created = False
+                break
+
+        if blocked_integrity_issue_id is None:
+
+            # -------------------------------------------------
+            # Every child must identify the same submitter for
+            # the current formal revision.
+            # -------------------------------------------------
+
+            revision_submitter_ids = set()
+
+            for change_request in change_requests:
+
+                try:
+                    revision_submitter_id = (
+                        get_revision_submitter_id(
+                            change_request
+                        )
+                    )
+
+                except ChangeRequestApprovalError as exc:
+                    raise CoordinatedChangeApprovalError(
+                        f"Child Change Request "
+                        f"#{change_request.id} has invalid "
+                        "submission history: "
+                        + str(exc)
+                    ) from exc
+
+                revision_submitter_ids.add(
+                    revision_submitter_id
+                )
+
+            if len(revision_submitter_ids) != 1:
+                raise CoordinatedChangeApprovalError(
+                    "The coordinated package children do not identify "
+                    "the same submitter for the current revision."
+                )
+
+            revision_submitter_id = next(
+                iter(revision_submitter_ids)
+            )
+
+            if revision_submitter_id == approver.pk:
+                raise CoordinatedChangeApprovalError(
+                    "You cannot approve a coordinated package revision "
+                    "that you submitted."
+                )
+
+            # -------------------------------------------------
+            # Approval history is a package-level invariant.
+            #
+            # Every child must contain exactly the same ordered
+            # list of approver user IDs for this revision.
+            # -------------------------------------------------
+
+            approval_histories = []
+
+            for change_request in change_requests:
+
+                approval_user_ids = tuple(
+                    ChangeAction.objects
+                    .filter(
+                        change_request=change_request,
+                        revision_no=revision_no,
+                        action=(
+                            ChangeAction.Action.APPROVE
+                        ),
+                    )
+                    .order_by(
+                        "acted_at",
+                        "id",
+                    )
+                    .values_list(
+                        "acted_by_id",
+                        flat=True,
+                    )
+                )
+
+                approval_histories.append(
+                    (
+                        change_request.id,
+                        approval_user_ids,
+                    )
+                )
+
+            prior_approval_user_ids = (
+                approval_histories[0][1]
+            )
+
+            histories_are_synchronized = all(
+                approval_user_ids
+                == prior_approval_user_ids
+                for (
+                    _change_request_id,
+                    approval_user_ids,
+                )
+                in approval_histories
+            )
+
+            if not histories_are_synchronized:
+                raise CoordinatedChangeApprovalError(
+                    "The coordinated package child approval histories "
+                    "are not synchronized."
+                )
+
+            if len(prior_approval_user_ids) > 1:
+                raise CoordinatedChangeApprovalError(
+                    "This coordinated package already contains enough "
+                    "approvals and cannot receive another approval "
+                    "while still Pending."
+                )
+
+            if (
+                prior_approval_user_ids
+                and revision_submitter_id
+                in prior_approval_user_ids
+            ):
+                raise CoordinatedChangeApprovalError(
+                    "The coordinated package contains an approval "
+                    "recorded by the revision submitter."
+                )
+
+            if approver.pk in prior_approval_user_ids:
+                raise CoordinatedChangeApprovalError(
+                    "You have already approved this coordinated "
+                    "package revision."
+                )
+
+            # -------------------------------------------------
+            # Fully revalidate the package before every approval.
+            #
+            # This validates all children together, including the
+            # coordinated relationship and hypothetical final GL
+            # assignment state.
+            # -------------------------------------------------
+
+            try:
+                validation_result = (
+                    validate_coordinated_basic_information_change(
+                        coordinated_change,
+                        lock_records=True,
+                    )
+                )
+
+            except CoordinatedChangeChildBaselineMismatchError as exc:
+
+                detection_result = (
+                    detect_or_get_change_request_integrity_issue(
+                        change_request_id=(
+                            exc.change_request_id
+                        ),
+                        detected_by=approver,
+                        detected_during=(
+                            ChangeRequestIntegrityIssue
+                            .DetectedDuring
+                            .APPROVAL
+                        ),
+                    )
+                )
+
+                blocked_integrity_issue_id = (
+                    detection_result.integrity_issue_id
+                )
+
+                blocked_integrity_issue_created = (
+                    detection_result.created
+                )
+
+            if blocked_integrity_issue_id is None:
+
+                actual_change_request_ids = {
+                    change_request.id
+                    for change_request
+                    in change_requests
+                }
+
+                validation_change_request_ids = {
+                    child_result.change_request_id
+                    for child_result
+                    in validation_result.children
+                }
+
+                if (
+                    actual_change_request_ids
+                    != validation_change_request_ids
+                ):
+                    raise CoordinatedChangeApprovalError(
+                        "The coordinated package membership changed "
+                        "while approval was being validated."
+                    )
+
+                # ---------------------------------------------
+                # Record this package approval on every child.
+                #
+                # These writes are inside the same transaction.
+                # A later failure will roll all of them back.
+                # ---------------------------------------------
+
+                for change_request in change_requests:
+
+                    ChangeAction.objects.create(
+                        change_request=change_request,
+                        revision_no=revision_no,
+                        acted_by=approver,
+                        action=(
+                            ChangeAction.Action.APPROVE
+                        ),
+                        comment="",
+                    )
+
+                approval_count = (
+                    len(prior_approval_user_ids)
+                    + 1
+                )
+
+                # ---------------------------------------------
+                # Approval #1: audit only.
+                # ---------------------------------------------
+
+                if approval_count == 1:
+
+                    approval_result = (
+                        CoordinatedApprovalResult(
+                            coordinated_change_id=(
+                                coordinated_change.id
+                            ),
+                            status=(
+                                coordinated_change.status
+                            ),
+                            revision_no=revision_no,
+                            approval_count=1,
+                            change_request_ids=tuple(
+                                change_request.id
+                                for change_request
+                                in change_requests
+                            ),
+                            grant_ids=tuple(
+                                change_request.grant_id
+                                for change_request
+                                in change_requests
+                            ),
+                            approver_id=approver.pk,
+                            applied_at=None,
+                            gl_rematch_result=None,
+                        )
+                    )
+
+                # ---------------------------------------------
+                # Approval #2: apply the entire package.
+                # ---------------------------------------------
+
+                elif approval_count == 2:
+
+                    grant_ids = tuple(
+                        change_request.grant_id
+                        for change_request
+                        in change_requests
+                    )
+
+                    grants_by_id = {
+                        grant.grant_id: grant
+                        for grant in (
+                            Form1.objects
+                            .select_for_update()
+                            .filter(
+                                grant_id__in=grant_ids
+                            )
+                            .order_by("grant_id")
+                        )
+                    }
+
+                    missing_grant_ids = sorted(
+                        set(grant_ids)
+                        - set(grants_by_id)
+                    )
+
+                    if missing_grant_ids:
+                        raise CoordinatedChangeApprovalError(
+                            "One or more coordinated grants disappeared "
+                            "while final approval was being applied. "
+                            "Missing grant IDs: "
+                            + ", ".join(
+                                missing_grant_ids
+                            )
+                            + "."
+                        )
+
+                    affected_award_codes = set()
+
+                    # -----------------------------------------
+                    # Apply ALL Form1 changes first.
+                    #
+                    # Do not call
+                    # _apply_validated_basic_information_values()
+                    # here because that standalone helper rematches
+                    # GL immediately after each individual grant.
+                    # -----------------------------------------
+
+                    for child_result in (
+                        validation_result.children
+                    ):
+
+                        grant = grants_by_id[
+                            child_result.grant_id
+                        ]
+
+                        old_award_code = str(
+                            child_result.current_award_code
+                            or ""
+                        ).strip()
+
+                        if old_award_code:
+                            affected_award_codes.add(
+                                old_award_code
+                            )
+
+                        child_validation = (
+                            child_result.validation_result
+                        )
+
+                        if not child_validation.changed_fields:
+                            raise CoordinatedChangeApprovalError(
+                                f"Child Change Request "
+                                f"#{child_result.change_request_id} "
+                                "contains no Basic Information changes."
+                            )
+
+                        for field_name in (
+                            child_validation.changed_fields
+                        ):
+                            setattr(
+                                grant,
+                                field_name,
+                                child_validation
+                                .proposed_values[
+                                    field_name
+                                ],
+                            )
+
+                        grant.save(
+                            update_fields=list(
+                                child_validation
+                                .changed_fields
+                            )
+                        )
+
+                        new_award_code = str(
+                            grant.internal_award_code
+                            or ""
+                        ).strip()
+
+                        if new_award_code:
+                            affected_award_codes.add(
+                                new_award_code
+                            )
+
+                    # -----------------------------------------
+                    # Every Form1 row is now in the validated
+                    # final coordinated state.
+                    #
+                    # Perform ONE GL rematch using the union of
+                    # all old and new Award Codes.
+                    # -----------------------------------------
+
+                    if affected_award_codes:
+                        gl_rematch_result = (
+                            rematch_gl_expenditures(
+                                award_codes=(
+                                    affected_award_codes
+                                )
+                            )
+                        )
+                    else:
+                        gl_rematch_result = None
+
+                    # -----------------------------------------
+                    # Finalize child and parent statuses only
+                    # after all Form1 and GL work succeeds.
+                    # -----------------------------------------
+
+                    for change_request in change_requests:
+                        change_request.status = (
+                            ChangeRequest.Status.APPROVED
+                        )
+
+                    ChangeRequest.objects.bulk_update(
+                        change_requests,
+                        ["status"],
+                    )
+
+                    applied_at = timezone.now()
+
+                    coordinated_change.status = (
+                        CoordinatedChange.Status.APPLIED
+                    )
+
+                    coordinated_change.applied_at = (
+                        applied_at
+                    )
+
+                    coordinated_change.save(
+                        update_fields=[
+                            "status",
+                            "applied_at",
+                        ]
+                    )
+
+                    approval_result = (
+                        CoordinatedApprovalResult(
+                            coordinated_change_id=(
+                                coordinated_change.id
+                            ),
+                            status=(
+                                coordinated_change.status
+                            ),
+                            revision_no=revision_no,
+                            approval_count=2,
+                            change_request_ids=tuple(
+                                change_request.id
+                                for change_request
+                                in change_requests
+                            ),
+                            grant_ids=tuple(
+                                change_request.grant_id
+                                for change_request
+                                in change_requests
+                            ),
+                            approver_id=approver.pk,
+                            applied_at=applied_at,
+                            gl_rematch_result=(
+                                gl_rematch_result
+                            ),
+                        )
+                    )
+
+                else:
+                    raise CoordinatedChangeApprovalError(
+                        "The coordinated approval count is invalid."
+                    )
+
+    # ---------------------------------------------------------
+    # Match the standalone integrity workflow:
+    #
+    # commit the integrity incident first, then block approval
+    # outside the transaction that created/fetched the incident.
+    # ---------------------------------------------------------
+
+    if blocked_integrity_issue_id is not None:
+        raise ChangeRequestIntegrityBlockedError(
+            blocked_integrity_issue_id,
+            newly_detected=(
+                blocked_integrity_issue_created
+            ),
+        )
+
+    return approval_result
 
 
 def validate_basic_information_change_request(
