@@ -218,6 +218,14 @@ class CoordinatedChangeReturnError(
     """
 
 
+class CoordinatedChangeResubmitError(
+        ChangeRequestResubmitError
+):
+    """
+    Raised when a returned coordinated package cannot be resubmitted.
+    """
+
+
 class CoordinatedChangeChildBaselineMismatchError(
         ChangeRequestBaselineMismatchError
 ):
@@ -537,6 +545,17 @@ class CoordinatedReturnResult:
     change_request_ids: tuple
     grant_ids: tuple
     returned_by_id: int
+
+
+@dataclass(frozen=True)
+class CoordinatedResubmitResult:
+    coordinated_change_id: int
+    status: str
+    previous_revision_no: int
+    revision_no: int
+    change_request_ids: tuple
+    grant_ids: tuple
+    resubmitter_id: int
 
 
 def serialize_change_request_value(value):
@@ -6355,6 +6374,774 @@ def return_coordinated_basic_information_change(
         )
 
     return return_result
+
+
+def resubmit_coordinated_basic_information_change(
+        *,
+        coordinated_change_id,
+        resubmitter,
+        proposed_form_data_by_grant,
+        comment="",
+):
+    """
+    Create the next formal revision of a RETURNED coordinated Basic
+    Information package.
+
+    Every child is validated against its own governing authoritative
+    baseline:
+
+      - ordinary Return for Revision:
+            current formal revision snapshot;
+
+      - Administrator integrity disposition:
+            latest applicable DISPOSITION checkpoint.
+
+    All child proposals are then validated together as one coordinated
+    package, including coordinated GL relationship and hypothetical final
+    GL assignment state.
+
+    No next-revision snapshot or RESUBMIT action is written until all
+    children and the entire package have passed validation.
+
+    A successful resubmission:
+      - preserves the previous revision unchanged;
+      - creates a complete next-revision snapshot for every child;
+      - records the same resubmitter on every child through one RESUBMIT
+        action for the new revision;
+      - advances the parent and every child to the same revision;
+      - returns the parent and every child to PENDING;
+      - starts the new revision with zero approvals.
+    """
+    if (
+        resubmitter is None
+        or getattr(resubmitter, "pk", None) is None
+    ):
+        raise CoordinatedChangeResubmitError(
+            "A saved user is required to resubmit a coordinated package."
+        )
+
+    resubmission_comment = (comment or "").strip()
+
+    if len(resubmission_comment) > 500:
+        raise CoordinatedChangeResubmitError(
+            "Resubmission comments cannot exceed 500 characters."
+        )
+
+    if not isinstance(
+        proposed_form_data_by_grant,
+        dict,
+    ):
+        raise CoordinatedChangeResubmitError(
+            "Coordinated resubmission proposal data is invalid."
+        )
+
+    blocked_integrity_issue_id = None
+    blocked_integrity_issue_created = False
+    resubmit_result = None
+
+    with transaction.atomic():
+
+        try:
+            coordinated_change = (
+                CoordinatedChange.objects
+                .select_for_update()
+                .get(
+                    pk=coordinated_change_id
+                )
+            )
+
+        except CoordinatedChange.DoesNotExist as exc:
+            raise CoordinatedChangeResubmitError(
+                "The coordinated package does not exist."
+            ) from exc
+
+        if (
+            coordinated_change.status
+            != CoordinatedChange.Status.RETURNED
+        ):
+            raise CoordinatedChangeResubmitError(
+                "Only a coordinated package that is Returned for "
+                "Revision can be resubmitted."
+            )
+
+        if coordinated_change.applied_at is not None:
+            raise CoordinatedChangeResubmitError(
+                "An applied coordinated package cannot be resubmitted."
+            )
+
+        # -----------------------------------------------------
+        # Lock and structurally validate the package.
+        #
+        # The existing parent/child status mapping requires a
+        # RETURNED parent to contain RETURNED children.
+        # -----------------------------------------------------
+
+        try:
+            structure_result = (
+                validate_coordinated_change_structure(
+                    coordinated_change,
+                    lock_children=True,
+                )
+            )
+
+        except ChangeRequestValidationError as exc:
+            raise CoordinatedChangeResubmitError(
+                str(exc)
+            ) from exc
+
+        change_requests = tuple(
+            structure_result.change_requests
+        )
+
+        previous_revision_no = (
+            structure_result.revision_no
+        )
+
+        if previous_revision_no < 1:
+            raise CoordinatedChangeResubmitError(
+                "The coordinated package does not have a valid "
+                "formal revision."
+            )
+
+        new_revision_no = (
+            previous_revision_no + 1
+        )
+
+        grant_ids = tuple(
+            change_request.grant_id
+            for change_request
+            in change_requests
+        )
+
+        expected_grant_ids = set(
+            grant_ids
+        )
+
+        proposed_grant_ids = {
+            str(grant_id).strip()
+            for grant_id
+            in proposed_form_data_by_grant.keys()
+        }
+
+        if (
+            proposed_grant_ids
+            != expected_grant_ids
+        ):
+            missing_grant_ids = sorted(
+                expected_grant_ids
+                - proposed_grant_ids
+            )
+
+            unexpected_grant_ids = sorted(
+                proposed_grant_ids
+                - expected_grant_ids
+            )
+
+            details = []
+
+            if missing_grant_ids:
+                details.append(
+                    "missing grants: "
+                    + ", ".join(
+                        missing_grant_ids
+                    )
+                )
+
+            if unexpected_grant_ids:
+                details.append(
+                    "unexpected grants: "
+                    + ", ".join(
+                        unexpected_grant_ids
+                    )
+                )
+
+            raise CoordinatedChangeResubmitError(
+                "The coordinated resubmission must contain exactly "
+                "the grants already belonging to the package"
+                + (
+                    " ("
+                    + "; ".join(details)
+                    + ")"
+                    if details
+                    else ""
+                )
+                + "."
+            )
+
+        # -----------------------------------------------------
+        # Lock every authoritative package grant together.
+        # -----------------------------------------------------
+
+        grants_by_id = {
+            grant.grant_id: grant
+            for grant in (
+                Form1.objects
+                .select_for_update()
+                .filter(
+                    grant_id__in=grant_ids
+                )
+                .order_by(
+                    "grant_id"
+                )
+            )
+        }
+
+        missing_authoritative_grants = sorted(
+            expected_grant_ids
+            - set(grants_by_id)
+        )
+
+        if missing_authoritative_grants:
+            raise CoordinatedChangeResubmitError(
+                "One or more authoritative coordinated grants no longer "
+                "exist. Missing grant IDs: "
+                + ", ".join(
+                    missing_authoritative_grants
+                )
+                + "."
+            )
+        # -----------------------------------------------------
+        # Validate package-level Return history.
+        #
+        # There are two legitimate coordinated paths:
+        #
+        # 1. Ordinary Approver Return:
+        #       every child has exactly one synchronized RETURN
+        #       action for the previous revision.
+        #
+        # 2. Administrator integrity disposition:
+        #       the package may have no RETURN actions at all.
+        #       At least one child instead has a CLOSED integrity
+        #       incident for the previous revision.
+        #
+        # A later integrity incident can also occur after an
+        # ordinary Return, so synchronized RETURN actions and
+        # CLOSED integrity incidents may legitimately coexist.
+        # -----------------------------------------------------
+
+        return_histories = {}
+
+        for change_request in change_requests:
+
+            return_actor_ids = tuple(
+                ChangeAction.objects
+                .filter(
+                    change_request=change_request,
+                    revision_no=previous_revision_no,
+                    action=ChangeAction.Action.RETURN,
+                )
+                .order_by(
+                    "acted_at",
+                    "id",
+                )
+                .values_list(
+                    "acted_by_id",
+                    flat=True,
+                )
+            )
+
+            if len(return_actor_ids) > 1:
+                raise CoordinatedChangeResubmitError(
+                    f"Child Change Request #{change_request.id} "
+                    "contains more than one Return for Revision action "
+                    "for the returned revision."
+                )
+
+            return_histories[
+                change_request.id
+            ] = return_actor_ids
+
+        first_return_history = (
+            return_histories[
+                change_requests[0].id
+            ]
+        )
+
+        return_histories_are_synchronized = all(
+            return_actor_ids
+            == first_return_history
+            for return_actor_ids
+            in return_histories.values()
+        )
+
+        if not return_histories_are_synchronized:
+            raise CoordinatedChangeResubmitError(
+                "The coordinated package child Return for Revision "
+                "histories are not synchronized."
+            )
+
+        package_return_count = len(
+            first_return_history
+        )
+
+        package_has_closed_integrity_issue = (
+            ChangeRequestIntegrityIssue.objects
+            .filter(
+                change_request__in=change_requests,
+                revision_no=previous_revision_no,
+                status=(
+                    ChangeRequestIntegrityIssue
+                    .Status
+                    .CLOSED
+                ),
+            )
+            .exists()
+        )
+
+        if (
+            package_return_count == 0
+            and not package_has_closed_integrity_issue
+        ):
+            raise CoordinatedChangeResubmitError(
+                "The returned coordinated package has neither a "
+                "synchronized Return for Revision history nor an "
+                "Administrator integrity disposition."
+            )
+
+        # -----------------------------------------------------
+        # Validate each child against its governing baseline,
+        # then validate the newly proposed values.
+        #
+        # Nothing for the new revision is written in this loop.
+        # -----------------------------------------------------
+
+        child_validation_results = []
+
+        for change_request in change_requests:
+
+            if (
+                change_request.request_type
+                != ChangeRequest.RequestType.EDIT_GRANT
+            ):
+                raise CoordinatedChangeResubmitError(
+                    f"Child Change Request #{change_request.id} "
+                    "is not an existing-grant Basic Information request."
+                )
+
+            grant = grants_by_id[
+                change_request.grant_id
+            ]
+
+            approval_count = (
+                ChangeAction.objects
+                .filter(
+                    change_request=change_request,
+                    revision_no=previous_revision_no,
+                    action=ChangeAction.Action.APPROVE,
+                )
+                .count()
+            )
+
+            if approval_count >= 2:
+                raise CoordinatedChangeResubmitError(
+                    f"Child Change Request #{change_request.id} "
+                    "has two approvals and cannot be resubmitted."
+                )
+
+            # -------------------------------------------------
+            # Select and validate this child's governing
+            # authoritative baseline.
+            # -------------------------------------------------
+
+            try:
+                baseline_result = (
+                    validate_returned_resubmission_baseline(
+                        change_request,
+                        grant=grant,
+                        lock=True,
+                    )
+                )
+
+            except ChangeRequestBaselineMismatchError:
+
+                detection_result = (
+                    detect_or_get_change_request_integrity_issue(
+                        change_request_id=(
+                            change_request.id
+                        ),
+                        detected_by=resubmitter,
+                        detected_during=(
+                            ChangeRequestIntegrityIssue
+                            .DetectedDuring
+                            .RESUBMIT
+                        ),
+                    )
+                )
+
+                blocked_integrity_issue_id = (
+                    detection_result.integrity_issue_id
+                )
+
+                blocked_integrity_issue_created = (
+                    detection_result.created
+                )
+
+                break
+
+            except ChangeRequestIntegrityBlockedError as exc:
+
+                blocked_integrity_issue_id = (
+                    exc.integrity_issue_id
+                )
+
+                blocked_integrity_issue_created = False
+
+                break
+
+            except ChangeRequestValidationError as exc:
+                raise CoordinatedChangeResubmitError(
+                    f"Child Change Request #{change_request.id}: "
+                    + str(exc)
+                ) from exc
+
+            # -------------------------------------------------
+            # Confirm the child's Return / disposition history
+            # agrees with the baseline source.
+            # -------------------------------------------------
+
+            if (
+                    baseline_result.source
+                    == RESUBMISSION_BASELINE_FORMAL_REVISION
+            ):
+                pass
+
+            elif (
+                baseline_result.source
+                == RESUBMISSION_BASELINE_INTEGRITY_DISPOSITION
+            ):
+                if (
+                    baseline_result.integrity_issue_id
+                    is None
+                ):
+                    raise CoordinatedChangeResubmitError(
+                        f"Child Change Request #{change_request.id} "
+                        "uses an integrity disposition baseline that "
+                        "does not identify its integrity incident."
+                    )
+
+            else:
+                raise CoordinatedChangeResubmitError(
+                    f"Child Change Request #{change_request.id} "
+                    "has an unsupported authoritative baseline source."
+                )
+
+            raw_proposal = (
+                proposed_form_data_by_grant.get(
+                    change_request.grant_id
+                )
+            )
+
+            if not isinstance(
+                raw_proposal,
+                dict,
+            ):
+                raise CoordinatedChangeResubmitError(
+                    f"Grant {change_request.grant_id} has invalid "
+                    "resubmission proposal data."
+                )
+
+            try:
+                child_validation = (
+                    _validate_basic_information_proposed_form_data(
+                        change_request=change_request,
+                        grant=grant,
+                        proposed_form_data=raw_proposal,
+                    )
+                )
+
+            except ChangeRequestValidationError as exc:
+                raise CoordinatedChangeResubmitError(
+                    f"Grant {change_request.grant_id}: "
+                    + str(exc)
+                ) from exc
+
+            if not child_validation.changed_fields:
+                raise CoordinatedChangeResubmitError(
+                    f"Grant {change_request.grant_id} contains no "
+                    "proposed Basic Information changes."
+                )
+
+            child_validation_results.append(
+                CoordinatedChildBasicInformationValidationResult(
+                    change_request_id=(
+                        change_request.id
+                    ),
+                    grant_id=(
+                        change_request.grant_id
+                    ),
+                    current_award_code=(
+                        grant.internal_award_code
+                    ),
+                    current_gl_start_date=(
+                        grant.internal_gl_start_date
+                    ),
+                    current_gl_end_date=(
+                        grant.internal_gl_end_date
+                    ),
+                    validation_result=(
+                        child_validation
+                    ),
+                )
+            )
+
+        # -----------------------------------------------------
+        # A baseline mismatch intentionally commits its newly
+        # detected integrity incident but performs no resubmit
+        # writes. The exception is raised AFTER this outer
+        # transaction exits normally.
+        # -----------------------------------------------------
+
+        if blocked_integrity_issue_id is None:
+
+            if (
+                len(child_validation_results)
+                != len(change_requests)
+            ):
+                raise CoordinatedChangeResubmitError(
+                    "The coordinated package was not fully validated "
+                    "for resubmission."
+                )
+
+            provisional_validation_result = (
+                CoordinatedBasicInformationValidationResult(
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                    revision_no=(
+                        previous_revision_no
+                    ),
+                    children=tuple(
+                        child_validation_results
+                    ),
+                )
+            )
+
+            # -------------------------------------------------
+            # Validate all new proposals AS A PACKAGE before
+            # any Revision N+1 records exist.
+            # -------------------------------------------------
+
+            try:
+                validate_coordinated_gl_relationship(
+                    provisional_validation_result
+                )
+
+                validate_coordinated_final_gl_state(
+                    provisional_validation_result,
+                    lock_outside_grants=True,
+                )
+
+            except ChangeRequestValidationError as exc:
+                raise CoordinatedChangeResubmitError(
+                    str(exc)
+                ) from exc
+
+            # -------------------------------------------------
+            # The next revision must be completely unused on
+            # every child before any writes begin.
+            # -------------------------------------------------
+
+            for change_request in change_requests:
+
+                if (
+                    ChangeRequestField.objects
+                    .filter(
+                        change_request=change_request,
+                        revision_no=new_revision_no,
+                    )
+                    .exists()
+                ):
+                    raise CoordinatedChangeResubmitError(
+                        f"Child Change Request #{change_request.id} "
+                        f"already contains Revision {new_revision_no} "
+                        "field snapshots."
+                    )
+
+                if (
+                    ChangeAction.objects
+                    .filter(
+                        change_request=change_request,
+                        revision_no=new_revision_no,
+                    )
+                    .exists()
+                ):
+                    raise CoordinatedChangeResubmitError(
+                        f"Child Change Request #{change_request.id} "
+                        f"already contains Revision {new_revision_no} "
+                        "workflow actions."
+                    )
+
+            # -------------------------------------------------
+            # Build ALL next-revision snapshot rows in memory.
+            #
+            # Current values come from authoritative Form1,
+            # which has already been validated against each
+            # child's governing baseline.
+            # -------------------------------------------------
+
+            all_field_snapshots = []
+
+            validation_by_change_request_id = {
+                child_result.change_request_id: (
+                    child_result.validation_result
+                )
+                for child_result
+                in child_validation_results
+            }
+
+            for change_request in change_requests:
+
+                grant = grants_by_id[
+                    change_request.grant_id
+                ]
+
+                child_validation = (
+                    validation_by_change_request_id[
+                        change_request.id
+                    ]
+                )
+
+                field_snapshot_values = (
+                    build_basic_information_field_snapshot_values(
+                        grant=grant,
+                        proposed_values=(
+                            child_validation.proposed_values
+                        ),
+                    )
+                )
+
+                all_field_snapshots.extend(
+                    [
+                        ChangeRequestField(
+                            change_request=(
+                                change_request
+                            ),
+                            revision_no=(
+                                new_revision_no
+                            ),
+                            field_name=(
+                                snapshot["field_name"]
+                            ),
+                            current_value=(
+                                snapshot["current_value"]
+                            ),
+                            proposed_value=(
+                                snapshot["proposed_value"]
+                            ),
+                        )
+                        for snapshot
+                        in field_snapshot_values
+                    ]
+                )
+
+            expected_snapshot_count = (
+                len(change_requests)
+                * len(
+                    GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+                )
+            )
+
+            if (
+                len(all_field_snapshots)
+                != expected_snapshot_count
+            ):
+                raise CoordinatedChangeResubmitError(
+                    "The coordinated next-revision snapshot is "
+                    "incomplete."
+                )
+
+            # -------------------------------------------------
+            # WRITE PHASE.
+            #
+            # Every validation above has succeeded. From here
+            # onward, transaction.atomic() guarantees that a
+            # later failure rolls the whole resubmission back.
+            # -------------------------------------------------
+
+            ChangeRequestField.objects.bulk_create(
+                all_field_snapshots
+            )
+
+            for change_request in change_requests:
+
+                ChangeAction.objects.create(
+                    change_request=change_request,
+                    revision_no=new_revision_no,
+                    acted_by=resubmitter,
+                    action=ChangeAction.Action.RESUBMIT,
+                    comment=resubmission_comment,
+                )
+
+                change_request.current_revision = (
+                    new_revision_no
+                )
+
+                change_request.status = (
+                    ChangeRequest.Status.PENDING
+                )
+
+            ChangeRequest.objects.bulk_update(
+                change_requests,
+                [
+                    "current_revision",
+                    "status",
+                ],
+            )
+
+            coordinated_change.current_revision = (
+                new_revision_no
+            )
+
+            coordinated_change.status = (
+                CoordinatedChange.Status.PENDING
+            )
+
+            coordinated_change.save(
+                update_fields=[
+                    "current_revision",
+                    "status",
+                ]
+            )
+
+            resubmit_result = (
+                CoordinatedResubmitResult(
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                    status=(
+                        coordinated_change.status
+                    ),
+                    previous_revision_no=(
+                        previous_revision_no
+                    ),
+                    revision_no=(
+                        new_revision_no
+                    ),
+                    change_request_ids=tuple(
+                        change_request.id
+                        for change_request
+                        in change_requests
+                    ),
+                    grant_ids=tuple(
+                        change_request.grant_id
+                        for change_request
+                        in change_requests
+                    ),
+                    resubmitter_id=(
+                        resubmitter.pk
+                    ),
+                )
+            )
+
+    if blocked_integrity_issue_id is not None:
+        raise ChangeRequestIntegrityBlockedError(
+            blocked_integrity_issue_id,
+            newly_detected=(
+                blocked_integrity_issue_created
+            ),
+        )
+
+    return resubmit_result
 
 
 def validate_basic_information_change_request(
