@@ -77,6 +77,30 @@
             color: white;
         }
 
+        .return-button {
+            background-color: #dc3545;
+            color: white;
+        }
+
+        .return-panel {
+            margin-top: 25px;
+            padding: 18px;
+            background-color: #fff3cd;
+            border: 1px solid #d6b656;
+            border-radius: 5px;
+        }
+
+        .return-panel textarea {
+            display: block;
+            width: 100%;
+            max-width: 800px;
+            min-height: 90px;
+            box-sizing: border-box;
+            margin-top: 8px;
+            margin-bottom: 15px;
+            padding: 8px;
+        }
+
         .back-button {
             background-color: #008CBA;
             color: white;
@@ -371,6 +395,60 @@
     <div class="action-section">
 
         {% if not is_history_package %}
+
+            {% if can_return %}
+
+                <div class="return-panel">
+
+                    <h3>Return Entire Package for Revision</h3>
+
+                    <p>
+                        Returning this package sends every participating
+                        grant back to the Editor together. Existing approval
+                        history for this revision is retained.
+                    </p>
+
+                    <form
+                        method="post"
+                        action="{% url 'coordinated_change_review' coordinated_change.id %}"
+                        onsubmit="return confirm(
+                            'Return this entire coordinated package for revision?'
+                        );"
+                    >
+
+                        {% csrf_token %}
+
+                        <input
+                            type="hidden"
+                            name="action"
+                            value="return"
+                        >
+
+                        <label for="id_return_comment">
+                            <strong>
+                                Feedback for the Editor:
+                            </strong>
+                        </label>
+
+                        <textarea
+                            id="id_return_comment"
+                            name="return_comment"
+                            maxlength="500"
+                            required
+                        ></textarea>
+
+                        <button
+                            type="submit"
+                            class="button-common return-button"
+                        >
+                            Return Entire Package
+                        </button>
+
+                    </form>
+
+                </div>
+
+            {% endif %}
 
             {% if can_approve %}
 

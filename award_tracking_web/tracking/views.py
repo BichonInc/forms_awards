@@ -75,6 +75,8 @@ from .change_request_workflow import (
     validate_returned_resubmission_baseline,
     get_revision_submitter_id,
     approve_coordinated_basic_information_change,
+    CoordinatedChangeReturnError,
+    return_coordinated_basic_information_change,
     CoordinatedChangeResubmitError,
     resubmit_coordinated_basic_information_change,
 )
@@ -4123,8 +4125,10 @@ def coordinated_change_review(
         and not open_integrity_issues
     )
 
+    can_return = can_approve
+
     # ---------------------------------------------------------
-    # Package-level Approve.
+    # Package-level Approve / Return for Revision.
     # ---------------------------------------------------------
 
     if request.method == "POST":
@@ -4134,7 +4138,10 @@ def coordinated_change_review(
             "",
         )
 
-        if action != "approve":
+        if action not in {
+            "approve",
+            "return",
+        }:
             messages.error(
                 request,
                 (
@@ -4149,6 +4156,88 @@ def coordinated_change_review(
                     coordinated_change.id
                 ),
             )
+
+        # =====================================================
+        # Return entire coordinated package for revision.
+        # =====================================================
+
+        if action == "return":
+
+            return_comment = request.POST.get(
+                "return_comment",
+                "",
+            )
+
+            try:
+                return_coordinated_basic_information_change(
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                    approver=request.user,
+                    comment=return_comment,
+                )
+
+            except ChangeRequestIntegrityBlockedError as exc:
+                messages.error(
+                    request,
+                    str(exc),
+                )
+
+                return redirect(
+                    "coordinated_change_review",
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                )
+
+            except (
+                    CoordinatedChangeReturnError,
+                    ChangeRequestValidationError,
+            ) as exc:
+                messages.error(
+                    request,
+                    str(exc),
+                )
+
+                return redirect(
+                    "coordinated_change_review",
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                )
+
+            except IntegrityError:
+                messages.error(
+                    request,
+                    (
+                        "The coordinated package could not be "
+                        "returned because its workflow state "
+                        "changed. Please review it again."
+                    ),
+                )
+
+                return redirect(
+                    "coordinated_change_review",
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                )
+
+            messages.success(
+                request,
+                (
+                    "The coordinated package has been returned "
+                    "to the Editor for revision."
+                ),
+            )
+
+            return redirect(
+                "grant_list"
+            )
+
+        # =====================================================
+        # Approve entire coordinated package.
+        # =====================================================
 
         try:
             approval_result = (
@@ -4174,8 +4263,8 @@ def coordinated_change_review(
             )
 
         except (
-            ChangeRequestApprovalError,
-            ChangeRequestValidationError,
+                ChangeRequestApprovalError,
+                ChangeRequestValidationError,
         ) as exc:
             messages.error(
                 request,
@@ -4253,6 +4342,7 @@ def coordinated_change_review(
                 user_has_approved
             ),
             "can_approve": can_approve,
+            "can_return": can_return,
             "workflow_errors": (
                 workflow_errors
             ),
