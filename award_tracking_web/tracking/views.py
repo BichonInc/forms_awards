@@ -75,6 +75,8 @@ from .change_request_workflow import (
     validate_returned_resubmission_baseline,
     get_revision_submitter_id,
     approve_coordinated_basic_information_change,
+    CoordinatedChangeResubmitError,
+    resubmit_coordinated_basic_information_change,
 )
 from django.core.files.storage import default_storage
 import pandas as pd
@@ -1926,6 +1928,613 @@ def _get_unprefixed_coordinated_form_data(
             )
 
     return form_data
+
+
+@role_required(ROLE_EDITOR)
+def coordinated_change_resubmit(
+        request,
+        coordinated_change_id,
+):
+    """
+    Revise and resubmit one RETURNED coordinated Basic Information package.
+
+    Package membership is fixed. Every existing child is revised together
+    and the workflow service creates the next formal revision atomically.
+    """
+    coordinated_change = get_object_or_404(
+        CoordinatedChange,
+        pk=coordinated_change_id,
+    )
+
+    if (
+        coordinated_change.status
+        != CoordinatedChange.Status.RETURNED
+    ):
+        messages.error(
+            request,
+            (
+                "Only a coordinated package that has been returned "
+                "for revision can be revised and resubmitted."
+            ),
+        )
+
+        if (
+            coordinated_change.status
+            in (
+                CoordinatedChange.Status.PENDING,
+                CoordinatedChange.Status.APPLIED,
+            )
+        ):
+            return redirect(
+                "coordinated_change_review",
+                coordinated_change_id=(
+                    coordinated_change.id
+                ),
+            )
+
+        return redirect(
+            "grant_list"
+        )
+
+    children = tuple(
+        ChangeRequest.objects
+        .filter(
+            coordinated_change=coordinated_change,
+        )
+        .select_related(
+            "submitted_by",
+        )
+        .order_by(
+            "grant_id",
+            "id",
+        )
+    )
+
+    revision_no = (
+        coordinated_change.current_revision
+    )
+
+    # ---------------------------------------------------------
+    # Protect the package boundary before building editable forms.
+    # ---------------------------------------------------------
+
+    if len(children) < 2:
+        messages.error(
+            request,
+            (
+                "The returned coordinated package does not contain "
+                "at least two child Change Requests."
+            ),
+        )
+
+        return redirect(
+            "grant_list"
+        )
+
+    if any(
+        child.current_revision != revision_no
+        for child
+        in children
+    ):
+        messages.error(
+            request,
+            (
+                "The coordinated package and its child Change Requests "
+                "are not on the same revision."
+            ),
+        )
+
+        return redirect(
+            "grant_list"
+        )
+
+    if any(
+        child.status
+        != ChangeRequest.Status.RETURNED
+        for child
+        in children
+    ):
+        messages.error(
+            request,
+            (
+                "The coordinated package and its child Change Requests "
+                "do not have synchronized Returned statuses."
+            ),
+        )
+
+        return redirect(
+            "grant_list"
+        )
+
+    grant_ids = tuple(
+        child.grant_id
+        for child
+        in children
+    )
+
+    grants_by_id = {
+        grant.grant_id: grant
+        for grant
+        in Form1.objects
+        .filter(
+            grant_id__in=grant_ids,
+        )
+    }
+
+    missing_grant_ids = sorted(
+        set(grant_ids)
+        - set(grants_by_id)
+    )
+
+    if missing_grant_ids:
+        messages.error(
+            request,
+            (
+                "Authoritative Basic Information is unavailable for "
+                "one or more grants in this coordinated package: "
+                + ", ".join(
+                    missing_grant_ids
+                )
+                + "."
+            ),
+        )
+
+        return redirect(
+            "grant_list"
+        )
+
+    # ---------------------------------------------------------
+    # Existing OPEN integrity incidents block resubmission.
+    #
+    # Keep the editor visible so the Editor can see why the
+    # package cannot currently be submitted.
+    # ---------------------------------------------------------
+
+    open_integrity_issues = tuple(
+        ChangeRequestIntegrityIssue.objects
+        .filter(
+            change_request__in=children,
+            status=(
+                ChangeRequestIntegrityIssue
+                .Status
+                .OPEN
+            ),
+        )
+        .select_related(
+            "change_request",
+            "detected_by",
+        )
+        .order_by(
+            "change_request__grant_id",
+            "id",
+        )
+    )
+
+    # ---------------------------------------------------------
+    # Validate every child's governing returned baseline before
+    # allowing the Editor to work from this page.
+    #
+    # Existing OPEN incidents already block the package and are
+    # displayed below. If no incident is open yet, authoritative
+    # drift discovered while opening or posting this editor must
+    # create the same integrity evidence used by the standalone
+    # returned-request workflow.
+    # ---------------------------------------------------------
+
+    if not open_integrity_issues:
+
+        for child in children:
+
+            grant = grants_by_id[
+                child.grant_id
+            ]
+
+            try:
+                validate_returned_resubmission_baseline(
+                    child,
+                    grant=grant,
+                )
+
+            except ChangeRequestBaselineMismatchError:
+
+                detection_stage = (
+                    ChangeRequestIntegrityIssue
+                    .DetectedDuring
+                    .RESUBMIT
+                    if request.method == "POST"
+                    else
+                    ChangeRequestIntegrityIssue
+                    .DetectedDuring
+                    .REVIEW
+                )
+
+                try:
+                    detection_result = (
+                        detect_or_get_change_request_integrity_issue(
+                            change_request_id=child.id,
+                            detected_by=request.user,
+                            detected_during=(
+                                detection_stage
+                            ),
+                        )
+                    )
+
+                except ChangeRequestIntegrityIssueError as exc:
+                    messages.error(
+                        request,
+                        str(exc),
+                    )
+
+                    return redirect(
+                        "grant_list"
+                    )
+
+                blocked_error = (
+                    ChangeRequestIntegrityBlockedError(
+                        detection_result.integrity_issue_id,
+                        newly_detected=(
+                            detection_result.created
+                        ),
+                    )
+                )
+
+                messages.error(
+                    request,
+                    str(blocked_error),
+                )
+
+                return redirect(
+                    "coordinated_change_resubmit",
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                )
+
+            except ChangeRequestIntegrityBlockedError as exc:
+                messages.error(
+                    request,
+                    str(exc),
+                )
+
+                return redirect(
+                    "coordinated_change_resubmit",
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                )
+
+            except ChangeRequestValidationError as exc:
+                messages.error(
+                    request,
+                    (
+                        f"Grant {child.grant_id}: "
+                        + str(exc)
+                    ),
+                )
+
+                return redirect(
+                    "grant_list"
+                )
+
+    # ---------------------------------------------------------
+    # Returned-package context.
+    #
+    # Ordinary Return has synchronized RETURN actions.
+    # Integrity disposition may legitimately have none.
+    # ---------------------------------------------------------
+
+    return_action = (
+        ChangeAction.objects
+        .filter(
+            change_request=children[0],
+            revision_no=revision_no,
+            action=ChangeAction.Action.RETURN,
+        )
+        .select_related(
+            "acted_by",
+        )
+        .order_by(
+            "-acted_at",
+            "-id",
+        )
+        .first()
+    )
+
+    closed_integrity_issues = tuple(
+        ChangeRequestIntegrityIssue.objects
+        .filter(
+            change_request__in=children,
+            revision_no=revision_no,
+            status=(
+                ChangeRequestIntegrityIssue
+                .Status
+                .CLOSED
+            ),
+        )
+        .select_related(
+            "change_request",
+            "closed_by",
+        )
+        .order_by(
+            "change_request__grant_id",
+            "id",
+        )
+    )
+
+    # ---------------------------------------------------------
+    # Capture authoritative values BEFORE binding ModelForms.
+    #
+    # ModelForm validation can update its model instance in memory.
+    # This mirrors the standalone resubmission page.
+    # ---------------------------------------------------------
+
+    current_values_by_grant = {
+        grant_id: {
+            field_name: serialize_change_request_value(
+                getattr(
+                    grants_by_id[grant_id],
+                    field_name,
+                )
+            )
+            for field_name
+            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        }
+        for grant_id
+        in grant_ids
+    }
+
+    previous_proposed_values_by_grant = {}
+
+    try:
+        for child in children:
+
+            snapshots_by_field = (
+                get_basic_information_revision_snapshots(
+                    child,
+                    revision_no=revision_no,
+                )
+            )
+
+            current_values = (
+                current_values_by_grant[
+                    child.grant_id
+                ]
+            )
+
+            previous_proposed_values = {}
+
+            for field_name in (
+                GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+            ):
+                snapshot = (
+                    snapshots_by_field[
+                        field_name
+                    ]
+                )
+
+                if snapshot.proposed_value is None:
+                    previous_proposed_values[
+                        field_name
+                    ] = current_values[
+                        field_name
+                    ]
+
+                else:
+                    previous_proposed_values[
+                        field_name
+                    ] = snapshot.proposed_value
+
+            previous_proposed_values_by_grant[
+                child.grant_id
+            ] = previous_proposed_values
+
+    except ChangeRequestValidationError as exc:
+        messages.error(
+            request,
+            str(exc),
+        )
+
+        return redirect(
+            "grant_list"
+        )
+
+    # ---------------------------------------------------------
+    # Build one prefixed form for every fixed package member.
+    # ---------------------------------------------------------
+
+    form_cards = []
+
+    for child in children:
+
+        grant = grants_by_id[
+            child.grant_id
+        ]
+
+        prefix = (
+            _coordinated_draft_form_prefix(
+                child.grant_id
+            )
+        )
+
+        if request.method == "POST":
+            form = (
+                GrantBasicInformationChangeForm(
+                    request.POST,
+                    instance=grant,
+                    prefix=prefix,
+                )
+            )
+
+        else:
+            desired_values = (
+                previous_proposed_values_by_grant[
+                    child.grant_id
+                ]
+            )
+
+            form = (
+                GrantBasicInformationChangeForm(
+                    instance=grant,
+                    initial=desired_values,
+                    prefix=prefix,
+                )
+            )
+
+            _restore_coordinated_draft_add_new_state(
+                form,
+                desired_values,
+            )
+
+        form_cards.append(
+            {
+                "change_request": child,
+                "grant": grant,
+                "form": form,
+                "current_values": (
+                    current_values_by_grant[
+                        child.grant_id
+                    ]
+                ),
+            }
+        )
+
+    resubmission_comment = (
+        request.POST.get(
+            "comment",
+            "",
+        )
+        if request.method == "POST"
+        else ""
+    )
+
+    package_error = ""
+
+    # ---------------------------------------------------------
+    # Resubmit the entire package.
+    # ---------------------------------------------------------
+
+    if request.method == "POST":
+
+        if open_integrity_issues:
+            package_error = (
+                "This coordinated package has an open Basic Information "
+                "integrity incident. It cannot be resubmitted until the "
+                "incident is resolved."
+            )
+
+        else:
+            forms_are_valid = True
+
+            for card in form_cards:
+                if not card["form"].is_valid():
+                    forms_are_valid = False
+
+            if forms_are_valid:
+
+                proposed_form_data_by_grant = {
+                    card[
+                        "grant"
+                    ].grant_id: (
+                        _get_unprefixed_coordinated_form_data(
+                            card["form"],
+                            request.POST,
+                        )
+                    )
+                    for card
+                    in form_cards
+                }
+
+                try:
+                    result = (
+                        resubmit_coordinated_basic_information_change(
+                            coordinated_change_id=(
+                                coordinated_change.id
+                            ),
+                            resubmitter=request.user,
+                            proposed_form_data_by_grant=(
+                                proposed_form_data_by_grant
+                            ),
+                            comment=(
+                                resubmission_comment
+                            ),
+                        )
+                    )
+
+                except ChangeRequestIntegrityBlockedError as exc:
+                    messages.error(
+                        request,
+                        str(exc),
+                    )
+
+                    return redirect(
+                        "coordinated_change_resubmit",
+                        coordinated_change_id=(
+                            coordinated_change.id
+                        ),
+                    )
+
+                except CoordinatedChangeResubmitError as exc:
+                    package_error = str(exc)
+
+                except ChangeRequestValidationError as exc:
+                    package_error = str(exc)
+
+                except IntegrityError:
+                    messages.error(
+                        request,
+                        (
+                            "The coordinated package could not be "
+                            "resubmitted because its workflow state "
+                            "changed. Please review it again."
+                        ),
+                    )
+
+                    return redirect(
+                        "coordinated_change_resubmit",
+                        coordinated_change_id=(
+                            coordinated_change.id
+                        ),
+                    )
+
+                else:
+                    messages.success(
+                        request,
+                        (
+                            "Revision "
+                            f"{result.revision_no} of the coordinated "
+                            "package has been submitted for approval."
+                        ),
+                    )
+
+                    return redirect(
+                        "coordinated_change_review",
+                        coordinated_change_id=(
+                            coordinated_change.id
+                        ),
+                    )
+
+    return render(
+        request,
+        "tracking/coordinated_returned_editor.html",
+        {
+            "coordinated_change": (
+                coordinated_change
+            ),
+            "revision_no": revision_no,
+            "form_cards": form_cards,
+            "return_action": return_action,
+            "closed_integrity_issues": (
+                closed_integrity_issues
+            ),
+            "open_integrity_issues": (
+                open_integrity_issues
+            ),
+            "resubmission_comment": (
+                resubmission_comment
+            ),
+            "package_error": package_error,
+        },
+    )
 
 
 @role_required(ROLE_EDITOR)

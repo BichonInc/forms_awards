@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Revise Coordinated Change Request</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 1200px;
+            margin: auto;
+        }
+
+        .package-summary,
+        .return-feedback,
+        .integrity-info {
+            padding: 18px;
+            margin-bottom: 25px;
+            border-radius: 5px;
+        }
+
+        .package-summary {
+            background-color: #e9f3fb;
+        }
+
+        .return-feedback {
+            background-color: #fff3cd;
+            border: 1px solid #d6b656;
+        }
+
+        .integrity-info {
+            background-color: #f8f9fa;
+            border: 1px solid #aaa;
+        }
+
+        .grant-card {
+            margin-top: 25px;
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #aaa;
+            border-radius: 5px;
+        }
+
+        .grant-summary {
+            padding: 12px;
+            margin-bottom: 20px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-group label {
+            display: block;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            max-width: 700px;
+            padding: 7px;
+            box-sizing: border-box;
+        }
+
+        .field-error,
+        .package-error {
+            color: #721c24;
+            background-color: #f8d7da;
+            padding: 10px;
+            margin-top: 5px;
+            border-radius: 4px;
+        }
+
+        .messages {
+            margin-bottom: 20px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+
+        .messages.error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+
+        .messages.success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+
+        .integrity-alert {
+            padding: 18px;
+            margin-bottom: 25px;
+            border: 2px solid #b02a37;
+            border-radius: 5px;
+            background-color: #fff3cd;
+            color: #664d03;
+        }
+
+        .action-section {
+            margin-top: 30px;
+            margin-bottom: 30px;
+        }
+
+        .button-common {
+            display: inline-block;
+            border: none;
+            border-radius: 5px;
+            padding: 10px 20px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 1em;
+        }
+
+        .submit-button {
+            background-color: #4CAF50;
+            color: white;
+        }
+
+        .back-button {
+            background-color: #008CBA;
+            color: white;
+            margin-left: 10px;
+        }
+
+        textarea.comment {
+            width: 100%;
+            max-width: 800px;
+            min-height: 90px;
+        }
+    </style>
+</head>
+
+<body>
+<div class="container">
+
+    <h1>
+        Revise and Resubmit Coordinated Basic Information
+    </h1>
+
+    {% if messages %}
+        {% for message in messages %}
+            <div class="messages {{ message.tags }}">
+                {{ message }}
+            </div>
+        {% endfor %}
+    {% endif %}
+
+    <div class="package-summary">
+
+        <p>
+            <strong>Coordinated Request ID:</strong>
+            {{ coordinated_change.id }}
+        </p>
+
+        <p>
+            <strong>Status:</strong>
+            {{ coordinated_change.get_status_display }}
+        </p>
+
+        <p>
+            <strong>Current Revision:</strong>
+            {{ revision_no }}
+        </p>
+
+        <p>
+            All participating grants below will be resubmitted
+            together as Revision {{ revision_no|add:"1" }}.
+        </p>
+
+        <p>
+            Package membership is fixed during resubmission.
+        </p>
+
+    </div>
+
+    {% if return_action %}
+
+        <div class="return-feedback">
+
+            <h2>Return for Revision</h2>
+
+            <p>
+                <strong>Returned By:</strong>
+                {{ return_action.acted_by.username }}
+            </p>
+
+            <p>
+                <strong>Returned At:</strong>
+                {{ return_action.acted_at|date:"M j, Y, g:i A" }}
+            </p>
+
+            <p>
+                <strong>Feedback:</strong>
+            </p>
+
+            <p>
+                {{ return_action.comment|default:"No feedback provided." }}
+            </p>
+
+        </div>
+
+    {% endif %}
+
+    {% if closed_integrity_issues %}
+
+        <div class="integrity-info">
+
+            <h2>Administrator Integrity Disposition</h2>
+
+            <p>
+                One or more grants in this coordinated package had an
+                integrity incident reviewed by an Administrator before
+                the package was returned for revision.
+            </p>
+
+            <ul>
+                {% for issue in closed_integrity_issues %}
+                    <li>
+                        Grant {{ issue.change_request.grant_id }}
+                        &mdash;
+                        Incident #{{ issue.id }}
+                        &mdash;
+                        {{ issue.get_classification_display }}
+
+                        {% if issue.closed_by %}
+                            &mdash;
+                            reviewed by {{ issue.closed_by.username }}
+                        {% endif %}
+
+                        {% if issue.resolution_comment %}
+                            <br>
+                            {{ issue.resolution_comment }}
+                        {% endif %}
+                    </li>
+                {% endfor %}
+            </ul>
+
+        </div>
+
+    {% endif %}
+
+    {% if open_integrity_issues %}
+
+        <div class="integrity-alert">
+
+            <h2>Resubmission Blocked</h2>
+
+            <p>
+                This coordinated package currently has one or more
+                open Basic Information integrity incidents.
+            </p>
+
+            <p>
+                The package cannot be resubmitted until every open
+                incident receives its Administrator disposition.
+            </p>
+
+            <ul>
+                {% for issue in open_integrity_issues %}
+                    <li>
+                        Grant {{ issue.change_request.grant_id }}
+                        &mdash;
+                        Change Request #{{ issue.change_request.id }}
+                        &mdash;
+                        Integrity Incident #{{ issue.id }}
+                    </li>
+                {% endfor %}
+            </ul>
+
+        </div>
+
+    {% endif %}
+
+    {% if package_error %}
+        <div class="package-error">
+            {{ package_error }}
+        </div>
+    {% endif %}
+
+    <form
+        method="post"
+        action="{% url 'coordinated_change_resubmit' coordinated_change.id %}"
+    >
+
+        {% csrf_token %}
+
+        {% for card in form_cards %}
+
+            <div class="grant-card">
+
+                <div class="grant-summary">
+
+                    <h2>
+                        Grant {{ card.change_request.grant_id }}
+                    </h2>
+
+                    <p>
+                        <strong>Child Change Request:</strong>
+                        #{{ card.change_request.id }}
+                    </p>
+
+                    <p>
+                        <strong>Current Program Title:</strong>
+                        {{ card.grant.program_title }}
+                    </p>
+
+                    <p>
+                        <strong>Current Contract Number:</strong>
+                        {{ card.grant.contract_number }}
+                    </p>
+
+                </div>
+
+                {% if card.form.non_field_errors %}
+                    <div class="field-error">
+                        {{ card.form.non_field_errors }}
+                    </div>
+                {% endif %}
+
+                {% for hidden in card.form.hidden_fields %}
+                    {{ hidden }}
+                {% endfor %}
+
+                {% for field in card.form.visible_fields %}
+
+                    <div class="form-group">
+
+                        {{ field.label_tag }}
+
+                        {{ field }}
+
+                        {% if field.help_text %}
+                            <div>
+                                {{ field.help_text }}
+                            </div>
+                        {% endif %}
+
+                        {% if field.errors %}
+                            <div class="field-error">
+                                {{ field.errors }}
+                            </div>
+                        {% endif %}
+
+                    </div>
+
+                {% endfor %}
+
+            </div>
+
+        {% endfor %}
+
+        <div class="form-group">
+
+            <label for="id_comment">
+                Resubmission Comment:
+            </label>
+
+            <textarea
+                id="id_comment"
+                name="comment"
+                class="comment"
+                maxlength="500"
+            >{{ resubmission_comment }}</textarea>
+
+        </div>
+
+        <div class="action-section">
+
+            {% if not open_integrity_issues %}
+
+                <button
+                    type="submit"
+                    class="button-common submit-button"
+                    onclick="return confirm(
+                        'Resubmit this entire coordinated package as the next revision?'
+                    );"
+                >
+                    Resubmit Coordinated Package
+                </button>
+
+            {% endif %}
+
+            <a
+                href="{% url 'grant_list' %}"
+                class="button-common back-button"
+            >
+                Back to Grant List
+            </a>
+
+        </div>
+
+    </form>
+
+</div>
+</body>
+</html>
