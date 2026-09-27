@@ -201,6 +201,14 @@ class CoordinatedChangeApprovalError(
     """
 
 
+class CoordinatedChangeReturnError(
+        ChangeRequestReturnError
+):
+    """
+    Raised when a coordinated package cannot be returned for revision.
+    """
+
+
 class CoordinatedChangeChildBaselineMismatchError(
         ChangeRequestBaselineMismatchError
 ):
@@ -496,6 +504,17 @@ class CoordinatedApprovalResult:
     approver_id: int
     applied_at: datetime | None
     gl_rematch_result: object
+
+
+@dataclass(frozen=True)
+class CoordinatedReturnResult:
+    coordinated_change_id: int
+    status: str
+    revision_no: int
+    approval_count: int
+    change_request_ids: tuple
+    grant_ids: tuple
+    returned_by_id: int
 
 
 def serialize_change_request_value(value):
@@ -5386,6 +5405,471 @@ def approve_coordinated_basic_information_change(
         )
 
     return approval_result
+
+
+def return_coordinated_basic_information_change(
+        *,
+        coordinated_change_id,
+        approver,
+        comment,
+):
+    """
+    Return a submitted coordinated Basic Information package for revision.
+
+    The package is one workflow unit:
+
+      - the parent and every child must currently be PENDING;
+      - every child must be on the package's current revision;
+      - child submission and approval histories must remain synchronized;
+      - the package revision submitter cannot return their own revision;
+      - an approver who already approved the current revision cannot return it;
+      - existing approvals remain immutable history;
+      - one RETURN action is recorded on every child;
+      - the parent and every child move to RETURNED together;
+      - no authoritative Form1 values are changed.
+
+    If an authoritative child baseline mismatch is detected, the existing
+    Change Request integrity workflow is used for that child and the
+    coordinated Return for Revision is blocked.
+    """
+    feedback = (comment or "").strip()
+
+    if (
+        approver is None
+        or getattr(approver, "pk", None) is None
+    ):
+        raise CoordinatedChangeReturnError(
+            "A saved user is required to return a coordinated package."
+        )
+
+    if not feedback:
+        raise CoordinatedChangeReturnError(
+            "Return for Revision requires feedback."
+        )
+
+    if len(feedback) > 500:
+        raise CoordinatedChangeReturnError(
+            "Return for Revision feedback cannot exceed 500 characters."
+        )
+
+    blocked_integrity_issue_id = None
+    blocked_integrity_issue_created = False
+    return_result = None
+
+    with transaction.atomic():
+
+        try:
+            coordinated_change = (
+                CoordinatedChange.objects
+                .select_for_update()
+                .get(
+                    pk=coordinated_change_id
+                )
+            )
+
+        except CoordinatedChange.DoesNotExist as exc:
+            raise CoordinatedChangeReturnError(
+                "The coordinated package does not exist."
+            ) from exc
+
+        if (
+            coordinated_change.status
+            != CoordinatedChange.Status.PENDING
+        ):
+            raise CoordinatedChangeReturnError(
+                "This coordinated package is no longer pending review."
+            )
+
+        revision_no = (
+            coordinated_change.current_revision
+        )
+
+        #
+        # Structural validation confirms:
+        #   - at least two children,
+        #   - parent/child revision synchronization,
+        #   - parent/child status synchronization,
+        #   - supported child structure,
+        #   - complete formal snapshots.
+        #
+        validate_coordinated_change_structure(
+            coordinated_change,
+            lock_children=True,
+        )
+
+        change_requests = tuple(
+            ChangeRequest.objects
+            .select_for_update()
+            .filter(
+                coordinated_change=(
+                    coordinated_change
+                )
+            )
+            .order_by("id")
+        )
+
+        if not change_requests:
+            raise CoordinatedChangeReturnError(
+                "The coordinated package does not contain "
+                "any child Change Requests."
+            )
+
+        for change_request in change_requests:
+            if (
+                change_request.request_type
+                != ChangeRequest.RequestType.EDIT_GRANT
+            ):
+                raise CoordinatedChangeReturnError(
+                    "Coordinated Return for Revision currently "
+                    "supports only existing-grant Basic Information "
+                    "Change Requests."
+                )
+
+        # -------------------------------------------------
+        # An existing open integrity incident on any child
+        # blocks the whole package.
+        # -------------------------------------------------
+
+        for change_request in change_requests:
+
+            existing_integrity_issue = (
+                get_open_change_request_integrity_issue(
+                    change_request,
+                    lock=True,
+                )
+            )
+
+            if existing_integrity_issue is not None:
+                blocked_integrity_issue_id = (
+                    existing_integrity_issue.id
+                )
+
+                blocked_integrity_issue_created = False
+
+                break
+
+        if blocked_integrity_issue_id is None:
+
+            # -------------------------------------------------
+            # Every child must identify the same submitter for
+            # the current formal package revision.
+            # -------------------------------------------------
+
+            revision_submitter_ids = set()
+
+            for change_request in change_requests:
+
+                try:
+                    revision_submitter_id = (
+                        get_revision_submitter_id(
+                            change_request
+                        )
+                    )
+
+                except ChangeRequestApprovalError as exc:
+                    raise CoordinatedChangeReturnError(
+                        f"Child Change Request "
+                        f"#{change_request.id} has invalid "
+                        "submission history: "
+                        + str(exc)
+                    ) from exc
+
+                revision_submitter_ids.add(
+                    revision_submitter_id
+                )
+
+            if len(revision_submitter_ids) != 1:
+                raise CoordinatedChangeReturnError(
+                    "The coordinated package children do not identify "
+                    "the same submitter for the current revision."
+                )
+
+            revision_submitter_id = next(
+                iter(revision_submitter_ids)
+            )
+
+            if revision_submitter_id == approver.pk:
+                raise CoordinatedChangeReturnError(
+                    "You cannot return a coordinated package revision "
+                    "that you submitted."
+                )
+
+            # -------------------------------------------------
+            # Approval history is a package-level invariant.
+            #
+            # Every child must contain the same ordered approver
+            # sequence for this revision.
+            # -------------------------------------------------
+
+            approval_histories = []
+
+            for change_request in change_requests:
+
+                approval_user_ids = tuple(
+                    ChangeAction.objects
+                    .filter(
+                        change_request=(
+                            change_request
+                        ),
+                        revision_no=revision_no,
+                        action=(
+                            ChangeAction.Action.APPROVE
+                        ),
+                    )
+                    .order_by(
+                        "acted_at",
+                        "id",
+                    )
+                    .values_list(
+                        "acted_by_id",
+                        flat=True,
+                    )
+                )
+
+                approval_histories.append(
+                    (
+                        change_request.id,
+                        approval_user_ids,
+                    )
+                )
+
+            prior_approval_user_ids = (
+                approval_histories[0][1]
+            )
+
+            histories_are_synchronized = all(
+                approval_user_ids
+                == prior_approval_user_ids
+                for (
+                    _change_request_id,
+                    approval_user_ids,
+                )
+                in approval_histories
+            )
+
+            if not histories_are_synchronized:
+                raise CoordinatedChangeReturnError(
+                    "The coordinated package child approval histories "
+                    "are not synchronized."
+                )
+
+            approval_count = len(
+                prior_approval_user_ids
+            )
+
+            if approval_count >= 2:
+                raise CoordinatedChangeReturnError(
+                    "A fully approved coordinated package revision "
+                    "cannot be returned for changes."
+                )
+
+            if (
+                revision_submitter_id
+                in prior_approval_user_ids
+            ):
+                raise CoordinatedChangeReturnError(
+                    "The coordinated package contains an approval "
+                    "recorded by the revision submitter."
+                )
+
+            if approver.pk in prior_approval_user_ids:
+                raise CoordinatedChangeReturnError(
+                    "You have already approved this coordinated "
+                    "package revision and cannot return the same "
+                    "revision for changes."
+                )
+
+            # -------------------------------------------------
+            # A PENDING current revision must not already contain
+            # a RETURN action.
+            # -------------------------------------------------
+
+            for change_request in change_requests:
+
+                existing_return_count = (
+                    ChangeAction.objects
+                    .filter(
+                        change_request=(
+                            change_request
+                        ),
+                        revision_no=revision_no,
+                        action=(
+                            ChangeAction.Action.RETURN
+                        ),
+                    )
+                    .count()
+                )
+
+                if existing_return_count:
+                    raise CoordinatedChangeReturnError(
+                        f"Child Change Request "
+                        f"#{change_request.id} already contains "
+                        "a Return for Revision action for the "
+                        "current revision."
+                    )
+
+            # -------------------------------------------------
+            # Lock every authoritative grant before checking
+            # formal revision baselines.
+            #
+            # Ordinary Return validates the immutable formal
+            # revision baseline, just like standalone Return.
+            # It does NOT rewrite or rebase snapshots.
+            # -------------------------------------------------
+
+            grant_ids = tuple(
+                change_request.grant_id
+                for change_request
+                in change_requests
+            )
+
+            grants = tuple(
+                Form1.objects
+                .select_for_update()
+                .filter(
+                    grant_id__in=grant_ids
+                )
+            )
+
+            grants_by_id = {
+                grant.grant_id: grant
+                for grant in grants
+            }
+
+            if len(grants_by_id) != len(
+                set(grant_ids)
+            ):
+                raise CoordinatedChangeReturnError(
+                    "One or more authoritative grants belonging "
+                    "to the coordinated package could not be found."
+                )
+
+            # -------------------------------------------------
+            # Validate every child before creating any RETURN
+            # action or changing any package status.
+            # -------------------------------------------------
+
+            for change_request in change_requests:
+
+                grant = grants_by_id[
+                    change_request.grant_id
+                ]
+
+                try:
+                    validate_basic_information_revision_baseline(
+                        change_request,
+                        grant=grant,
+                    )
+
+                except ChangeRequestBaselineMismatchError:
+
+                    detection_result = (
+                        detect_or_get_change_request_integrity_issue(
+                            change_request_id=(
+                                change_request.id
+                            ),
+                            detected_by=approver,
+                            detected_during=(
+                                ChangeRequestIntegrityIssue
+                                .DetectedDuring
+                                .RETURN
+                            ),
+                        )
+                    )
+
+                    blocked_integrity_issue_id = (
+                        detection_result.integrity_issue_id
+                    )
+
+                    blocked_integrity_issue_created = (
+                        detection_result.created
+                    )
+
+                    break
+
+            # -------------------------------------------------
+            # Only after every child baseline has passed do we
+            # write package-level RETURN history and statuses.
+            # -------------------------------------------------
+
+            if blocked_integrity_issue_id is None:
+
+                for change_request in change_requests:
+
+                    ChangeAction.objects.create(
+                        change_request=(
+                            change_request
+                        ),
+                        revision_no=revision_no,
+                        acted_by=approver,
+                        action=(
+                            ChangeAction.Action.RETURN
+                        ),
+                        comment=feedback,
+                    )
+
+                for change_request in change_requests:
+                    change_request.status = (
+                        ChangeRequest.Status.RETURNED
+                    )
+
+                ChangeRequest.objects.bulk_update(
+                    change_requests,
+                    ["status"],
+                )
+
+                coordinated_change.status = (
+                    CoordinatedChange.Status.RETURNED
+                )
+
+                coordinated_change.save(
+                    update_fields=[
+                        "status",
+                    ]
+                )
+
+                return_result = (
+                    CoordinatedReturnResult(
+                        coordinated_change_id=(
+                            coordinated_change.id
+                        ),
+                        status=(
+                            coordinated_change.status
+                        ),
+                        revision_no=revision_no,
+                        approval_count=(
+                            approval_count
+                        ),
+                        change_request_ids=tuple(
+                            change_request.id
+                            for change_request
+                            in change_requests
+                        ),
+                        grant_ids=tuple(
+                            change_request.grant_id
+                            for change_request
+                            in change_requests
+                        ),
+                        returned_by_id=(
+                            approver.pk
+                        ),
+                    )
+                )
+
+    #
+    # Do not raise this inside the transaction. The integrity
+    # incident must commit first, exactly like the standalone
+    # workflow.
+    #
+    if blocked_integrity_issue_id is not None:
+        raise ChangeRequestIntegrityBlockedError(
+            blocked_integrity_issue_id,
+            newly_detected=(
+                blocked_integrity_issue_created
+            ),
+        )
+
+    return return_result
 
 
 def validate_basic_information_change_request(
