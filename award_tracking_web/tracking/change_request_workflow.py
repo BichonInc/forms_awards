@@ -8,6 +8,7 @@ from django.utils import timezone
 from .forms import (
     GRANT_BASIC_INFORMATION_CHANGE_FIELDS,
     GrantBasicInformationChangeForm,
+    BASIC_INFORMATION_DATE_ONLY_FIELDS,
 )
 from .gl_assignment import rematch_gl_expenditures
 from .models import (
@@ -577,6 +578,71 @@ def serialize_change_request_value(value):
     return str(value)
 
 
+def _serialize_basic_information_comparison_value(
+        field_name,
+        value,
+):
+    """
+    Serialize a Basic Information value for semantic change comparison.
+
+    The four contract/GL date fields are business calendar dates even
+    though Form1 currently stores them in DateTimeField columns.
+
+    For those fields, timezone/time-of-day differences must not create a
+    false workflow change when the calendar date itself is unchanged.
+
+    Audit storage continues to use serialize_change_request_value(), so
+    existing full datetime evidence is not rewritten or weakened.
+    """
+    if (
+        field_name
+        not in BASIC_INFORMATION_DATE_ONLY_FIELDS
+    ):
+        return serialize_change_request_value(
+            value
+        )
+
+    if value is None:
+        return ""
+
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+
+    if isinstance(value, date):
+        return value.isoformat()
+
+    value_text = str(value).strip()
+
+    if not value_text:
+        return ""
+
+    normalized_text = (
+        value_text[:-1] + "+00:00"
+        if value_text.endswith("Z")
+        else value_text
+    )
+
+    try:
+        return (
+            datetime
+            .fromisoformat(normalized_text)
+            .date()
+            .isoformat()
+        )
+
+    except ValueError:
+        try:
+            return (
+                date
+                .fromisoformat(value_text)
+                .isoformat()
+            )
+
+        except ValueError:
+            # Validation will handle malformed date data.
+            return value_text
+
+
 def build_basic_information_field_snapshot_values(
         *,
         grant,
@@ -611,22 +677,47 @@ def build_basic_information_field_snapshot_values(
     for field_name in (
         GRANT_BASIC_INFORMATION_CHANGE_FIELDS
     ):
+        current_raw_value = getattr(
+            grant,
+            field_name,
+        )
+
+        proposed_raw_value = (
+            proposed_values[
+                field_name
+            ]
+        )
+
         current_value = (
             serialize_change_request_value(
-                getattr(
-                    grant,
-                    field_name,
-                )
+                current_raw_value
             )
         )
 
         proposed_value = (
             serialize_change_request_value(
-                proposed_values[field_name]
+                proposed_raw_value
             )
         )
 
-        if proposed_value == current_value:
+        current_comparison_value = (
+            _serialize_basic_information_comparison_value(
+                field_name,
+                current_raw_value,
+            )
+        )
+
+        proposed_comparison_value = (
+            _serialize_basic_information_comparison_value(
+                field_name,
+                proposed_raw_value,
+            )
+        )
+
+        if (
+                proposed_comparison_value
+                == current_comparison_value
+        ):
             stored_proposed_value = None
         else:
             stored_proposed_value = proposed_value
@@ -2504,23 +2595,25 @@ def _validate_basic_information_proposed_form_data(
         in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
     }
 
-    current_values = {
-        field_name: serialize_change_request_value(
-            getattr(grant, field_name)
-        )
-        for field_name
-        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
-    }
-
     changed_fields = tuple(
         field_name
         for field_name
         in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
         if (
-            serialize_change_request_value(
-                proposed_values[field_name]
+            _serialize_basic_information_comparison_value(
+                field_name,
+                proposed_values[
+                    field_name
+                ],
             )
-            != current_values[field_name]
+            !=
+            _serialize_basic_information_comparison_value(
+                field_name,
+                getattr(
+                    grant,
+                    field_name,
+                ),
+            )
         )
     )
 

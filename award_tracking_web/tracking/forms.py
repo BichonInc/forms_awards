@@ -5,6 +5,7 @@ from .models import (
 )
 from django.core.exceptions import ValidationError
 import re
+from datetime import date, datetime
 
 GRANT_BASIC_INFORMATION_CHANGE_FIELDS = (
     "program_title",
@@ -22,6 +23,46 @@ GRANT_BASIC_INFORMATION_CHANGE_FIELDS = (
     "internal_gl_start_date",
     "internal_gl_end_date",
 )
+
+
+BASIC_INFORMATION_DATE_ONLY_FIELDS = frozenset({
+    "contract_start_date",
+    "contract_end_date",
+    "internal_gl_start_date",
+    "internal_gl_end_date",
+})
+
+
+def _normalize_basic_information_date_initial(
+        value,
+):
+    """
+    Normalize a business-date value for an HTML date input.
+
+    Form1 currently stores these business dates in DateTimeField columns,
+    but the Change Request UI intentionally presents them as calendar dates.
+    """
+    if value is None:
+        return ""
+
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+
+    if isinstance(value, date):
+        return value.isoformat()
+
+    value_text = str(value).strip()
+
+    if not value_text:
+        return ""
+
+    try:
+        return date.fromisoformat(
+            value_text[:10]
+        ).isoformat()
+
+    except ValueError:
+        return value_text
 
 
 class GrantForm(forms.ModelForm):
@@ -330,6 +371,37 @@ class GrantBasicInformationChangeForm(GrantForm):
 
     class Meta(GrantForm.Meta):
         fields = GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # Bound forms must preserve exactly what the user submitted.
+        if self.is_bound:
+            return
+
+        for field_name in (
+            BASIC_INFORMATION_DATE_ONLY_FIELDS
+        ):
+            if field_name not in self.fields:
+                continue
+
+            if field_name in self.initial:
+                initial_value = (
+                    self.initial[field_name]
+                )
+            else:
+                initial_value = getattr(
+                    self.instance,
+                    field_name,
+                    None,
+                )
+
+            self.initial[field_name] = (
+                _normalize_basic_information_date_initial(
+                    initial_value
+                )
+            )
+
 
     def clean(self):
         cleaned_data = super().clean()
