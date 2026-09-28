@@ -243,3 +243,99 @@ class BusinessDateWorkflowRegressionTests(TestCase):
                 "proposed_value"
             ]
         )
+
+    def test_bound_change_form_preserves_submitted_date_value(
+            self,
+    ):
+        """
+        A bound form must preserve the user's submitted date rather than
+        replacing it with a normalized value from Form1 or initial data.
+        """
+        form = GrantBasicInformationChangeForm(
+            data={
+                (
+                    "grant_A99999-"
+                    "contract_start_date"
+                ): "2021-11-02",
+            },
+            instance=self.grant,
+            initial={
+                "contract_start_date": (
+                    "2021-11-01T00:00:00+00:00"
+                ),
+            },
+            prefix="grant_A99999",
+        )
+
+        rendered = (
+            form["contract_start_date"].as_widget()
+        )
+
+        self.assertIn(
+            'value="2021-11-02"',
+            rendered,
+        )
+
+        self.assertNotIn(
+            'value="2021-11-01"',
+            rendered,
+        )
+
+    def test_changed_business_date_snapshot_keeps_full_proposed_value(
+            self,
+    ):
+        """
+        A real calendar-date change must remain visible in the audit
+        snapshot with its complete serialized proposed datetime.
+        """
+        proposed_values = {
+            field_name: getattr(
+                self.grant,
+                field_name,
+            )
+            for field_name
+            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        }
+
+        proposed_values[
+            "contract_start_date"
+        ] = datetime(
+            2021,
+            11,
+            2,
+            0,
+            0,
+            tzinfo=self.pacific,
+        )
+
+        snapshots = (
+            build_basic_information_field_snapshot_values(
+                grant=self.grant,
+                proposed_values=proposed_values,
+            )
+        )
+
+        snapshots_by_field = {
+            snapshot["field_name"]: snapshot
+            for snapshot in snapshots
+        }
+
+        contract_start_snapshot = (
+            snapshots_by_field[
+                "contract_start_date"
+            ]
+        )
+
+        self.assertEqual(
+            contract_start_snapshot[
+                "current_value"
+            ],
+            "2021-11-01T00:00:00+00:00",
+        )
+
+        self.assertEqual(
+            contract_start_snapshot[
+                "proposed_value"
+            ],
+            "2021-11-02T00:00:00-07:00",
+        )
