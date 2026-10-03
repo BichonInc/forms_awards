@@ -79,6 +79,8 @@ from .change_request_workflow import (
     approve_coordinated_basic_information_change,
     CoordinatedChangeReturnError,
     return_coordinated_basic_information_change,
+    CoordinatedChangeDenyError,
+    deny_coordinated_basic_information_change,
     CoordinatedChangeResubmitError,
     resubmit_coordinated_basic_information_change,
 )
@@ -3741,7 +3743,10 @@ def coordinated_change_review(
 
     is_history_package = (
         coordinated_change.status
-        == CoordinatedChange.Status.APPLIED
+        in (
+            CoordinatedChange.Status.APPLIED,
+            CoordinatedChange.Status.DENIED,
+        )
     )
 
     if is_active_package:
@@ -3816,11 +3821,23 @@ def coordinated_change_review(
             "are not on the same revision."
         )
 
-    expected_child_status = (
-        ChangeRequest.Status.PENDING
-        if is_active_package
-        else ChangeRequest.Status.APPROVED
-    )
+    if is_active_package:
+        expected_child_status = (
+            ChangeRequest.Status.PENDING
+        )
+
+    elif (
+        coordinated_change.status
+        == CoordinatedChange.Status.APPLIED
+    ):
+        expected_child_status = (
+            ChangeRequest.Status.APPROVED
+        )
+
+    else:
+        expected_child_status = (
+            ChangeRequest.Status.DENIED
+        )
 
     status_mismatches = [
         child.id
@@ -4089,6 +4106,104 @@ def coordinated_change_review(
         )
 
     # ---------------------------------------------------------
+    # Deny history must also be synchronized across all children.
+    #
+    # A terminal DENIED package contains exactly one DENY action
+    # on every child for the current revision, by the same user
+    # and with the same denial reason.
+    # ---------------------------------------------------------
+
+    deny_action = None
+    deny_actions_by_child = {}
+
+    for child in children:
+        child_denials = tuple(
+            ChangeAction.objects
+            .filter(
+                change_request=child,
+                revision_no=revision_no,
+                action=(
+                    ChangeAction.Action.DENY
+                ),
+            )
+            .select_related(
+                "acted_by",
+            )
+            .order_by(
+                "acted_at",
+                "id",
+            )
+        )
+
+        deny_actions_by_child[
+            child.id
+        ] = child_denials
+
+    if (
+            coordinated_change.status
+            == CoordinatedChange.Status.DENIED
+    ):
+
+        denial_counts_are_valid = all(
+            len(child_denials) == 1
+            for child_denials
+            in deny_actions_by_child.values()
+        )
+
+        if not denial_counts_are_valid:
+            workflow_errors.append(
+                "The denied coordinated package does not "
+                "contain exactly one Deny action on every "
+                "child for the current revision."
+            )
+
+        elif children:
+            first_child = children[0]
+
+            first_deny_action = (
+                deny_actions_by_child[
+                    first_child.id
+                ][0]
+            )
+
+            first_deny_signature = (
+                first_deny_action.acted_by_id,
+                first_deny_action.comment,
+            )
+
+            denial_histories_synchronized = all(
+                (
+                    child_denials[0].acted_by_id,
+                    child_denials[0].comment,
+                )
+                == first_deny_signature
+                for child_denials
+                in deny_actions_by_child.values()
+            )
+
+            if denial_histories_synchronized:
+                deny_action = first_deny_action
+
+            else:
+                workflow_errors.append(
+                    "The coordinated package child Deny "
+                    "histories are not synchronized."
+                )
+
+    else:
+        unexpected_deny_actions = any(
+            child_denials
+            for child_denials
+            in deny_actions_by_child.values()
+        )
+
+        if unexpected_deny_actions:
+            workflow_errors.append(
+                "The coordinated package contains Deny "
+                "history but is not in Denied status."
+            )
+
+    # ---------------------------------------------------------
     # Any open child integrity incident blocks the package.
     # ---------------------------------------------------------
 
@@ -4129,8 +4244,10 @@ def coordinated_change_review(
 
     can_return = can_approve
 
+    can_deny = can_approve
+
     # ---------------------------------------------------------
-    # Package-level Approve / Return for Revision.
+    # Package-level Approve / Return / Deny.
     # ---------------------------------------------------------
 
     if request.method == "POST":
@@ -4143,6 +4260,7 @@ def coordinated_change_review(
         if action not in {
             "approve",
             "return",
+            "deny",
         }:
             messages.error(
                 request,
@@ -4156,6 +4274,89 @@ def coordinated_change_review(
                 "coordinated_change_review",
                 coordinated_change_id=(
                     coordinated_change.id
+                ),
+            )
+
+        # =====================================================
+        # Deny entire coordinated package.
+        # =====================================================
+
+        if action == "deny":
+
+            deny_comment = request.POST.get(
+                "deny_comment",
+                "",
+            )
+
+            try:
+                deny_result = (
+                    deny_coordinated_basic_information_change(
+                        coordinated_change_id=(
+                            coordinated_change.id
+                        ),
+                        approver=request.user,
+                        comment=deny_comment,
+                    )
+                )
+
+            except ChangeRequestIntegrityBlockedError as exc:
+                messages.error(
+                    request,
+                    str(exc),
+                )
+
+                return redirect(
+                    "coordinated_change_review",
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                )
+
+            except (
+                    CoordinatedChangeDenyError,
+                    ChangeRequestValidationError,
+            ) as exc:
+                messages.error(
+                    request,
+                    str(exc),
+                )
+
+                return redirect(
+                    "coordinated_change_review",
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                )
+
+            except IntegrityError:
+                messages.error(
+                    request,
+                    (
+                        "The coordinated package could not be "
+                        "denied because its workflow state "
+                        "changed. Please review it again."
+                    ),
+                )
+
+                return redirect(
+                    "coordinated_change_review",
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                )
+
+            messages.success(
+                request,
+                (
+                    "The coordinated package has been denied. "
+                    "No Basic Information changes were applied."
+                ),
+            )
+
+            return redirect(
+                "coordinated_change_review",
+                coordinated_change_id=(
+                    deny_result.coordinated_change_id
                 ),
             )
 
@@ -4345,6 +4546,8 @@ def coordinated_change_review(
             ),
             "can_approve": can_approve,
             "can_return": can_return,
+            "can_deny": can_deny,
+            "deny_action": deny_action,
             "workflow_errors": (
                 workflow_errors
             ),

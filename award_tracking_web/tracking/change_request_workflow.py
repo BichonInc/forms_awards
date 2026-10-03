@@ -225,6 +225,14 @@ class CoordinatedChangeReturnError(
     """
 
 
+class CoordinatedChangeDenyError(
+        ChangeRequestDenyError
+):
+    """
+    Raised when a coordinated package cannot be denied.
+    """
+
+
 class CoordinatedChangeResubmitError(
         ChangeRequestResubmitError
 ):
@@ -560,6 +568,17 @@ class CoordinatedReturnResult:
     change_request_ids: tuple
     grant_ids: tuple
     returned_by_id: int
+
+
+@dataclass(frozen=True)
+class CoordinatedDenyResult:
+    coordinated_change_id: int
+    status: str
+    revision_no: int
+    approval_count: int
+    change_request_ids: tuple
+    grant_ids: tuple
+    denied_by_id: int
 
 
 @dataclass(frozen=True)
@@ -6481,6 +6500,355 @@ def return_coordinated_basic_information_change(
         )
 
     return return_result
+
+
+def deny_coordinated_basic_information_change(
+        *,
+        coordinated_change_id,
+        approver,
+        comment,
+):
+    """
+    Deny a submitted coordinated Basic Information package.
+
+    Denial is terminal for the whole package:
+
+      - the parent and every child must currently be PENDING;
+      - every child must be on the package's current revision;
+      - child submission and approval histories must be synchronized;
+      - the package revision submitter cannot deny their own revision;
+      - an approver who already approved the current revision cannot deny it;
+      - existing approvals remain immutable history;
+      - a denial reason is required;
+      - one DENY action is recorded on every child;
+      - the parent and every child move to DENIED together;
+      - authoritative Form1 values are not changed.
+    """
+    feedback = (comment or "").strip()
+
+    if (
+        approver is None
+        or getattr(approver, "pk", None) is None
+    ):
+        raise CoordinatedChangeDenyError(
+            "A saved user is required to deny a coordinated package."
+        )
+
+    if not feedback:
+        raise CoordinatedChangeDenyError(
+            "Denial requires a reason."
+        )
+
+    if len(feedback) > 500:
+        raise CoordinatedChangeDenyError(
+            "Denial reason cannot exceed 500 characters."
+        )
+
+    with transaction.atomic():
+
+        try:
+            coordinated_change = (
+                CoordinatedChange.objects
+                .select_for_update()
+                .get(
+                    pk=coordinated_change_id
+                )
+            )
+
+        except CoordinatedChange.DoesNotExist as exc:
+            raise CoordinatedChangeDenyError(
+                "The coordinated package does not exist."
+            ) from exc
+
+        if (
+            coordinated_change.status
+            != CoordinatedChange.Status.PENDING
+        ):
+            raise CoordinatedChangeDenyError(
+                "This coordinated package is no longer pending review."
+            )
+
+        if coordinated_change.applied_at is not None:
+            raise CoordinatedChangeDenyError(
+                "An applied coordinated package cannot be denied."
+            )
+
+        revision_no = (
+            coordinated_change.current_revision
+        )
+
+        # -----------------------------------------------------
+        # Validate and lock the complete package boundary.
+        #
+        # This protects:
+        #   - minimum child count,
+        #   - parent/child revision synchronization,
+        #   - parent/child status synchronization,
+        #   - supported child structure,
+        #   - complete current-revision snapshots.
+        # -----------------------------------------------------
+
+        try:
+            structure_result = (
+                validate_coordinated_change_structure(
+                    coordinated_change,
+                    lock_children=True,
+                )
+            )
+
+        except ChangeRequestValidationError as exc:
+            raise CoordinatedChangeDenyError(
+                str(exc)
+            ) from exc
+
+        change_requests = tuple(
+            structure_result.change_requests
+        )
+
+        if not change_requests:
+            raise CoordinatedChangeDenyError(
+                "The coordinated package does not contain "
+                "any child Change Requests."
+            )
+
+        for change_request in change_requests:
+            if (
+                change_request.request_type
+                != ChangeRequest.RequestType.EDIT_GRANT
+            ):
+                raise CoordinatedChangeDenyError(
+                    "Coordinated Deny currently supports only "
+                    "existing-grant Basic Information Change Requests."
+                )
+
+        # -----------------------------------------------------
+        # Any existing OPEN child integrity incident blocks
+        # normal package workflow actions, including Deny.
+        # -----------------------------------------------------
+
+        for change_request in change_requests:
+
+            existing_integrity_issue = (
+                get_open_change_request_integrity_issue(
+                    change_request,
+                    lock=True,
+                )
+            )
+
+            if existing_integrity_issue is not None:
+                raise ChangeRequestIntegrityBlockedError(
+                    existing_integrity_issue.id,
+                    newly_detected=False,
+                )
+
+        # -----------------------------------------------------
+        # Every child must identify the same submitter for
+        # this formal package revision.
+        # -----------------------------------------------------
+
+        revision_submitter_ids = set()
+
+        for change_request in change_requests:
+
+            try:
+                revision_submitter_id = (
+                    get_revision_submitter_id(
+                        change_request
+                    )
+                )
+
+            except ChangeRequestApprovalError as exc:
+                raise CoordinatedChangeDenyError(
+                    f"Child Change Request "
+                    f"#{change_request.id} has invalid "
+                    "submission history: "
+                    + str(exc)
+                ) from exc
+
+            revision_submitter_ids.add(
+                revision_submitter_id
+            )
+
+        if len(revision_submitter_ids) != 1:
+            raise CoordinatedChangeDenyError(
+                "The coordinated package children do not identify "
+                "the same submitter for the current revision."
+            )
+
+        revision_submitter_id = next(
+            iter(revision_submitter_ids)
+        )
+
+        if revision_submitter_id == approver.pk:
+            raise CoordinatedChangeDenyError(
+                "You cannot deny a coordinated package revision "
+                "that you submitted."
+            )
+
+        # -----------------------------------------------------
+        # Approval history is a package-level invariant.
+        #
+        # Every child must contain the same ordered approver
+        # sequence for the current revision.
+        # -----------------------------------------------------
+
+        approval_histories = []
+
+        for change_request in change_requests:
+
+            approval_user_ids = tuple(
+                ChangeAction.objects
+                .filter(
+                    change_request=change_request,
+                    revision_no=revision_no,
+                    action=(
+                        ChangeAction.Action.APPROVE
+                    ),
+                )
+                .order_by(
+                    "acted_at",
+                    "id",
+                )
+                .values_list(
+                    "acted_by_id",
+                    flat=True,
+                )
+            )
+
+            approval_histories.append(
+                (
+                    change_request.id,
+                    approval_user_ids,
+                )
+            )
+
+        prior_approval_user_ids = (
+            approval_histories[0][1]
+        )
+
+        histories_are_synchronized = all(
+            approval_user_ids
+            == prior_approval_user_ids
+            for (
+                _change_request_id,
+                approval_user_ids,
+            )
+            in approval_histories
+        )
+
+        if not histories_are_synchronized:
+            raise CoordinatedChangeDenyError(
+                "The coordinated package child approval histories "
+                "are not synchronized."
+            )
+
+        approval_count = len(
+            prior_approval_user_ids
+        )
+
+        if approval_count >= 2:
+            raise CoordinatedChangeDenyError(
+                "A fully approved coordinated package revision "
+                "cannot be denied."
+            )
+
+        if (
+            revision_submitter_id
+            in prior_approval_user_ids
+        ):
+            raise CoordinatedChangeDenyError(
+                "The coordinated package contains an approval "
+                "recorded by the revision submitter."
+            )
+
+        if approver.pk in prior_approval_user_ids:
+            raise CoordinatedChangeDenyError(
+                "You have already approved this coordinated "
+                "package revision and cannot deny the same revision."
+            )
+
+        # -----------------------------------------------------
+        # A PENDING package must not already contain a DENY
+        # action for the current revision.
+        # -----------------------------------------------------
+
+        for change_request in change_requests:
+
+            existing_deny_count = (
+                ChangeAction.objects
+                .filter(
+                    change_request=change_request,
+                    revision_no=revision_no,
+                    action=(
+                        ChangeAction.Action.DENY
+                    ),
+                )
+                .count()
+            )
+
+            if existing_deny_count:
+                raise CoordinatedChangeDenyError(
+                    f"Child Change Request "
+                    f"#{change_request.id} already contains "
+                    "a Deny action for the current revision."
+                )
+
+        # -----------------------------------------------------
+        # Record the same package-level denial on every child.
+        #
+        # All writes occur inside this transaction. Any failure
+        # rolls back every child action and every status change.
+        # -----------------------------------------------------
+
+        for change_request in change_requests:
+
+            ChangeAction.objects.create(
+                change_request=change_request,
+                revision_no=revision_no,
+                acted_by=approver,
+                action=ChangeAction.Action.DENY,
+                comment=feedback,
+            )
+
+        for change_request in change_requests:
+            change_request.status = (
+                ChangeRequest.Status.DENIED
+            )
+
+        ChangeRequest.objects.bulk_update(
+            change_requests,
+            ["status"],
+        )
+
+        coordinated_change.status = (
+            CoordinatedChange.Status.DENIED
+        )
+
+        coordinated_change.save(
+            update_fields=[
+                "status",
+            ]
+        )
+
+        return CoordinatedDenyResult(
+            coordinated_change_id=(
+                coordinated_change.id
+            ),
+            status=coordinated_change.status,
+            revision_no=revision_no,
+            approval_count=approval_count,
+            change_request_ids=tuple(
+                change_request.id
+                for change_request
+                in change_requests
+            ),
+            grant_ids=tuple(
+                change_request.grant_id
+                for change_request
+                in change_requests
+            ),
+            denied_by_id=approver.pk,
+        )
 
 
 def resubmit_coordinated_basic_information_change(

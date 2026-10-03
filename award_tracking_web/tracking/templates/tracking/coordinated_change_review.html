@@ -82,6 +82,11 @@
             color: white;
         }
 
+        .deny-button {
+            background-color: #b02a37;
+            color: white;
+        }
+
         .return-panel {
             margin-top: 25px;
             padding: 18px;
@@ -99,6 +104,35 @@
             margin-top: 8px;
             margin-bottom: 15px;
             padding: 8px;
+        }
+
+        .deny-panel {
+            margin-top: 25px;
+            margin-bottom: 25px;
+            padding: 18px;
+            background-color: #f8d7da;
+            border: 2px solid #b02a37;
+            border-radius: 5px;
+        }
+
+        .deny-panel textarea {
+            display: block;
+            width: 100%;
+            max-width: 800px;
+            min-height: 90px;
+            box-sizing: border-box;
+            margin-top: 8px;
+            margin-bottom: 15px;
+            padding: 8px;
+        }
+
+        .deny-history {
+            margin-top: 20px;
+            margin-bottom: 25px;
+            padding: 18px;
+            background-color: #f8d7da;
+            border: 2px solid #b02a37;
+            border-radius: 5px;
         }
 
         .back-button {
@@ -239,6 +273,35 @@
         {% endif %}
 
     </div>
+    {% if deny_action %}
+        <div class="deny-history">
+
+            <h2>Package Denial</h2>
+
+            <p>
+                <strong>Denied By:</strong>
+                {{ deny_action.acted_by.username }}
+            </p>
+
+            <p>
+                <strong>Denied At:</strong>
+                {{ deny_action.acted_at|date:"M j, Y, g:i A" }}
+            </p>
+
+            <p>
+                <strong>Denial Reason:</strong><br>
+                {{ deny_action.comment }}
+            </p>
+
+            <p>
+                <em>
+                    This denial is recorded on every child Change Request
+                    in the coordinated package.
+                </em>
+            </p>
+
+        </div>
+    {% endif %}
 
     {% if workflow_errors %}
         <div class="workflow-alert">
@@ -247,7 +310,7 @@
 
             <p>
                 <strong>
-                    Approval is blocked until the coordinated
+                    Coordinated workflow actions are blocked until the
                     package is consistent.
                 </strong>
             </p>
@@ -268,7 +331,7 @@
 
             <p>
                 <strong>
-                    Coordinated approval is currently blocked.
+                    Coordinated workflow actions are currently blocked.
                 </strong>
             </p>
 
@@ -450,6 +513,64 @@
 
             {% endif %}
 
+            {% if can_deny %}
+
+                <div class="deny-panel">
+
+                    <h3>Deny Entire Coordinated Package</h3>
+
+                    <p>
+                        Denying this package is a terminal action. Every participating
+                        child Change Request will be denied together, and the package
+                        cannot be revised or resubmitted.
+                    </p>
+
+                    <p>
+                        No proposed Basic Information changes will be applied.
+                        Any approval already recorded for this revision will remain
+                        in the audit history.
+                    </p>
+
+                    <form
+                        method="post"
+                        action="{% url 'coordinated_change_review' coordinated_change.id %}"
+                        onsubmit="return confirm(
+                            'Deny this entire coordinated package? This is a terminal action and the package cannot be revised or resubmitted.'
+                        );"
+                    >
+
+                        {% csrf_token %}
+
+                        <input
+                            type="hidden"
+                            name="action"
+                            value="deny"
+                        >
+
+                        <label for="id_deny_comment">
+                            <strong>Denial Reason:</strong>
+                        </label>
+
+                        <textarea
+                            id="id_deny_comment"
+                            name="deny_comment"
+                            maxlength="500"
+                            required
+                        ></textarea>
+
+                        <button
+                            type="submit"
+                            class="button-common deny-button"
+                        >
+                            Deny Entire Package
+                        </button>
+
+                    </form>
+
+                </div>
+
+            {% endif %}
+
             {% if can_approve %}
 
                 <form
@@ -494,7 +615,7 @@
         {% else %}
 
             <div class="read-only-note">
-                This coordinated package has been completed and is
+                This coordinated package has reached a terminal status and is
                 read-only.
             </div>
 
