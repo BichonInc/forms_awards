@@ -122,6 +122,12 @@ class ChangeRequestReturnError(Exception):
     """
 
 
+class ChangeRequestDenyError(Exception):
+    """
+    Raised when a Change Request cannot be denied.
+    """
+
+
 class ChangeRequestResubmitError(Exception):
     """
     Raised when a returned Change Request cannot be resubmitted.
@@ -346,6 +352,14 @@ class StandaloneApprovalResult:
 
 @dataclass(frozen=True)
 class StandaloneReturnResult:
+    change_request_id: int
+    status: str
+    revision_no: int
+    approval_count: int
+
+
+@dataclass(frozen=True)
+class StandaloneDenyResult:
     change_request_id: int
     status: str
     revision_no: int
@@ -7771,6 +7785,193 @@ def return_standalone_change_request(
         )
 
     return return_result
+
+
+def deny_standalone_change_request(
+        *,
+        change_request_id,
+        approver,
+        comment,
+):
+    """
+    Deny a standalone Basic Information Change Request.
+
+    Denial is terminal for the submitted Change Request:
+
+      - the request must currently be PENDING;
+      - the request must be standalone and EDIT_GRANT;
+      - the current revision submitter cannot deny their own revision;
+      - an approver who already approved the revision cannot deny it;
+      - existing approval history remains immutable;
+      - a denial reason is required;
+      - one DENY action is recorded;
+      - the Change Request moves to DENIED;
+      - authoritative Form1 values are not changed.
+    """
+    feedback = (comment or "").strip()
+
+    if (
+        approver is None
+        or getattr(approver, "pk", None) is None
+    ):
+        raise ChangeRequestDenyError(
+            "A saved user is required to deny a Change Request."
+        )
+
+    if not feedback:
+        raise ChangeRequestDenyError(
+            "Denial requires a reason."
+        )
+
+    if len(feedback) > 500:
+        raise ChangeRequestDenyError(
+            "Denial reason cannot exceed 500 characters."
+        )
+
+    with transaction.atomic():
+        try:
+            change_request = (
+                ChangeRequest.objects
+                .select_for_update()
+                .get(pk=change_request_id)
+            )
+
+        except ChangeRequest.DoesNotExist as exc:
+            raise ChangeRequestDenyError(
+                "The Change Request does not exist."
+            ) from exc
+
+        if change_request.coordinated_change_id is not None:
+            raise ChangeRequestDenyError(
+                "A coordinated Change Request cannot be denied "
+                "through the standalone workflow."
+            )
+
+        if (
+            change_request.request_type
+            != ChangeRequest.RequestType.EDIT_GRANT
+        ):
+            raise ChangeRequestDenyError(
+                "This denial service currently supports only "
+                "existing-grant Basic Information Change Requests."
+            )
+
+        if change_request.status != ChangeRequest.Status.PENDING:
+            raise ChangeRequestDenyError(
+                "This Change Request is no longer pending approval."
+            )
+
+        existing_integrity_issue = (
+            get_open_change_request_integrity_issue(
+                change_request,
+                lock=True,
+            )
+        )
+
+        if existing_integrity_issue is not None:
+            raise ChangeRequestIntegrityBlockedError(
+                existing_integrity_issue.id,
+                newly_detected=False,
+            )
+
+        revision_no = change_request.current_revision
+
+        try:
+            revision_submitter_id = (
+                get_revision_submitter_id(
+                    change_request
+                )
+            )
+
+        except ChangeRequestApprovalError as exc:
+            raise ChangeRequestDenyError(
+                "The current revision has invalid submission "
+                "history: "
+                + str(exc)
+            ) from exc
+
+        if revision_submitter_id == approver.pk:
+            raise ChangeRequestDenyError(
+                "You cannot deny a Change Request revision "
+                "that you submitted."
+            )
+
+        approval_user_ids = tuple(
+            ChangeAction.objects
+            .filter(
+                change_request=change_request,
+                revision_no=revision_no,
+                action=ChangeAction.Action.APPROVE,
+            )
+            .order_by(
+                "acted_at",
+                "id",
+            )
+            .values_list(
+                "acted_by_id",
+                flat=True,
+            )
+        )
+
+        approval_count = len(
+            approval_user_ids
+        )
+
+        if approval_count >= 2:
+            raise ChangeRequestDenyError(
+                "A fully approved Change Request revision "
+                "cannot be denied."
+            )
+
+        if revision_submitter_id in approval_user_ids:
+            raise ChangeRequestDenyError(
+                "The Change Request contains an approval "
+                "recorded by the revision submitter."
+            )
+
+        if approver.pk in approval_user_ids:
+            raise ChangeRequestDenyError(
+                "You have already approved this Change Request "
+                "revision and cannot deny the same revision."
+            )
+
+        existing_deny = (
+            ChangeAction.objects
+            .filter(
+                change_request=change_request,
+                revision_no=revision_no,
+                action=ChangeAction.Action.DENY,
+            )
+            .exists()
+        )
+
+        if existing_deny:
+            raise ChangeRequestDenyError(
+                "This Change Request revision already contains "
+                "a denial action."
+            )
+
+        ChangeAction.objects.create(
+            change_request=change_request,
+            revision_no=revision_no,
+            acted_by=approver,
+            action=ChangeAction.Action.DENY,
+            comment=feedback,
+        )
+
+        change_request.status = (
+            ChangeRequest.Status.DENIED
+        )
+        change_request.save(
+            update_fields=["status"]
+        )
+
+        return StandaloneDenyResult(
+            change_request_id=change_request.id,
+            status=change_request.status,
+            revision_no=revision_no,
+            approval_count=approval_count,
+        )
 
 
 def resubmit_standalone_change_request(

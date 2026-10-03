@@ -47,6 +47,7 @@ from .change_request_workflow import (
     RESUBMISSION_BASELINE_INTEGRITY_DISPOSITION,
     ChangeRequestApprovalError,
     ChangeRequestBaselineMismatchError,
+    ChangeRequestDenyError,
     ChangeRequestIntegrityBlockedError,
     ChangeRequestIntegrityDispositionError,
     ChangeRequestIntegrityIssueError,
@@ -60,6 +61,7 @@ from .change_request_workflow import (
     CoordinatedChangeBusinessValidationError,
     submit_coordinated_basic_information_draft,
     approve_standalone_change_request,
+    deny_standalone_change_request,
     detect_or_get_change_request_integrity_issue,
     get_change_request_integrity_evidence,
     get_basic_information_revision_snapshots,
@@ -4699,6 +4701,18 @@ def change_request_review(request, request_id):
         .first()
     )
 
+    deny_action = (
+        ChangeAction.objects
+        .filter(
+            change_request=change_request,
+            revision_no=revision_no,
+            action=ChangeAction.Action.DENY,
+        )
+        .select_related("acted_by")
+        .order_by("-acted_at", "-id")
+        .first()
+    )
+
     can_approve = (
             user_has_any_role(
                 request.user,
@@ -4713,6 +4727,19 @@ def change_request_review(request, request_id):
     )
 
     can_return = (
+            user_has_any_role(
+                request.user,
+                ROLE_APPROVER,
+            )
+            and change_request.status == ChangeRequest.Status.PENDING
+            and revision_submitter_id is not None
+            and revision_submitter_id != request.user.id
+            and not user_has_approved
+            and approval_count < 2
+            and open_integrity_issue is None
+    )
+
+    can_deny = (
             user_has_any_role(
                 request.user,
                 ROLE_APPROVER,
@@ -4813,6 +4840,62 @@ def change_request_review(request, request_id):
                 request_id=return_result.change_request_id,
             )
 
+        if action == "deny":
+            try:
+                deny_result = (
+                    deny_standalone_change_request(
+                        change_request_id=(
+                            change_request.id
+                        ),
+                        approver=request.user,
+                        comment=request.POST.get(
+                            "comment",
+                            "",
+                        ),
+                    )
+                )
+
+            except (
+                ChangeRequestDenyError,
+                ChangeRequestValidationError,
+            ) as exc:
+                messages.error(
+                    request,
+                    str(exc),
+                )
+
+                return redirect(
+                    "change_request_review",
+                    request_id=request_id,
+                )
+
+            except IntegrityError:
+                messages.error(
+                    request,
+                    (
+                        "The Change Request could not be denied "
+                        "because it changed. Please review it again."
+                    ),
+                )
+
+                return redirect(
+                    "change_request_review",
+                    request_id=request_id,
+                )
+
+            messages.success(
+                request,
+                (
+                    "The Change Request has been denied. "
+                    "No Basic Information changes were applied."
+                ),
+            )
+
+            return redirect(
+                "change_request_review",
+                request_id=deny_result.change_request_id,
+            )
+
         if action != "approve":
             messages.error(
                 request,
@@ -4888,8 +4971,10 @@ def change_request_review(request, request_id):
             "approval_count": approval_count,
             "user_has_approved": user_has_approved,
             "return_action": return_action,
+            "deny_action": deny_action,
             "can_approve": can_approve,
             "can_return": can_return,
+            "can_deny": can_deny,
             "is_history_request": is_history_request,
             "current_revision_submitter": (
                 current_revision_submitter

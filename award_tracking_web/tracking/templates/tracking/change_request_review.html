@@ -67,6 +67,11 @@
             color: white;
         }
 
+        .deny-button {
+            background-color: #d9534f;
+            color: white;
+        }
+
         .revise-button {
             background-color: #6f42c1;
             color: white;
@@ -86,6 +91,29 @@
             padding: 8px;
             margin-top: 8px;
             margin-bottom: 10px;
+        }
+
+        .deny-section {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f8d7da;
+            border-radius: 5px;
+        }
+
+        .deny-section textarea {
+            width: 100%;
+            max-width: 700px;
+            box-sizing: border-box;
+            padding: 8px;
+            margin-top: 8px;
+            margin-bottom: 10px;
+        }
+
+        .deny-feedback {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f8d7da;
+            border-radius: 5px;
         }
 
         .return-feedback {
@@ -264,6 +292,24 @@
                 <p>
                     <strong>Feedback:</strong><br>
                     {{ return_action.comment }}
+                </p>
+            </div>
+        {% endif %}
+        {% if deny_action %}
+            <div class="deny-feedback">
+                <p>
+                    <strong>Denied By:</strong>
+                    {{ deny_action.acted_by.username }}
+                </p>
+
+                <p>
+                    <strong>Denied At:</strong>
+                    {{ deny_action.acted_at|date:"M j, Y, g:i A" }}
+                </p>
+
+                <p>
+                    <strong>Denial Reason:</strong><br>
+                    {{ deny_action.comment }}
                 </p>
             </div>
         {% endif %}
@@ -551,7 +597,46 @@
                     </form>
                 </div>
             {% endif %}
+            {% if can_deny %}
+                <div class="deny-section">
+                    <form
+                        method="post"
+                        action="{% url 'change_request_review' change_request.id %}"
+                        onsubmit="return confirm(
+                            'Deny this Change Request? This is a terminal action and the request cannot be revised or resubmitted.'
+                        );"
+                    >
+                        {% csrf_token %}
 
+                        <input
+                            type="hidden"
+                            name="action"
+                            value="deny"
+                        >
+
+                        <label for="deny-comment">
+                            <strong>Denial Reason:</strong>
+                        </label>
+
+                        <textarea
+                            id="deny-comment"
+                            name="comment"
+                            rows="4"
+                            maxlength="500"
+                            required
+                        ></textarea>
+
+                        <br>
+
+                        <button
+                            type="submit"
+                            class="button-common deny-button"
+                        >
+                            Deny Change Request
+                        </button>
+                    </form>
+                </div>
+            {% endif %}
         {% endif %}
 
         <a
