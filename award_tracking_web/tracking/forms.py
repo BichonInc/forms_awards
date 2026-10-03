@@ -190,8 +190,6 @@ class GrantForm(forms.ModelForm):
         )
 
     def clean(self):
-        print("Clean method executed")  # Debugging
-
         cleaned_data = super().clean()
 
         # === Date Validation ===
@@ -200,34 +198,36 @@ class GrantForm(forms.ModelForm):
         internal_gl_start_date = cleaned_data.get('internal_gl_start_date')
         internal_gl_end_date = cleaned_data.get('internal_gl_end_date')
 
-        # Debugging prints for dates
-        print(f"Contract Start Date: {contract_start_date}")
-        print(f"Contract End Date: {contract_end_date}")
-        print(f"Internal GL Start Date: {internal_gl_start_date}")
-        print(f"Internal GL End Date: {internal_gl_end_date}")
-
         # Contract dates validation
         if contract_start_date and contract_end_date and contract_end_date < contract_start_date:
-            print("Validation failed: Contract end date is earlier than start date")
-            self.add_error('contract_end_date', "Contract end date must be on or after contract start date.")
+            self.add_error(
+                'contract_end_date',
+                "Contract end date must be on or after contract start date."
+            )
 
         # Internal GL dates validation
         if internal_gl_start_date and internal_gl_end_date and internal_gl_end_date < internal_gl_start_date:
-            print("Validation failed: Internal GL end date is earlier than start date")
-            self.add_error('internal_gl_end_date', "Internal GL end date must be on or after internal GL start date.")
+            self.add_error(
+                'internal_gl_end_date',
+                "Internal GL end date must be on or after internal GL start date."
+            )
 
         # === "Add New" Handling ===
-        federal_aln = cleaned_data.get('federal_aln')  # Get the current value of federal_aln
-        new_federal_aln = cleaned_data.get('new_federal_aln')  # Get the value entered in the "Add New" textbox
+        federal_aln = cleaned_data.get('federal_aln')
+        new_federal_aln = cleaned_data.get('new_federal_aln')
 
         if federal_aln == 'Add New':
-            # Validate the "new_federal_aln" field
             if not new_federal_aln:
-                self.add_error('new_federal_aln', "You must enter a new Federal ALN when selecting 'Add New'.")
+                self.add_error(
+                    'new_federal_aln',
+                    "You must enter a new Federal ALN when selecting 'Add New'."
+                )
             elif not re.match(r'^\d{2}\.\d{3}$', new_federal_aln):
-                self.add_error('new_federal_aln', "Federal ALN must be in the format 'xx.xxx', where x is a digit.")
+                self.add_error(
+                    'new_federal_aln',
+                    "Federal ALN must be in the format 'xx.xxx', where x is a digit."
+                )
             else:
-                # Assign the new Federal ALN to the 'federal_aln' field in cleaned_data
                 cleaned_data['federal_aln'] = new_federal_aln
         elif federal_aln:
             # Validate existing 'federal_aln' values (not "Add New")
