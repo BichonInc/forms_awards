@@ -48,6 +48,7 @@ from .change_request_workflow import (
     ChangeRequestApprovalError,
     ChangeRequestBaselineMismatchError,
     ChangeRequestDenyError,
+    ChangeRequestWithdrawError,
     ChangeRequestIntegrityBlockedError,
     ChangeRequestIntegrityDispositionError,
     ChangeRequestIntegrityIssueError,
@@ -62,6 +63,7 @@ from .change_request_workflow import (
     submit_coordinated_basic_information_draft,
     approve_standalone_change_request,
     deny_standalone_change_request,
+    withdraw_standalone_change_request,
     detect_or_get_change_request_integrity_issue,
     get_change_request_integrity_evidence,
     get_basic_information_revision_snapshots,
@@ -4620,15 +4622,6 @@ def change_request_review(request, request_id):
             "Completed Change Requests are read-only."
         )
 
-    if (
-        request.method == "POST"
-        and not user_has_any_role(
-            request.user,
-            ROLE_APPROVER,
-        )
-    ):
-        raise PermissionDenied
-
     revision_no = change_request.current_revision
 
     revision_submitter_error = ""
@@ -4916,6 +4909,18 @@ def change_request_review(request, request_id):
         .first()
     )
 
+    withdraw_action = (
+        ChangeAction.objects
+        .filter(
+            change_request=change_request,
+            revision_no=revision_no,
+            action=ChangeAction.Action.WITHDRAW,
+        )
+        .select_related("acted_by")
+        .order_by("-acted_at", "-id")
+        .first()
+    )
+
     can_approve = (
             user_has_any_role(
                 request.user,
@@ -4952,6 +4957,27 @@ def change_request_review(request, request_id):
             and revision_submitter_id != request.user.id
             and not user_has_approved
             and approval_count < 2
+            and open_integrity_issue is None
+    )
+
+    can_withdraw = (
+            user_has_any_role(
+                request.user,
+                ROLE_EDITOR,
+            )
+            and change_request.status
+            in {
+                ChangeRequest.Status.PENDING,
+                ChangeRequest.Status.RETURNED,
+            }
+            and revision_submitter_id is not None
+            and revision_submitter_id == request.user.id
+            and approval_count < 2
+            and change_request.coordinated_change_id is None
+            and (
+                    change_request.request_type
+                    == ChangeRequest.RequestType.EDIT_GRANT
+            )
             and open_integrity_issue is None
     )
 
@@ -4995,6 +5021,88 @@ def change_request_review(request, request_id):
 
     if request.method == "POST":
         action = request.POST.get("action")
+
+        if (
+            action in {
+                "approve",
+                "return",
+                "deny",
+            }
+            and not user_has_any_role(
+                request.user,
+                ROLE_APPROVER,
+            )
+        ):
+            raise PermissionDenied
+
+        if (
+            action == "withdraw"
+            and not user_has_any_role(
+                request.user,
+                ROLE_EDITOR,
+            )
+        ):
+            raise PermissionDenied
+
+        if action == "withdraw":
+
+            try:
+                withdraw_result = (
+                    withdraw_standalone_change_request(
+                        change_request_id=(
+                            change_request.id
+                        ),
+                        withdrawer=request.user,
+                        comment=request.POST.get(
+                            "withdraw_comment",
+                            "",
+                        ),
+                    )
+                )
+
+            except (
+                    ChangeRequestWithdrawError,
+                    ChangeRequestValidationError,
+            ) as exc:
+                messages.error(
+                    request,
+                    str(exc),
+                )
+
+                return redirect(
+                    "change_request_review",
+                    request_id=request_id,
+                )
+
+            except IntegrityError:
+                messages.error(
+                    request,
+                    (
+                        "The Change Request could not be "
+                        "withdrawn because it changed. "
+                        "Please review it again."
+                    ),
+                )
+
+                return redirect(
+                    "change_request_review",
+                    request_id=request_id,
+                )
+
+            messages.success(
+                request,
+                (
+                    "The Change Request has been withdrawn. "
+                    "No Basic Information changes were applied."
+                ),
+            )
+
+            return redirect(
+                "change_request_review",
+                request_id=(
+                    withdraw_result.change_request_id
+                ),
+            )
 
         if action == "return":
             try:
@@ -5175,9 +5283,11 @@ def change_request_review(request, request_id):
             "user_has_approved": user_has_approved,
             "return_action": return_action,
             "deny_action": deny_action,
+            "withdraw_action": withdraw_action,
             "can_approve": can_approve,
             "can_return": can_return,
             "can_deny": can_deny,
+            "can_withdraw": can_withdraw,
             "is_history_request": is_history_request,
             "current_revision_submitter": (
                 current_revision_submitter

@@ -128,6 +128,12 @@ class ChangeRequestDenyError(Exception):
     """
 
 
+class ChangeRequestWithdrawError(Exception):
+    """
+    Raised when a Change Request cannot be withdrawn.
+    """
+
+
 class ChangeRequestResubmitError(Exception):
     """
     Raised when a returned Change Request cannot be resubmitted.
@@ -372,6 +378,15 @@ class StandaloneDenyResult:
     status: str
     revision_no: int
     approval_count: int
+
+
+@dataclass(frozen=True)
+class StandaloneWithdrawResult:
+    change_request_id: int
+    status: str
+    revision_no: int
+    approval_count: int
+    withdrawn_by_id: int
 
 
 @dataclass(frozen=True)
@@ -8339,6 +8354,230 @@ def deny_standalone_change_request(
             status=change_request.status,
             revision_no=revision_no,
             approval_count=approval_count,
+        )
+
+
+def withdraw_standalone_change_request(
+        *,
+        change_request_id,
+        withdrawer,
+        comment,
+):
+    """
+    Withdraw a submitted standalone Basic Information Change Request.
+
+    Withdrawal is terminal for the request:
+
+      - the request must be standalone and EDIT_GRANT;
+      - the request must currently be PENDING or RETURNED;
+      - only the current revision submitter may withdraw it;
+      - existing approval history remains immutable;
+      - a withdrawal reason is required;
+      - one WITHDRAW action is recorded;
+      - the Change Request moves to WITHDRAWN;
+      - authoritative Form1 values are not changed.
+    """
+    feedback = (comment or "").strip()
+
+    if (
+        withdrawer is None
+        or getattr(withdrawer, "pk", None) is None
+    ):
+        raise ChangeRequestWithdrawError(
+            "A saved user is required to withdraw a Change Request."
+        )
+
+    if not feedback:
+        raise ChangeRequestWithdrawError(
+            "Withdrawal requires a reason."
+        )
+
+    if len(feedback) > 500:
+        raise ChangeRequestWithdrawError(
+            "Withdrawal reason cannot exceed 500 characters."
+        )
+
+    with transaction.atomic():
+
+        try:
+            change_request = (
+                ChangeRequest.objects
+                .select_for_update()
+                .get(
+                    pk=change_request_id
+                )
+            )
+
+        except ChangeRequest.DoesNotExist as exc:
+            raise ChangeRequestWithdrawError(
+                "The Change Request does not exist."
+            ) from exc
+
+        if change_request.coordinated_change_id is not None:
+            raise ChangeRequestWithdrawError(
+                "A coordinated Change Request cannot be withdrawn "
+                "through the standalone workflow."
+            )
+
+        if (
+            change_request.request_type
+            != ChangeRequest.RequestType.EDIT_GRANT
+        ):
+            raise ChangeRequestWithdrawError(
+                "This withdrawal service currently supports only "
+                "existing-grant Basic Information Change Requests."
+            )
+
+        if change_request.status not in {
+            ChangeRequest.Status.PENDING,
+            ChangeRequest.Status.RETURNED,
+        }:
+            raise ChangeRequestWithdrawError(
+                "This Change Request is not in a state that can "
+                "be withdrawn."
+            )
+
+        # -----------------------------------------------------
+        # Existing OPEN integrity incidents block normal
+        # workflow actions, including withdrawal.
+        # -----------------------------------------------------
+
+        existing_integrity_issue = (
+            get_open_change_request_integrity_issue(
+                change_request,
+                lock=True,
+            )
+        )
+
+        if existing_integrity_issue is not None:
+            raise ChangeRequestIntegrityBlockedError(
+                existing_integrity_issue.id,
+                newly_detected=False,
+            )
+
+        revision_no = (
+            change_request.current_revision
+        )
+
+        # -----------------------------------------------------
+        # Only the submitter of the current formal revision
+        # may withdraw that revision.
+        # -----------------------------------------------------
+
+        try:
+            revision_submitter_id = (
+                get_revision_submitter_id(
+                    change_request
+                )
+            )
+
+        except ChangeRequestApprovalError as exc:
+            raise ChangeRequestWithdrawError(
+                "The current revision has invalid submission "
+                "history: "
+                + str(exc)
+            ) from exc
+
+        if revision_submitter_id != withdrawer.pk:
+            raise ChangeRequestWithdrawError(
+                "Only the submitter of the current Change Request "
+                "revision can withdraw it."
+            )
+
+        # -----------------------------------------------------
+        # Preserve and validate any existing approval history.
+        # Withdrawal may occur before Approval #1 or after
+        # Approval #1, provided final approval has not occurred.
+        # -----------------------------------------------------
+
+        approval_user_ids = tuple(
+            ChangeAction.objects
+            .filter(
+                change_request=change_request,
+                revision_no=revision_no,
+                action=(
+                    ChangeAction.Action.APPROVE
+                ),
+            )
+            .order_by(
+                "acted_at",
+                "id",
+            )
+            .values_list(
+                "acted_by_id",
+                flat=True,
+            )
+        )
+
+        approval_count = len(
+            approval_user_ids
+        )
+
+        if approval_count >= 2:
+            raise ChangeRequestWithdrawError(
+                "A fully approved Change Request revision "
+                "cannot be withdrawn."
+            )
+
+        if revision_submitter_id in approval_user_ids:
+            raise ChangeRequestWithdrawError(
+                "The Change Request contains an approval "
+                "recorded by the revision submitter."
+            )
+
+        # -----------------------------------------------------
+        # A current active revision must not already contain
+        # a WITHDRAW action.
+        # -----------------------------------------------------
+
+        existing_withdraw = (
+            ChangeAction.objects
+            .filter(
+                change_request=change_request,
+                revision_no=revision_no,
+                action=(
+                    ChangeAction.Action.WITHDRAW
+                ),
+            )
+            .exists()
+        )
+
+        if existing_withdraw:
+            raise ChangeRequestWithdrawError(
+                "This Change Request revision already contains "
+                "a withdrawal action."
+            )
+
+        # -----------------------------------------------------
+        # Withdrawal applies no proposed values and performs
+        # no GL rematch. It only records the audit event and
+        # terminal workflow status.
+        # -----------------------------------------------------
+
+        ChangeAction.objects.create(
+            change_request=change_request,
+            revision_no=revision_no,
+            acted_by=withdrawer,
+            action=ChangeAction.Action.WITHDRAW,
+            comment=feedback,
+        )
+
+        change_request.status = (
+            ChangeRequest.Status.WITHDRAWN
+        )
+
+        change_request.save(
+            update_fields=[
+                "status",
+            ]
+        )
+
+        return StandaloneWithdrawResult(
+            change_request_id=change_request.id,
+            status=change_request.status,
+            revision_no=revision_no,
+            approval_count=approval_count,
+            withdrawn_by_id=withdrawer.pk,
         )
 
 
