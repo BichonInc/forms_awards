@@ -136,6 +136,31 @@
             max-width: 800px;
             min-height: 90px;
         }
+
+        .withdraw-button {
+            background-color: #6c757d;
+            color: white;
+        }
+
+        .withdraw-panel {
+            padding: 18px;
+            margin-bottom: 25px;
+            background-color: #e9ecef;
+            border: 2px solid #6c757d;
+            border-radius: 5px;
+        }
+
+        .withdraw-panel textarea {
+            display: block;
+            width: 100%;
+            max-width: 800px;
+            min-height: 90px;
+            box-sizing: border-box;
+            margin-top: 8px;
+            margin-bottom: 15px;
+            padding: 8px;
+        }
+
     </style>
 </head>
 
@@ -252,7 +277,7 @@
 
         <div class="integrity-alert">
 
-            <h2>Resubmission Blocked</h2>
+            <h2>Workflow Actions Blocked</h2>
 
             <p>
                 This coordinated package currently has one or more
@@ -260,7 +285,7 @@
             </p>
 
             <p>
-                The package cannot be resubmitted until every open
+                The package cannot be resubmitted or withdrawn until every open
                 incident receives its Administrator disposition.
             </p>
 
@@ -286,12 +311,81 @@
         </div>
     {% endif %}
 
+    {% if can_withdraw %}
+
+        <div class="withdraw-panel">
+
+            <h2>Withdraw Coordinated Package</h2>
+
+            <p>
+                Withdrawing this package is a terminal action.
+                Every participating child Change Request will be withdrawn
+                together. The package cannot be revised or resubmitted afterward.
+            </p>
+
+            <p>
+                No proposed Basic Information changes will be applied.
+            </p>
+
+            {% if approval_count == 1 %}
+                <p>
+                    The approval already recorded for this revision will
+                    remain in the audit history.
+                </p>
+            {% endif %}
+
+            <form
+                method="post"
+                action="{% url 'coordinated_change_resubmit' coordinated_change.id %}"
+                onsubmit="return confirm(
+                    'Withdraw this entire coordinated package? This is a terminal action and the package cannot be revised or resubmitted.'
+                );"
+            >
+
+                {% csrf_token %}
+
+                <input
+                    type="hidden"
+                    name="action"
+                    value="withdraw"
+                >
+
+                <label for="id_withdraw_comment">
+                    <strong>Withdrawal Reason:</strong>
+                </label>
+
+                <textarea
+                    id="id_withdraw_comment"
+                    name="withdraw_comment"
+                    maxlength="500"
+                    required
+                ></textarea>
+
+                <button
+                    type="submit"
+                    class="button-common withdraw-button"
+                >
+                    Withdraw Coordinated Package
+                </button>
+
+            </form>
+
+        </div>
+
+    {% endif %}
+
     <form
         method="post"
         action="{% url 'coordinated_change_resubmit' coordinated_change.id %}"
     >
 
         {% csrf_token %}
+
+        <input
+            type="hidden"
+            name="action"
+            value="resubmit"
+        >
 
         {% for card in form_cards %}
 

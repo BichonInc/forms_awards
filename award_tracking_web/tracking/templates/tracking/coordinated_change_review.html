@@ -135,6 +135,40 @@
             border-radius: 5px;
         }
 
+        .withdraw-button {
+            background-color: #6c757d;
+            color: white;
+        }
+
+        .withdraw-panel {
+            margin-top: 25px;
+            margin-bottom: 25px;
+            padding: 18px;
+            background-color: #e9ecef;
+            border: 2px solid #6c757d;
+            border-radius: 5px;
+        }
+
+        .withdraw-panel textarea {
+            display: block;
+            width: 100%;
+            max-width: 800px;
+            min-height: 90px;
+            box-sizing: border-box;
+            margin-top: 8px;
+            margin-bottom: 15px;
+            padding: 8px;
+        }
+
+        .withdraw-history {
+            margin-top: 20px;
+            margin-bottom: 25px;
+            padding: 18px;
+            background-color: #e9ecef;
+            border: 2px solid #6c757d;
+            border-radius: 5px;
+        }
+
         .back-button {
             background-color: #008CBA;
             color: white;
@@ -296,6 +330,35 @@
             <p>
                 <em>
                     This denial is recorded on every child Change Request
+                    in the coordinated package.
+                </em>
+            </p>
+
+        </div>
+    {% endif %}
+    {% if withdraw_action %}
+        <div class="withdraw-history">
+
+            <h2>Package Withdrawal</h2>
+
+            <p>
+                <strong>Withdrawn By:</strong>
+                {{ coordinated_change.withdrawn_by.username }}
+            </p>
+
+            <p>
+                <strong>Withdrawn At:</strong>
+                {{ coordinated_change.withdrawn_at|date:"M j, Y, g:i A" }}
+            </p>
+
+            <p>
+                <strong>Withdrawal Reason:</strong><br>
+                {{ coordinated_change.withdrawal_reason }}
+            </p>
+
+            <p>
+                <em>
+                    This withdrawal is recorded on every child Change Request
                     in the coordinated package.
                 </em>
             </p>
@@ -563,6 +626,69 @@
                             class="button-common deny-button"
                         >
                             Deny Entire Package
+                        </button>
+
+                    </form>
+
+                </div>
+
+            {% endif %}
+
+            {% if can_withdraw %}
+
+                <div class="withdraw-panel">
+
+                    <h3>Withdraw Entire Coordinated Package</h3>
+
+                    <p>
+                        Withdrawing this package is a terminal action.
+                        Every participating child Change Request will be withdrawn
+                        together, and the package cannot be revised or resubmitted.
+                    </p>
+
+                    <p>
+                        No proposed Basic Information changes will be applied.
+                    </p>
+
+                    {% if approval_count == 1 %}
+                        <p>
+                            The approval already recorded for this revision will
+                            remain in the audit history.
+                        </p>
+                    {% endif %}
+
+                    <form
+                        method="post"
+                        action="{% url 'coordinated_change_review' coordinated_change.id %}"
+                        onsubmit="return confirm(
+                            'Withdraw this entire coordinated package? This is a terminal action and the package cannot be revised or resubmitted.'
+                        );"
+                    >
+
+                        {% csrf_token %}
+
+                        <input
+                            type="hidden"
+                            name="action"
+                            value="withdraw"
+                        >
+
+                        <label for="id_withdraw_comment">
+                            <strong>Withdrawal Reason:</strong>
+                        </label>
+
+                        <textarea
+                            id="id_withdraw_comment"
+                            name="withdraw_comment"
+                            maxlength="500"
+                            required
+                        ></textarea>
+
+                        <button
+                            type="submit"
+                            class="button-common withdraw-button"
+                        >
+                            Withdraw Entire Package
                         </button>
 
                     </form>

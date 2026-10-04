@@ -83,6 +83,8 @@ from .change_request_workflow import (
     return_coordinated_basic_information_change,
     CoordinatedChangeDenyError,
     deny_coordinated_basic_information_change,
+    CoordinatedChangeWithdrawError,
+    withdraw_coordinated_basic_information_change,
     CoordinatedChangeResubmitError,
     resubmit_coordinated_basic_information_change,
 )
@@ -1954,6 +1956,34 @@ def coordinated_change_resubmit(
         pk=coordinated_change_id,
     )
 
+    action = (
+        request.POST.get(
+            "action",
+            "resubmit",
+        )
+        if request.method == "POST"
+        else ""
+    )
+
+    if (
+        request.method == "POST"
+        and action not in {
+            "resubmit",
+            "withdraw",
+        }
+    ):
+        messages.error(
+            request,
+            "Invalid coordinated Change Request action.",
+        )
+
+        return redirect(
+            "coordinated_change_resubmit",
+            coordinated_change_id=(
+                coordinated_change.id
+            ),
+        )
+
     if (
         coordinated_change.status
         != CoordinatedChange.Status.RETURNED
@@ -1968,10 +1998,12 @@ def coordinated_change_resubmit(
 
         if (
             coordinated_change.status
-            in (
-                CoordinatedChange.Status.PENDING,
-                CoordinatedChange.Status.APPLIED,
-            )
+                in (
+                    CoordinatedChange.Status.PENDING,
+                    CoordinatedChange.Status.APPLIED,
+                    CoordinatedChange.Status.DENIED,
+                    CoordinatedChange.Status.WITHDRAWN,
+                )
         ):
             return redirect(
                 "coordinated_change_review",
@@ -2117,6 +2149,94 @@ def coordinated_change_resubmit(
             "id",
         )
     )
+
+    # ---------------------------------------------------------
+    # Withdraw the returned package without invoking
+    # resubmission baseline or form validation.
+    #
+    # The withdrawal service applies no proposed values and
+    # performs no GL rematch.
+    # ---------------------------------------------------------
+
+    if (
+            request.method == "POST"
+            and action == "withdraw"
+    ):
+
+        try:
+            withdraw_result = (
+                withdraw_coordinated_basic_information_change(
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                    withdrawer=request.user,
+                    comment=request.POST.get(
+                        "withdraw_comment",
+                        "",
+                    ),
+                )
+            )
+
+        except ChangeRequestIntegrityBlockedError as exc:
+            messages.error(
+                request,
+                str(exc),
+            )
+
+            return redirect(
+                "coordinated_change_resubmit",
+                coordinated_change_id=(
+                    coordinated_change.id
+                ),
+            )
+
+        except (
+                CoordinatedChangeWithdrawError,
+                ChangeRequestValidationError,
+        ) as exc:
+            messages.error(
+                request,
+                str(exc),
+            )
+
+            return redirect(
+                "coordinated_change_resubmit",
+                coordinated_change_id=(
+                    coordinated_change.id
+                ),
+            )
+
+        except IntegrityError:
+            messages.error(
+                request,
+                (
+                    "The coordinated package could not be "
+                    "withdrawn because its workflow state "
+                    "changed. Please review it again."
+                ),
+            )
+
+            return redirect(
+                "coordinated_change_resubmit",
+                coordinated_change_id=(
+                    coordinated_change.id
+                ),
+            )
+
+        messages.success(
+            request,
+            (
+                "The coordinated package has been withdrawn. "
+                "No Basic Information changes were applied."
+            ),
+        )
+
+        return redirect(
+            "coordinated_change_review",
+            coordinated_change_id=(
+                withdraw_result.coordinated_change_id
+            ),
+        )
 
     # ---------------------------------------------------------
     # Validate every child's governing returned baseline before
@@ -2267,6 +2387,77 @@ def coordinated_change_resubmit(
             "change_request__grant_id",
             "id",
         )
+    )
+
+    revision_submitter_ids = set()
+    revision_submitter_error = ""
+
+    for child in children:
+        try:
+            revision_submitter_ids.add(
+                get_revision_submitter_id(
+                    child
+                )
+            )
+
+        except ChangeRequestApprovalError as exc:
+            revision_submitter_error = str(exc)
+            break
+
+    if len(revision_submitter_ids) == 1:
+        revision_submitter_id = next(
+            iter(revision_submitter_ids)
+        )
+    else:
+        revision_submitter_id = None
+
+    approval_histories = []
+
+    for child in children:
+        approval_histories.append(
+            tuple(
+                ChangeAction.objects
+                .filter(
+                    change_request=child,
+                    revision_no=revision_no,
+                    action=(
+                        ChangeAction.Action.APPROVE
+                    ),
+                )
+                .order_by(
+                    "acted_at",
+                    "id",
+                )
+                .values_list(
+                    "acted_by_id",
+                    flat=True,
+                )
+            )
+        )
+
+    approval_histories_synchronized = (
+        bool(approval_histories)
+        and all(
+            approval_history
+            == approval_histories[0]
+            for approval_history
+            in approval_histories
+        )
+    )
+
+    approval_count = (
+        len(approval_histories[0])
+        if approval_histories_synchronized
+        else 2
+    )
+
+    can_withdraw = (
+        revision_submitter_error == ""
+        and revision_submitter_id
+        == request.user.id
+        and approval_histories_synchronized
+        and approval_count < 2
+        and not open_integrity_issues
     )
 
     # ---------------------------------------------------------
@@ -2421,7 +2612,10 @@ def coordinated_change_resubmit(
     # Resubmit the entire package.
     # ---------------------------------------------------------
 
-    if request.method == "POST":
+    if (
+        request.method == "POST"
+        and action == "resubmit"
+    ):
 
         if open_integrity_issues:
             package_error = (
@@ -2541,6 +2735,8 @@ def coordinated_change_resubmit(
                 resubmission_comment
             ),
             "package_error": package_error,
+            "can_withdraw": can_withdraw,
+            "approval_count": approval_count,
         },
     )
 
@@ -3734,6 +3930,7 @@ def coordinated_change_review(
     coordinated_change = get_object_or_404(
         CoordinatedChange.objects.select_related(
             "submitted_by",
+            "withdrawn_by",
         ),
         id=coordinated_change_id,
     )
@@ -3744,11 +3941,12 @@ def coordinated_change_review(
     )
 
     is_history_package = (
-        coordinated_change.status
-        in (
-            CoordinatedChange.Status.APPLIED,
-            CoordinatedChange.Status.DENIED,
-        )
+            coordinated_change.status
+            in (
+                CoordinatedChange.Status.APPLIED,
+                CoordinatedChange.Status.DENIED,
+                CoordinatedChange.Status.WITHDRAWN,
+            )
     )
 
     if is_active_package:
@@ -3775,15 +3973,6 @@ def coordinated_change_review(
         raise PermissionDenied(
             "Completed coordinated packages are read-only."
         )
-
-    if (
-        request.method == "POST"
-        and not user_has_any_role(
-            request.user,
-            ROLE_APPROVER,
-        )
-    ):
-        raise PermissionDenied
 
     children = tuple(
         ChangeRequest.objects
@@ -3829,16 +4018,24 @@ def coordinated_change_review(
         )
 
     elif (
-        coordinated_change.status
-        == CoordinatedChange.Status.APPLIED
+            coordinated_change.status
+            == CoordinatedChange.Status.APPLIED
     ):
         expected_child_status = (
             ChangeRequest.Status.APPROVED
         )
 
-    else:
+    elif (
+            coordinated_change.status
+            == CoordinatedChange.Status.DENIED
+    ):
         expected_child_status = (
             ChangeRequest.Status.DENIED
+        )
+
+    else:
+        expected_child_status = (
+            ChangeRequest.Status.WITHDRAWN
         )
 
     status_mismatches = [
@@ -4206,6 +4403,129 @@ def coordinated_change_review(
             )
 
     # ---------------------------------------------------------
+    # Withdraw history must be synchronized across all children.
+    #
+    # A terminal WITHDRAWN package contains exactly one WITHDRAW
+    # action on every child for the current revision, by the same
+    # submitter and with the same withdrawal reason.
+    # ---------------------------------------------------------
+
+    withdraw_action = None
+    withdraw_actions_by_child = {}
+
+    for child in children:
+        child_withdrawals = tuple(
+            ChangeAction.objects
+            .filter(
+                change_request=child,
+                revision_no=revision_no,
+                action=(
+                    ChangeAction.Action.WITHDRAW
+                ),
+            )
+            .select_related(
+                "acted_by",
+            )
+            .order_by(
+                "acted_at",
+                "id",
+            )
+        )
+
+        withdraw_actions_by_child[
+            child.id
+        ] = child_withdrawals
+
+    if (
+            coordinated_change.status
+            == CoordinatedChange.Status.WITHDRAWN
+    ):
+
+        withdrawal_counts_are_valid = all(
+            len(child_withdrawals) == 1
+            for child_withdrawals
+            in withdraw_actions_by_child.values()
+        )
+
+        if not withdrawal_counts_are_valid:
+            workflow_errors.append(
+                "The withdrawn coordinated package does not "
+                "contain exactly one Withdraw action on every "
+                "child for the current revision."
+            )
+
+        elif children:
+            first_child = children[0]
+
+            first_withdraw_action = (
+                withdraw_actions_by_child[
+                    first_child.id
+                ][0]
+            )
+
+            first_withdraw_signature = (
+                first_withdraw_action.acted_by_id,
+                first_withdraw_action.comment,
+            )
+
+            withdrawal_histories_synchronized = all(
+                (
+                    child_withdrawals[0].acted_by_id,
+                    child_withdrawals[0].comment,
+                )
+                == first_withdraw_signature
+                for child_withdrawals
+                in withdraw_actions_by_child.values()
+            )
+
+            if not withdrawal_histories_synchronized:
+                workflow_errors.append(
+                    "The coordinated package child Withdraw "
+                    "histories are not synchronized."
+                )
+
+            elif (
+                    coordinated_change.withdrawn_by_id
+                    != first_withdraw_action.acted_by_id
+                    or coordinated_change.withdrawal_reason
+                    != first_withdraw_action.comment
+                    or coordinated_change.withdrawn_at is None
+            ):
+                workflow_errors.append(
+                    "The coordinated package withdrawal metadata "
+                    "does not match its child Withdraw history."
+                )
+
+            else:
+                withdraw_action = (
+                    first_withdraw_action
+                )
+
+    else:
+        unexpected_withdraw_actions = any(
+            child_withdrawals
+            for child_withdrawals
+            in withdraw_actions_by_child.values()
+        )
+
+        unexpected_withdraw_metadata = (
+                coordinated_change.withdrawn_by_id is not None
+                or coordinated_change.withdrawn_at is not None
+                or bool(
+            coordinated_change.withdrawal_reason
+        )
+        )
+
+        if (
+                unexpected_withdraw_actions
+                or unexpected_withdraw_metadata
+        ):
+            workflow_errors.append(
+                "The coordinated package contains withdrawal "
+                "history but is not in Withdrawn status."
+            )
+
+    # ---------------------------------------------------------
     # Any open child integrity incident blocks the package.
     # ---------------------------------------------------------
 
@@ -4248,6 +4568,20 @@ def coordinated_change_review(
 
     can_deny = can_approve
 
+    can_withdraw = (
+        is_active_package
+        and user_has_any_role(
+            request.user,
+            ROLE_EDITOR,
+        )
+        and revision_submitter_id is not None
+        and revision_submitter_id
+        == request.user.id
+        and approval_count < 2
+        and not workflow_errors
+        and not open_integrity_issues
+    )
+
     # ---------------------------------------------------------
     # Package-level Approve / Return / Deny.
     # ---------------------------------------------------------
@@ -4263,6 +4597,7 @@ def coordinated_change_review(
             "approve",
             "return",
             "deny",
+            "withdraw",
         }:
             messages.error(
                 request,
@@ -4276,6 +4611,111 @@ def coordinated_change_review(
                 "coordinated_change_review",
                 coordinated_change_id=(
                     coordinated_change.id
+                ),
+            )
+
+        if (
+            action in {
+                "approve",
+                "return",
+                "deny",
+            }
+            and not user_has_any_role(
+                request.user,
+                ROLE_APPROVER,
+            )
+        ):
+            raise PermissionDenied
+
+        if (
+            action == "withdraw"
+            and not user_has_any_role(
+                request.user,
+                ROLE_EDITOR,
+            )
+        ):
+            raise PermissionDenied
+
+        # =====================================================
+        # Withdraw entire coordinated package.
+        # =====================================================
+
+        if action == "withdraw":
+
+            withdraw_comment = request.POST.get(
+                "withdraw_comment",
+                "",
+            )
+
+            try:
+                withdraw_result = (
+                    withdraw_coordinated_basic_information_change(
+                        coordinated_change_id=(
+                            coordinated_change.id
+                        ),
+                        withdrawer=request.user,
+                        comment=withdraw_comment,
+                    )
+                )
+
+            except ChangeRequestIntegrityBlockedError as exc:
+                messages.error(
+                    request,
+                    str(exc),
+                )
+
+                return redirect(
+                    "coordinated_change_review",
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                )
+
+            except (
+                    CoordinatedChangeWithdrawError,
+                    ChangeRequestValidationError,
+            ) as exc:
+                messages.error(
+                    request,
+                    str(exc),
+                )
+
+                return redirect(
+                    "coordinated_change_review",
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                )
+
+            except IntegrityError:
+                messages.error(
+                    request,
+                    (
+                        "The coordinated package could not be "
+                        "withdrawn because its workflow state "
+                        "changed. Please review it again."
+                    ),
+                )
+
+                return redirect(
+                    "coordinated_change_review",
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                )
+
+            messages.success(
+                request,
+                (
+                    "The coordinated package has been withdrawn. "
+                    "No Basic Information changes were applied."
+                ),
+            )
+
+            return redirect(
+                "coordinated_change_review",
+                coordinated_change_id=(
+                    withdraw_result.coordinated_change_id
                 ),
             )
 
@@ -4549,7 +4989,9 @@ def coordinated_change_review(
             "can_approve": can_approve,
             "can_return": can_return,
             "can_deny": can_deny,
+            "can_withdraw": can_withdraw,
             "deny_action": deny_action,
+            "withdraw_action": withdraw_action,
             "workflow_errors": (
                 workflow_errors
             ),

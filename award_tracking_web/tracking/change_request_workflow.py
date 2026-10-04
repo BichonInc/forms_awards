@@ -239,6 +239,14 @@ class CoordinatedChangeDenyError(
     """
 
 
+class CoordinatedChangeWithdrawError(
+        ChangeRequestWithdrawError
+):
+    """
+    Raised when a coordinated package cannot be withdrawn.
+    """
+
+
 class CoordinatedChangeResubmitError(
         ChangeRequestResubmitError
 ):
@@ -594,6 +602,18 @@ class CoordinatedDenyResult:
     change_request_ids: tuple
     grant_ids: tuple
     denied_by_id: int
+
+
+@dataclass(frozen=True)
+class CoordinatedWithdrawResult:
+    coordinated_change_id: int
+    status: str
+    revision_no: int
+    approval_count: int
+    change_request_ids: tuple
+    grant_ids: tuple
+    withdrawn_by_id: int
+    withdrawn_at: datetime
 
 
 @dataclass(frozen=True)
@@ -6863,6 +6883,474 @@ def deny_coordinated_basic_information_change(
                 in change_requests
             ),
             denied_by_id=approver.pk,
+        )
+
+
+def withdraw_coordinated_basic_information_change(
+        *,
+        coordinated_change_id,
+        withdrawer,
+        comment,
+):
+    """
+    Withdraw a submitted coordinated Basic Information package.
+
+    Withdrawal is terminal for the whole package:
+
+      - the parent and every child must currently be PENDING or RETURNED;
+      - every child must be on the package's current revision;
+      - child submission and approval histories must be synchronized;
+      - only the package revision submitter may withdraw the package;
+      - existing approval and Return history remains immutable;
+      - a withdrawal reason is required;
+      - one WITHDRAW action is recorded on every child;
+      - the parent and every child move to WITHDRAWN together;
+      - package withdrawal metadata is recorded on the parent;
+      - authoritative Form1 values are not changed.
+    """
+    feedback = (comment or "").strip()
+
+    if (
+        withdrawer is None
+        or getattr(withdrawer, "pk", None) is None
+    ):
+        raise CoordinatedChangeWithdrawError(
+            "A saved user is required to withdraw "
+            "a coordinated package."
+        )
+
+    if not feedback:
+        raise CoordinatedChangeWithdrawError(
+            "Withdrawal requires a reason."
+        )
+
+    if len(feedback) > 500:
+        raise CoordinatedChangeWithdrawError(
+            "Withdrawal reason cannot exceed 500 characters."
+        )
+
+    with transaction.atomic():
+
+        try:
+            coordinated_change = (
+                CoordinatedChange.objects
+                .select_for_update()
+                .get(
+                    pk=coordinated_change_id
+                )
+            )
+
+        except CoordinatedChange.DoesNotExist as exc:
+            raise CoordinatedChangeWithdrawError(
+                "The coordinated package does not exist."
+            ) from exc
+
+        if coordinated_change.status not in {
+            CoordinatedChange.Status.PENDING,
+            CoordinatedChange.Status.RETURNED,
+        }:
+            raise CoordinatedChangeWithdrawError(
+                "This coordinated package is not in a state "
+                "that can be withdrawn."
+            )
+
+        if coordinated_change.applied_at is not None:
+            raise CoordinatedChangeWithdrawError(
+                "An applied coordinated package cannot be withdrawn."
+            )
+
+        if (
+                coordinated_change.withdrawn_by_id is not None
+                or coordinated_change.withdrawn_at is not None
+                or coordinated_change.withdrawal_reason
+        ):
+            raise CoordinatedChangeWithdrawError(
+                "This active coordinated package already contains "
+                "withdrawal metadata."
+            )
+
+        # -----------------------------------------------------
+        # Validate and lock the complete package boundary.
+        #
+        # This protects:
+        #   - minimum child count,
+        #   - parent/child revision synchronization,
+        #   - parent/child status synchronization,
+        #   - supported child structure,
+        #   - complete current-revision snapshots.
+        # -----------------------------------------------------
+
+        try:
+            structure_result = (
+                validate_coordinated_change_structure(
+                    coordinated_change,
+                    lock_children=True,
+                )
+            )
+
+        except ChangeRequestValidationError as exc:
+            raise CoordinatedChangeWithdrawError(
+                str(exc)
+            ) from exc
+
+        change_requests = tuple(
+            structure_result.change_requests
+        )
+
+        revision_no = (
+            structure_result.revision_no
+        )
+
+        if not change_requests:
+            raise CoordinatedChangeWithdrawError(
+                "The coordinated package does not contain "
+                "any child Change Requests."
+            )
+
+        for change_request in change_requests:
+            if (
+                change_request.request_type
+                != ChangeRequest.RequestType.EDIT_GRANT
+            ):
+                raise CoordinatedChangeWithdrawError(
+                    "Coordinated Withdraw currently supports only "
+                    "existing-grant Basic Information Change Requests."
+                )
+
+        # -----------------------------------------------------
+        # Any existing OPEN child integrity incident blocks
+        # normal package workflow actions, including withdrawal.
+        # -----------------------------------------------------
+
+        for change_request in change_requests:
+
+            existing_integrity_issue = (
+                get_open_change_request_integrity_issue(
+                    change_request,
+                    lock=True,
+                )
+            )
+
+            if existing_integrity_issue is not None:
+                raise ChangeRequestIntegrityBlockedError(
+                    existing_integrity_issue.id,
+                    newly_detected=False,
+                )
+
+        # -----------------------------------------------------
+        # Every child must identify the same submitter for the
+        # current formal package revision.
+        #
+        # Unlike Approve / Return / Deny, withdrawal belongs
+        # exclusively to that current revision submitter.
+        # -----------------------------------------------------
+
+        revision_submitter_ids = set()
+
+        for change_request in change_requests:
+
+            try:
+                revision_submitter_id = (
+                    get_revision_submitter_id(
+                        change_request
+                    )
+                )
+
+            except ChangeRequestApprovalError as exc:
+                raise CoordinatedChangeWithdrawError(
+                    f"Child Change Request "
+                    f"#{change_request.id} has invalid "
+                    "submission history: "
+                    + str(exc)
+                ) from exc
+
+            revision_submitter_ids.add(
+                revision_submitter_id
+            )
+
+        if len(revision_submitter_ids) != 1:
+            raise CoordinatedChangeWithdrawError(
+                "The coordinated package children do not identify "
+                "the same submitter for the current revision."
+            )
+
+        revision_submitter_id = next(
+            iter(revision_submitter_ids)
+        )
+
+        if revision_submitter_id != withdrawer.pk:
+            raise CoordinatedChangeWithdrawError(
+                "Only the submitter of the current coordinated "
+                "package revision can withdraw it."
+            )
+
+        # -----------------------------------------------------
+        # Approval history is a package-level invariant.
+        #
+        # Withdrawal may occur before Approval #1 or after
+        # Approval #1, but never after final approval.
+        # -----------------------------------------------------
+
+        approval_histories = []
+
+        for change_request in change_requests:
+
+            approval_user_ids = tuple(
+                ChangeAction.objects
+                .filter(
+                    change_request=change_request,
+                    revision_no=revision_no,
+                    action=(
+                        ChangeAction.Action.APPROVE
+                    ),
+                )
+                .order_by(
+                    "acted_at",
+                    "id",
+                )
+                .values_list(
+                    "acted_by_id",
+                    flat=True,
+                )
+            )
+
+            approval_histories.append(
+                (
+                    change_request.id,
+                    approval_user_ids,
+                )
+            )
+
+        prior_approval_user_ids = (
+            approval_histories[0][1]
+        )
+
+        histories_are_synchronized = all(
+            approval_user_ids
+            == prior_approval_user_ids
+            for (
+                _change_request_id,
+                approval_user_ids,
+            )
+            in approval_histories
+        )
+
+        if not histories_are_synchronized:
+            raise CoordinatedChangeWithdrawError(
+                "The coordinated package child approval histories "
+                "are not synchronized."
+            )
+
+        approval_count = len(
+            prior_approval_user_ids
+        )
+
+        if approval_count >= 2:
+            raise CoordinatedChangeWithdrawError(
+                "A fully approved coordinated package revision "
+                "cannot be withdrawn."
+            )
+
+        if (
+            revision_submitter_id
+            in prior_approval_user_ids
+        ):
+            raise CoordinatedChangeWithdrawError(
+                "The coordinated package contains an approval "
+                "recorded by the revision submitter."
+            )
+
+        # -----------------------------------------------------
+        # A RETURNED package has two legitimate audit paths:
+        #
+        # 1. ordinary Approver Return:
+        #       synchronized RETURN actions on every child;
+        #
+        # 2. Administrator integrity disposition:
+        #       no RETURN actions, but at least one CLOSED
+        #       integrity incident for this revision.
+        #
+        # Preserve either path exactly as recorded.
+        # -----------------------------------------------------
+
+        if (
+            coordinated_change.status
+            == CoordinatedChange.Status.RETURNED
+        ):
+            return_histories = {}
+
+            for change_request in change_requests:
+
+                return_actor_ids = tuple(
+                    ChangeAction.objects
+                    .filter(
+                        change_request=change_request,
+                        revision_no=revision_no,
+                        action=(
+                            ChangeAction.Action.RETURN
+                        ),
+                    )
+                    .order_by(
+                        "acted_at",
+                        "id",
+                    )
+                    .values_list(
+                        "acted_by_id",
+                        flat=True,
+                    )
+                )
+
+                if len(return_actor_ids) > 1:
+                    raise CoordinatedChangeWithdrawError(
+                        f"Child Change Request "
+                        f"#{change_request.id} contains more "
+                        "than one Return for Revision action "
+                        "for the current revision."
+                    )
+
+                return_histories[
+                    change_request.id
+                ] = return_actor_ids
+
+            first_return_history = (
+                return_histories[
+                    change_requests[0].id
+                ]
+            )
+
+            return_histories_are_synchronized = all(
+                return_actor_ids
+                == first_return_history
+                for return_actor_ids
+                in return_histories.values()
+            )
+
+            if not return_histories_are_synchronized:
+                raise CoordinatedChangeWithdrawError(
+                    "The coordinated package child Return for "
+                    "Revision histories are not synchronized."
+                )
+
+            package_return_count = len(
+                first_return_history
+            )
+
+            package_has_closed_integrity_issue = (
+                ChangeRequestIntegrityIssue.objects
+                .filter(
+                    change_request__in=change_requests,
+                    revision_no=revision_no,
+                    status=(
+                        ChangeRequestIntegrityIssue
+                        .Status
+                        .CLOSED
+                    ),
+                )
+                .exists()
+            )
+
+            if (
+                package_return_count == 0
+                and not package_has_closed_integrity_issue
+            ):
+                raise CoordinatedChangeWithdrawError(
+                    "The returned coordinated package has neither "
+                    "a synchronized Return for Revision history nor "
+                    "an Administrator integrity disposition."
+                )
+
+        # -----------------------------------------------------
+        # An active package must not already contain a WITHDRAW
+        # action for the current revision.
+        # -----------------------------------------------------
+
+        for change_request in change_requests:
+
+            existing_withdraw_count = (
+                ChangeAction.objects
+                .filter(
+                    change_request=change_request,
+                    revision_no=revision_no,
+                    action=(
+                        ChangeAction.Action.WITHDRAW
+                    ),
+                )
+                .count()
+            )
+
+            if existing_withdraw_count:
+                raise CoordinatedChangeWithdrawError(
+                    f"Child Change Request "
+                    f"#{change_request.id} already contains "
+                    "a Withdraw action for the current revision."
+                )
+
+        # -----------------------------------------------------
+        # Record the same package-level withdrawal on every
+        # child and move the whole package to its terminal state.
+        #
+        # No Form1 value is written and no GL rematch occurs.
+        # All writes are atomic.
+        # -----------------------------------------------------
+
+        withdrawn_at = timezone.now()
+
+        for change_request in change_requests:
+
+            ChangeAction.objects.create(
+                change_request=change_request,
+                revision_no=revision_no,
+                acted_by=withdrawer,
+                action=ChangeAction.Action.WITHDRAW,
+                comment=feedback,
+            )
+
+        for change_request in change_requests:
+            change_request.status = (
+                ChangeRequest.Status.WITHDRAWN
+            )
+
+        ChangeRequest.objects.bulk_update(
+            change_requests,
+            ["status"],
+        )
+
+        coordinated_change.status = (
+            CoordinatedChange.Status.WITHDRAWN
+        )
+
+        coordinated_change.withdrawn_by = withdrawer
+        coordinated_change.withdrawn_at = withdrawn_at
+        coordinated_change.withdrawal_reason = feedback
+
+        coordinated_change.save(
+            update_fields=[
+                "status",
+                "withdrawn_by",
+                "withdrawn_at",
+                "withdrawal_reason",
+            ]
+        )
+
+        return CoordinatedWithdrawResult(
+            coordinated_change_id=(
+                coordinated_change.id
+            ),
+            status=coordinated_change.status,
+            revision_no=revision_no,
+            approval_count=approval_count,
+            change_request_ids=tuple(
+                change_request.id
+                for change_request
+                in change_requests
+            ),
+            grant_ids=tuple(
+                change_request.grant_id
+                for change_request
+                in change_requests
+            ),
+            withdrawn_by_id=withdrawer.pk,
+            withdrawn_at=withdrawn_at,
         )
 
 
