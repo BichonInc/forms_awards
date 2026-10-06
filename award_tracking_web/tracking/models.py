@@ -567,6 +567,13 @@ class ChangeRequest(models.Model):
                 ),
                 name="unique_active_change_request_per_grant",
             ),
+            models.UniqueConstraint(
+                fields=["grant_id"],
+                condition=models.Q(
+                    request_type="NEW_GRANT"
+                ),
+                name="unique_new_grant_request_per_grant_id",
+            ),
             models.CheckConstraint(
                 condition=(
                     ~models.Q(status="DRAFT")

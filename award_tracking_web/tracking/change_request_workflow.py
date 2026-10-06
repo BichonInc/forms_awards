@@ -140,6 +140,23 @@ class ChangeRequestResubmitError(Exception):
     """
 
 
+class NewGrantSubmissionError(Exception):
+    """
+    Raised when a new-grant Change Request cannot be submitted safely.
+    """
+
+
+@dataclass(frozen=True)
+class NewGrantSubmissionResult:
+    change_request_id: int
+    grant_id: str
+    status: str
+    revision_no: int
+    submitted_by_id: int
+    submitted_at: datetime
+    field_count: int
+
+
 class ChangeRequestIntegrityIssueError(Exception):
     """
     Raised when a Change Request integrity incident cannot be recorded
@@ -709,6 +726,210 @@ def _serialize_basic_information_comparison_value(
         except ValueError:
             # Validation will handle malformed date data.
             return value_text
+
+
+def _calculate_next_new_grant_id():
+    """
+    Return the next permanent Grant ID.
+
+    IDs already present in authoritative Form1 and IDs ever issued to a
+    NEW_GRANT Change Request are both treated as permanently used.
+    """
+    issued_grant_ids = set(
+        Form1.objects.values_list(
+            "grant_id",
+            flat=True,
+        )
+    ) | set(
+        ChangeRequest.objects.filter(
+            request_type=ChangeRequest.RequestType.NEW_GRANT,
+        ).values_list(
+            "grant_id",
+            flat=True,
+        )
+    )
+
+    highest_number = 0
+
+    for grant_id in issued_grant_ids:
+        if (
+            not isinstance(grant_id, str)
+            or len(grant_id) != 6
+            or not grant_id.startswith("A")
+            or not grant_id[1:].isdigit()
+        ):
+            raise NewGrantSubmissionError(
+                "Automatic Grant ID allocation found an invalid existing "
+                f"Grant ID: {grant_id!r}."
+            )
+
+        highest_number = max(
+            highest_number,
+            int(grant_id[1:]),
+        )
+
+    if highest_number >= 99999:
+        raise NewGrantSubmissionError(
+            "No additional A##### Grant IDs are available."
+        )
+
+    return f"A{highest_number + 1:05d}"
+
+
+def submit_new_grant_change_request(
+        *,
+        submitter,
+        proposed_values,
+):
+    """
+    Reserve the next permanent Grant ID and create revision 1 of a
+    standalone NEW_GRANT Change Request.
+
+    This service intentionally does not create Form1. The authoritative
+    grant will be created only after the required approvals.
+
+    proposed_values must already contain one value for every protected
+    Basic Information field. Form/business validation will be performed
+    by the caller before this service becomes reachable from the UI.
+    """
+    if (
+        submitter is None
+        or getattr(submitter, "pk", None) is None
+    ):
+        raise NewGrantSubmissionError(
+            "A saved user is required to submit a new grant."
+        )
+
+    if not isinstance(proposed_values, dict):
+        raise NewGrantSubmissionError(
+            "New-grant proposed values must be supplied as a dictionary."
+        )
+
+    expected_fields = set(
+        GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    )
+
+    supplied_fields = set(
+        proposed_values
+    )
+
+    missing_fields = sorted(
+        expected_fields - supplied_fields
+    )
+
+    unexpected_fields = sorted(
+        supplied_fields - expected_fields
+    )
+
+    if missing_fields or unexpected_fields:
+        details = []
+
+        if missing_fields:
+            details.append(
+                "missing fields: "
+                + ", ".join(missing_fields)
+            )
+
+        if unexpected_fields:
+            details.append(
+                "unexpected fields: "
+                + ", ".join(unexpected_fields)
+            )
+
+        raise NewGrantSubmissionError(
+            "The proposed new-grant snapshot is incomplete or invalid ("
+            + "; ".join(details)
+            + ")."
+        )
+
+    serialized_values = {
+        field_name: serialize_change_request_value(
+            proposed_values[field_name]
+        )
+        for field_name
+        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    }
+
+    # A concurrent submitter may reserve the same calculated ID between
+    # our read and write. The database uniqueness constraint is the final
+    # protection. A collision is retried in a fresh transaction so the
+    # allocator can see the newly reserved ID.
+    max_attempts = 3
+
+    for _attempt in range(max_attempts):
+        candidate_grant_id = None
+
+        try:
+            with transaction.atomic():
+                candidate_grant_id = (
+                    _calculate_next_new_grant_id()
+                )
+
+                submitted_at = timezone.now()
+
+                change_request = (
+                    ChangeRequest.objects.create(
+                        grant_id=candidate_grant_id,
+                        request_type=(
+                            ChangeRequest.RequestType.NEW_GRANT
+                        ),
+                        status=ChangeRequest.Status.PENDING,
+                        current_revision=1,
+                        submitted_by=submitter,
+                        submitted_at=submitted_at,
+                    )
+                )
+
+                ChangeRequestField.objects.bulk_create(
+                    [
+                        ChangeRequestField(
+                            change_request=change_request,
+                            revision_no=1,
+                            field_name=field_name,
+                            current_value="",
+                            proposed_value=(
+                                serialized_values[field_name]
+                            ),
+                        )
+                        for field_name
+                        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+                    ]
+                )
+
+                return NewGrantSubmissionResult(
+                    change_request_id=change_request.id,
+                    grant_id=change_request.grant_id,
+                    status=change_request.status,
+                    revision_no=change_request.current_revision,
+                    submitted_by_id=submitter.pk,
+                    submitted_at=submitted_at,
+                    field_count=len(
+                        GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+                    ),
+                )
+
+        except IntegrityError as exc:
+            if (
+                candidate_grant_id
+                and ChangeRequest.objects.filter(
+                    grant_id=candidate_grant_id,
+                    request_type=(
+                        ChangeRequest.RequestType.NEW_GRANT
+                    ),
+                ).exists()
+            ):
+                continue
+
+            raise NewGrantSubmissionError(
+                "The new-grant Change Request could not be created "
+                "because of a database integrity conflict."
+            ) from exc
+
+    raise NewGrantSubmissionError(
+        "The next Grant ID could not be reserved because another "
+        "submission repeatedly reserved the same ID. Please submit "
+        "the request again."
+    )
 
 
 def build_basic_information_field_snapshot_values(
