@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
+from django.core.exceptions import ValidationError
 
 from .forms import (
     GRANT_BASIC_INFORMATION_CHANGE_FIELDS,
@@ -1322,6 +1323,75 @@ def validate_new_grant_change_request(
     return _validate_new_grant_proposed_values(
         proposed_values=proposed_values,
     )
+
+
+def _lock_new_grant_finalization_scope():
+    """
+    Serialize active NEW_GRANT approval transactions.
+
+    Every active NEW_GRANT request is locked in the same deterministic
+    order before the specific request is locked. This prevents concurrent
+    final approvals from applying conflicting authoritative grants.
+    """
+    return tuple(
+        ChangeRequest.objects
+        .select_for_update()
+        .filter(
+            request_type=ChangeRequest.RequestType.NEW_GRANT,
+            status__in=CHANGE_REQUEST_BLOCKING_STATUSES,
+        )
+        .order_by("id")
+        .values_list(
+            "id",
+            flat=True,
+        )
+    )
+
+
+def _apply_validated_new_grant_values(
+        *,
+        change_request,
+        validation_result,
+):
+    """
+    Create the authoritative Form1 row for an already-validated NEW_GRANT.
+
+    This helper must be called only inside the final approval transaction.
+    It does not determine approval eligibility, create ChangeAction rows,
+    or change ChangeRequest status.
+    """
+    if (
+        change_request.request_type
+        != ChangeRequest.RequestType.NEW_GRANT
+    ):
+        raise ChangeRequestValidationError(
+            "Only a NEW_GRANT Change Request can create a new "
+            "authoritative grant."
+        )
+
+    if Form1.objects.filter(
+        grant_id=change_request.grant_id,
+    ).exists():
+        raise ChangeRequestValidationError(
+            "The reserved Grant ID already exists in authoritative Form1."
+        )
+
+    grant = Form1(
+        grant_id=change_request.grant_id,
+        status="active",
+        **validation_result.proposed_values,
+    )
+
+    grant.full_clean()
+    grant.save()
+
+    gl_rematch_result = rematch_gl_expenditures(
+        award_codes={
+            grant.internal_award_code,
+        }
+    )
+
+    return grant, gl_rematch_result
 
 
 def validate_coordinated_change_structure(
@@ -8704,23 +8774,40 @@ def approve_standalone_change_request(
     """
     Record an approval for a standalone Basic Information Change Request.
 
-    Approval #1 records the approval and leaves the request PENDING.
+    EDIT_GRANT:
+      - Approval #1 validates the proposal and records the approval.
+      - Approval #2 revalidates and atomically applies the proposal to
+        authoritative Form1.
 
-    Approval #2 revalidates and atomically applies the approved Basic
-    Information proposal to Form1, then marks the request APPROVED.
+    NEW_GRANT:
+      - Approval #1 fully validates the proposed new grant and records
+        the approval. No Form1 row is created.
+      - Approval #2 serializes NEW_GRANT finalization, fully revalidates
+        the proposal, creates authoritative Form1, rematches GL, and
+        marks the request APPROVED atomically.
 
-    If an authoritative Basic Information baseline mismatch is detected,
-    the integrity incident is committed first and the approval is then
-    blocked outside the transaction.
-
-    This service is intentionally limited to standalone EDIT_GRANT requests.
-    Coordinated requests use a separate group-level approval workflow.
+    Coordinated requests use their separate group-level workflow.
     """
     blocked_integrity_issue_id = None
     blocked_integrity_issue_created = False
     approval_result = None
 
     with transaction.atomic():
+        request_type = (
+            ChangeRequest.objects
+            .values_list(
+                "request_type",
+                flat=True,
+            )
+            .get(pk=change_request_id)
+        )
+
+        if (
+                request_type
+                == ChangeRequest.RequestType.NEW_GRANT
+        ):
+            _lock_new_grant_finalization_scope()
+
         change_request = (
             ChangeRequest.objects
             .select_for_update()
@@ -8733,13 +8820,13 @@ def approve_standalone_change_request(
                 "the standalone approval workflow."
             )
 
-        if (
-            change_request.request_type
-            != ChangeRequest.RequestType.EDIT_GRANT
-        ):
+        if change_request.request_type not in {
+            ChangeRequest.RequestType.EDIT_GRANT,
+            ChangeRequest.RequestType.NEW_GRANT,
+        }:
             raise ChangeRequestApprovalError(
-                "This approval service currently supports only existing-"
-                "grant Basic Information Change Requests."
+                "This approval service does not support this Change "
+                "Request type."
             )
 
         if change_request.status != ChangeRequest.Status.PENDING:
@@ -8817,41 +8904,116 @@ def approve_standalone_change_request(
                     "of this revision and cannot count toward approval."
                 )
 
-            grant = (
-                Form1.objects
-                .select_for_update()
-                .get(grant_id=change_request.grant_id)
-            )
+            # =====================================================
+            # Existing-grant approval
+            # =====================================================
 
-            try:
-                validation_result = (
-                    validate_basic_information_change_request(
-                        change_request,
-                        grant=grant,
+            if (
+                change_request.request_type
+                == ChangeRequest.RequestType.EDIT_GRANT
+            ):
+                grant = (
+                    Form1.objects
+                    .select_for_update()
+                    .get(grant_id=change_request.grant_id)
+                )
+
+                try:
+                    validation_result = (
+                        validate_basic_information_change_request(
+                            change_request,
+                            grant=grant,
+                        )
                     )
-                )
 
-            except ChangeRequestBaselineMismatchError:
-                detection_result = (
-                    detect_or_get_change_request_integrity_issue(
-                        change_request_id=change_request.id,
-                        detected_by=approver,
-                        detected_during=(
-                            ChangeRequestIntegrityIssue
-                            .DetectedDuring
-                            .APPROVAL
-                        ),
+                except ChangeRequestBaselineMismatchError:
+                    detection_result = (
+                        detect_or_get_change_request_integrity_issue(
+                            change_request_id=change_request.id,
+                            detected_by=approver,
+                            detected_during=(
+                                ChangeRequestIntegrityIssue
+                                .DetectedDuring
+                                .APPROVAL
+                            ),
+                        )
                     )
-                )
 
-                blocked_integrity_issue_id = (
-                    detection_result.integrity_issue_id
-                )
-                blocked_integrity_issue_created = (
-                    detection_result.created
-                )
+                    blocked_integrity_issue_id = (
+                        detection_result.integrity_issue_id
+                    )
+
+                    blocked_integrity_issue_created = (
+                        detection_result.created
+                    )
+
+                else:
+                    ChangeAction.objects.create(
+                        change_request=change_request,
+                        revision_no=revision_no,
+                        acted_by=approver,
+                        action=ChangeAction.Action.APPROVE,
+                        comment="",
+                    )
+
+                    if not prior_approvals:
+                        approval_result = StandaloneApprovalResult(
+                            change_request_id=change_request.id,
+                            status=change_request.status,
+                            approval_count=1,
+                            changed_fields=(
+                                validation_result.changed_fields
+                            ),
+                            gl_rematch_result=None,
+                        )
+
+                    else:
+                        gl_rematch_result = (
+                            _apply_validated_basic_information_values(
+                                grant=grant,
+                                validation_result=validation_result,
+                            )
+                        )
+
+                        change_request.status = (
+                            ChangeRequest.Status.APPROVED
+                        )
+
+                        change_request.save(
+                            update_fields=["status"]
+                        )
+
+                        approval_result = StandaloneApprovalResult(
+                            change_request_id=change_request.id,
+                            status=change_request.status,
+                            approval_count=2,
+                            changed_fields=(
+                                validation_result.changed_fields
+                            ),
+                            gl_rematch_result=gl_rematch_result,
+                        )
+
+            # =====================================================
+            # New-grant approval
+            # =====================================================
 
             else:
+                # Every NEW_GRANT approval has already entered the common
+                # serialization scope before this request was locked.
+
+                try:
+                    validation_result = (
+                        validate_new_grant_change_request(
+                            change_request
+                        )
+                    )
+
+                except ChangeRequestValidationError as exc:
+                    raise ChangeRequestApprovalError(
+                        "The proposed new grant is not currently valid: "
+                        + str(exc)
+                    ) from exc
+
                 ChangeAction.objects.create(
                     change_request=change_request,
                     revision_no=revision_no,
@@ -8865,23 +9027,31 @@ def approve_standalone_change_request(
                         change_request_id=change_request.id,
                         status=change_request.status,
                         approval_count=1,
-                        changed_fields=(
-                            validation_result.changed_fields
+                        changed_fields=tuple(
+                            GRANT_BASIC_INFORMATION_CHANGE_FIELDS
                         ),
                         gl_rematch_result=None,
                     )
 
                 else:
-                    gl_rematch_result = (
-                        _apply_validated_basic_information_values(
-                            grant=grant,
-                            validation_result=validation_result,
+                    try:
+                        grant, gl_rematch_result = (
+                            _apply_validated_new_grant_values(
+                                change_request=change_request,
+                                validation_result=validation_result,
+                            )
                         )
-                    )
+
+                    except ValidationError as exc:
+                        raise ChangeRequestApprovalError(
+                            "The proposed new grant could not be created: "
+                            + str(exc)
+                        ) from exc
 
                     change_request.status = (
                         ChangeRequest.Status.APPROVED
                     )
+
                     change_request.save(
                         update_fields=["status"]
                     )
@@ -8890,8 +9060,8 @@ def approve_standalone_change_request(
                         change_request_id=change_request.id,
                         status=change_request.status,
                         approval_count=2,
-                        changed_fields=(
-                            validation_result.changed_fields
+                        changed_fields=tuple(
+                            GRANT_BASIC_INFORMATION_CHANGE_FIELDS
                         ),
                         gl_rematch_result=gl_rematch_result,
                     )
