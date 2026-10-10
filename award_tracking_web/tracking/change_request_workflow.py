@@ -9270,7 +9270,7 @@ def deny_standalone_change_request(
     Denial is terminal for the submitted Change Request:
 
       - the request must currently be PENDING;
-      - the request must be standalone and EDIT_GRANT;
+      - the request must be standalone and EDIT_GRANT or NEW_GRANT;
       - the current revision submitter cannot deny their own revision;
       - an approver who already approved the revision cannot deny it;
       - existing approval history remains immutable;
@@ -9318,13 +9318,13 @@ def deny_standalone_change_request(
                 "through the standalone workflow."
             )
 
-        if (
-            change_request.request_type
-            != ChangeRequest.RequestType.EDIT_GRANT
-        ):
+        if change_request.request_type not in {
+            ChangeRequest.RequestType.EDIT_GRANT,
+            ChangeRequest.RequestType.NEW_GRANT,
+        }:
             raise ChangeRequestDenyError(
-                "This denial service currently supports only "
-                "existing-grant Basic Information Change Requests."
+                "This denial service supports only standalone "
+                "Basic Information Change Requests."
             )
 
         if change_request.status != ChangeRequest.Status.PENDING:
@@ -9456,7 +9456,7 @@ def withdraw_standalone_change_request(
 
     Withdrawal is terminal for the request:
 
-      - the request must be standalone and EDIT_GRANT;
+      - the request must be standalone and EDIT_GRANT or NEW_GRANT;
       - the request must currently be PENDING or RETURNED;
       - only the current revision submitter may withdraw it;
       - existing approval history remains immutable;
@@ -9507,13 +9507,13 @@ def withdraw_standalone_change_request(
                 "through the standalone workflow."
             )
 
-        if (
-            change_request.request_type
-            != ChangeRequest.RequestType.EDIT_GRANT
-        ):
+        if change_request.request_type not in {
+            ChangeRequest.RequestType.EDIT_GRANT,
+            ChangeRequest.RequestType.NEW_GRANT,
+        }:
             raise ChangeRequestWithdrawError(
-                "This withdrawal service currently supports only "
-                "existing-grant Basic Information Change Requests."
+                "This withdrawal service supports only standalone "
+                "Basic Information Change Requests."
             )
 
         if change_request.status not in {
