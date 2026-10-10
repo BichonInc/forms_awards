@@ -87,6 +87,8 @@ from .change_request_workflow import (
     withdraw_coordinated_basic_information_change,
     CoordinatedChangeResubmitError,
     resubmit_coordinated_basic_information_change,
+    NewGrantSubmissionError,
+    submit_new_grant_change_request,
 )
 from django.core.files.storage import default_storage
 import pandas as pd
@@ -5051,10 +5053,24 @@ def change_request_review(request, request_id):
     else:
         raise PermissionDenied
 
-    grant = get_object_or_404(
-        Form1,
-        grant_id=change_request.grant_id,
+    is_new_grant_request = (
+            change_request.request_type
+            == ChangeRequest.RequestType.NEW_GRANT
     )
+
+    if is_new_grant_request:
+        grant = (
+            Form1.objects
+            .filter(
+                grant_id=change_request.grant_id
+            )
+            .first()
+        )
+    else:
+        grant = get_object_or_404(
+            Form1,
+            grant_id=change_request.grant_id,
+        )
 
     if (
         request.method == "POST"
@@ -5123,9 +5139,40 @@ def change_request_review(request, request_id):
         )
     }
 
-    label_form = GrantBasicInformationChangeForm(
-        instance=grant,
-    )
+    if grant is None:
+        label_form = GrantBasicInformationChangeForm()
+    else:
+        label_form = GrantBasicInformationChangeForm(
+            instance=grant,
+        )
+
+    new_grant_summary = None
+
+    if is_new_grant_request:
+        new_grant_summary = {}
+
+        for field_name in (
+                "program_title",
+                "contracting_agency",
+                "contract_number",
+        ):
+            snapshot = snapshots.get(field_name)
+
+            proposed_value = (
+                snapshot.proposed_value
+                if (
+                        snapshot is not None
+                        and snapshot.proposed_value is not None
+                )
+                else ""
+            )
+
+            new_grant_summary[field_name] = (
+                format_change_request_display_value(
+                    field_name,
+                    proposed_value,
+                )
+            )
 
     review_rows = []
 
@@ -5142,7 +5189,9 @@ def change_request_review(request, request_id):
                 "field_name": field_name,
                 "label": label_form.fields[field_name].label,
                 "current_value": (
-                    format_change_request_display_value(
+                    "Not yet created"
+                    if is_new_grant_request
+                    else format_change_request_display_value(
                         field_name,
                         snapshot.current_value,
                     )
@@ -5386,6 +5435,10 @@ def change_request_review(request, request_id):
             and revision_submitter_id != request.user.id
             and not user_has_approved
             and approval_count < 2
+            and (
+                    change_request.request_type
+                    == ChangeRequest.RequestType.EDIT_GRANT
+            )
             and open_integrity_issue is None
     )
 
@@ -5399,6 +5452,10 @@ def change_request_review(request, request_id):
             and revision_submitter_id != request.user.id
             and not user_has_approved
             and approval_count < 2
+            and (
+                    change_request.request_type
+                    == ChangeRequest.RequestType.EDIT_GRANT
+            )
             and open_integrity_issue is None
     )
 
@@ -5463,6 +5520,24 @@ def change_request_review(request, request_id):
 
     if request.method == "POST":
         action = request.POST.get("action")
+
+        if (
+                is_new_grant_request
+                and action != "approve"
+        ):
+            messages.error(
+                request,
+                (
+                    "Only approval is currently enabled for a New Grant "
+                    "request. Return, Deny, and Withdraw will be enabled "
+                    "after their New Grant workflow services are added."
+                ),
+            )
+
+            return redirect(
+                "change_request_review",
+                request_id=request_id,
+            )
 
         if (
             action in {
@@ -5694,14 +5769,24 @@ def change_request_review(request, request_id):
             )
 
         if approval_result.approval_count == 2:
-            messages.success(
-                request,
-                (
-                    "Final approval recorded. The Change Request "
-                    "has been approved and the Basic Information "
-                    "changes have been applied."
-                ),
-            )
+            if is_new_grant_request:
+                messages.success(
+                    request,
+                    (
+                        "Final approval recorded. New Grant "
+                        f"{change_request.grant_id} has been created "
+                        "and its GL expenditures have been rematched."
+                    ),
+                )
+            else:
+                messages.success(
+                    request,
+                    (
+                        "Final approval recorded. The Change Request "
+                        "has been approved and the Basic Information "
+                        "changes have been applied."
+                    ),
+                )
         else:
             messages.success(
                 request,
@@ -5748,6 +5833,8 @@ def change_request_review(request, request_id):
             "is_integrity_administrator": (
                 is_integrity_administrator
             ),
+            "is_new_grant_request": is_new_grant_request,
+            "new_grant_summary": new_grant_summary,
         },
     )
 
@@ -6111,84 +6198,68 @@ from django.contrib import messages
 
 @role_required(ROLE_EDITOR)
 def grant_create(request):
-    if request.method == 'POST':
-        # Create the form without validating it yet
-        form = GrantForm(request.POST)
+    """
+    Submit a proposed new grant for approval.
 
-        # Debug: Print form data
-        print(f"Form data received: {form.data}")
+    A valid submission reserves a permanent Grant ID and creates a
+    standalone NEW_GRANT Change Request. Form1 is intentionally not
+    created until the request receives final approval.
+    """
+    if request.method == "POST":
+        form = GrantBasicInformationChangeForm(
+            request.POST
+        )
 
-        # Generate the grant_id if it's a new grant
-        last_grant = Form1.objects.order_by('grant_id').last()
-        if last_grant and last_grant.grant_id.startswith('A'):
-            last_id_num = int(last_grant.grant_id[1:])
-            new_grant_id = f"A{last_id_num + 1:05d}"
-        else:
-            new_grant_id = "A00001"
-
-        # Assign the generated grant_id to the form's data before validation
-        form.data = form.data.copy()  # Make form data mutable
-        form.data['grant_id'] = new_grant_id
-
-        # Debug: Print the generated grant_id
-        print(f"Generated grant_id: {new_grant_id}")
-
-        # Now validate the form
         if form.is_valid():
-            print("Form is valid.")
-
-
-            # Extract form data for overlap check
-            internal_award_code = form.cleaned_data['internal_award_code']
-            internal_gl_start_date = form.cleaned_data['internal_gl_start_date']
-            internal_gl_end_date = form.cleaned_data['internal_gl_end_date']
-
-            # Check for existing grants with overlapping date ranges
-            overlapping_grants = Form1.objects.filter(
-                internal_award_code=internal_award_code,
-                internal_gl_end_date__gte=internal_gl_start_date,
-                internal_gl_start_date__lte=internal_gl_end_date,
-            ).exclude(grant_id=new_grant_id)
-
-            if overlapping_grants.exists():
-                # Conflict found, list all conflicting grant IDs
-                conflicting_grant_ids = ', '.join(grant.grant_id for grant in overlapping_grants)
-                conflict_message = (
-                    f"Conflict detected: Overlapping grants found with the following grant_ids: {conflicting_grant_ids}. "
-                    "Please adjust the dates or check the existing records."
+            proposed_values = {
+                field_name: form.cleaned_data.get(
+                    field_name
                 )
-                messages.error(request, conflict_message)
-                print(conflict_message)
+                for field_name
+                in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+            }
 
-                # Return the form with an error message
-                return render(request, 'tracking/grant_form.html', {'form': form})
+            try:
+                submission_result = (
+                    submit_new_grant_change_request(
+                        submitter=request.user,
+                        proposed_values=proposed_values,
+                    )
+                )
 
-            # Handle 'Add New' for dropdowns
-            if form.cleaned_data['program_title'] == 'Add New':
-                form.instance.program_title = form.cleaned_data['new_program_title']
-            if form.cleaned_data['contracting_agency'] == 'Add New':
-                form.instance.contracting_agency = form.cleaned_data['new_contracting_agency']
-            if form.cleaned_data['federal_grantor'] == 'Add New':
-                form.instance.federal_grantor = form.cleaned_data['new_federal_grantor']
-            if form.cleaned_data['federal_aln'] == 'Add New':
-                form.instance.federal_aln = form.cleaned_data['new_federal_aln']
+            except NewGrantSubmissionError as exc:
+                form.add_error(
+                    None,
+                    str(exc),
+                )
+
             else:
-                form.instance.federal_aln = form.cleaned_data['federal_aln']
+                messages.success(
+                    request,
+                    (
+                        "New Grant "
+                        f"{submission_result.grant_id} "
+                        "was submitted for approval as Change Request "
+                        f"#{submission_result.change_request_id}. "
+                        "The grant will be created after the required "
+                        "approvals."
+                    ),
+                )
 
-
-            # Save the form and redirect
-            form.save()
-            return redirect('grant_list')
-        else:
-            # Debug: Print form errors
-            print(f"Form is not valid. Errors: {form.errors}")
+                return redirect(
+                    "grant_list"
+                )
 
     else:
-        form = GrantForm()
+        form = GrantBasicInformationChangeForm()
 
-    return render(request, 'tracking/grant_form.html', {'form': form})
-
-
+    return render(
+        request,
+        "tracking/grant_form.html",
+        {
+            "form": form,
+        },
+    )
 
 
 #def grant_edit(request, grant_id):
