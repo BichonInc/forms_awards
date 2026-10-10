@@ -157,6 +157,11 @@ class NewGrantSubmissionResult:
     field_count: int
 
 
+@dataclass(frozen=True)
+class NewGrantValidationResult:
+    proposed_values: dict
+
+
 class ChangeRequestIntegrityIssueError(Exception):
     """
     Raised when a Change Request integrity incident cannot be recorded
@@ -776,32 +781,23 @@ def _calculate_next_new_grant_id():
     return f"A{highest_number + 1:05d}"
 
 
-def submit_new_grant_change_request(
+def _validate_new_grant_proposed_values(
         *,
-        submitter,
         proposed_values,
 ):
     """
-    Reserve the next permanent Grant ID and create revision 1 of a
-    standalone NEW_GRANT Change Request.
+    Validate one complete proposed new grant without creating Form1.
 
-    This service intentionally does not create Form1. The authoritative
-    grant will be created only after the required approvals.
+    This applies the same Basic Information form/business rules used by
+    the application and validates the proposed Internal Award Code / GL
+    date range against authoritative Form1 records.
 
-    proposed_values must already contain one value for every protected
-    Basic Information field. Form/business validation will be performed
-    by the caller before this service becomes reachable from the UI.
+    Pending NEW_GRANT requests are intentionally not treated as
+    authoritative overlap conflicts. Final approval will repeat this
+    validation immediately before Form1 is created.
     """
-    if (
-        submitter is None
-        or getattr(submitter, "pk", None) is None
-    ):
-        raise NewGrantSubmissionError(
-            "A saved user is required to submit a new grant."
-        )
-
     if not isinstance(proposed_values, dict):
-        raise NewGrantSubmissionError(
+        raise ChangeRequestValidationError(
             "New-grant proposed values must be supplied as a dictionary."
         )
 
@@ -836,19 +832,103 @@ def submit_new_grant_change_request(
                 + ", ".join(unexpected_fields)
             )
 
-        raise NewGrantSubmissionError(
-            "The proposed new-grant snapshot is incomplete or invalid ("
+        raise ChangeRequestValidationError(
+            "The proposed new-grant data is incomplete or invalid ("
             + "; ".join(details)
             + ")."
         )
 
-    serialized_values = {
+    form_data = {
         field_name: serialize_change_request_value(
             proposed_values[field_name]
         )
         for field_name
         in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
     }
+
+    # Use an unsaved Form1 instance. ModelForm validation may modify
+    # its instance in memory, but no authoritative row is ever saved.
+    validation_grant = Form1()
+
+    form = GrantBasicInformationChangeForm(
+        data=form_data,
+        instance=validation_grant,
+    )
+
+    if not form.is_valid():
+        raise ChangeRequestValidationError(
+            "The proposed new grant does not pass Basic Information "
+            "validation: "
+            + form.errors.as_text()
+        )
+
+    validated_values = {
+        field_name: form.cleaned_data.get(
+            field_name
+        )
+        for field_name
+        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    }
+
+    overlapping_grants = (
+        Form1.objects
+        .filter(
+            internal_award_code=validated_values[
+                "internal_award_code"
+            ],
+            internal_gl_end_date__gte=validated_values[
+                "internal_gl_start_date"
+            ],
+            internal_gl_start_date__lte=validated_values[
+                "internal_gl_end_date"
+            ],
+        )
+        .order_by("grant_id")
+    )
+
+    if overlapping_grants.exists():
+        conflicting_grant_ids = ", ".join(
+            overlapping_grants.values_list(
+                "grant_id",
+                flat=True,
+            )
+        )
+
+        raise ChangeRequestValidationError(
+            "The proposed Internal Award Code and GL date range "
+            "overlap with: "
+            + conflicting_grant_ids
+            + "."
+        )
+
+    return NewGrantValidationResult(
+        proposed_values=validated_values,
+    )
+
+
+def submit_new_grant_change_request(
+        *,
+        submitter,
+        proposed_values,
+):
+    """
+    Reserve the next permanent Grant ID and create revision 1 of a
+    standalone NEW_GRANT Change Request.
+
+    This service intentionally does not create Form1. The authoritative
+    grant will be created only after the required approvals.
+
+    proposed_values must already contain one value for every protected
+    Basic Information field. Form/business validation will be performed
+    by the caller before this service becomes reachable from the UI.
+    """
+    if (
+        submitter is None
+        or getattr(submitter, "pk", None) is None
+    ):
+        raise NewGrantSubmissionError(
+            "A saved user is required to submit a new grant."
+        )
 
     # A concurrent submitter may reserve the same calculated ID between
     # our read and write. The database uniqueness constraint is the final
@@ -861,6 +941,31 @@ def submit_new_grant_change_request(
 
         try:
             with transaction.atomic():
+                try:
+                    validation_result = (
+                        _validate_new_grant_proposed_values(
+                            proposed_values=proposed_values,
+                        )
+                    )
+
+                except ChangeRequestValidationError as exc:
+                    raise NewGrantSubmissionError(
+                        str(exc)
+                    ) from exc
+
+                serialized_values = {
+                    field_name: (
+                        serialize_change_request_value(
+                            validation_result
+                            .proposed_values[
+                                field_name
+                            ]
+                        )
+                    )
+                    for field_name
+                    in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+                }
+
                 candidate_grant_id = (
                     _calculate_next_new_grant_id()
                 )
@@ -1113,6 +1218,110 @@ def get_basic_information_revision_snapshots(
         snapshot.field_name: snapshot
         for snapshot in snapshots
     }
+
+
+def validate_new_grant_change_request(
+        change_request,
+):
+    """
+    Fully validate the current revision of a standalone NEW_GRANT
+    Change Request without creating Form1.
+
+    A valid NEW_GRANT revision must:
+      - be standalone and NEW_GRANT;
+      - reference a Grant ID not yet present in authoritative Form1;
+      - contain exactly one snapshot for every protected Basic
+        Information field;
+      - have a blank current_value for every field because no
+        authoritative grant existed when the proposal was submitted;
+      - contain a proposed_value for every field; and
+      - pass current Basic Information and authoritative GL-overlap
+        validation.
+    """
+    if change_request.pk is None:
+        raise ChangeRequestValidationError(
+            "The NEW_GRANT Change Request has not been saved."
+        )
+
+    if change_request.coordinated_change_id is not None:
+        raise ChangeRequestValidationError(
+            "This NEW_GRANT validator supports only standalone "
+            "Change Requests."
+        )
+
+    if (
+        change_request.request_type
+        != ChangeRequest.RequestType.NEW_GRANT
+    ):
+        raise ChangeRequestValidationError(
+            "This Change Request is not a NEW_GRANT request."
+        )
+
+    if Form1.objects.filter(
+        grant_id=change_request.grant_id,
+    ).exists():
+        raise ChangeRequestValidationError(
+            "The reserved Grant ID already exists in authoritative "
+            "Form1."
+        )
+
+    snapshots_by_field = (
+        get_basic_information_revision_snapshots(
+            change_request
+        )
+    )
+
+    invalid_current_fields = []
+    missing_proposed_fields = []
+
+    for field_name in (
+        GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    ):
+        snapshot = snapshots_by_field[field_name]
+
+        if snapshot.current_value != "":
+            invalid_current_fields.append(
+                field_name
+            )
+
+        if snapshot.proposed_value is None:
+            missing_proposed_fields.append(
+                field_name
+            )
+
+    if invalid_current_fields:
+        raise ChangeRequestValidationError(
+            "A NEW_GRANT revision must have blank current values. "
+            "Invalid fields: "
+            + ", ".join(
+                invalid_current_fields
+            )
+            + "."
+        )
+
+    if missing_proposed_fields:
+        raise ChangeRequestValidationError(
+            "A NEW_GRANT revision must contain a proposed value for "
+            "every protected field. Missing proposed values: "
+            + ", ".join(
+                missing_proposed_fields
+            )
+            + "."
+        )
+
+    proposed_values = {
+        field_name: (
+            snapshots_by_field[
+                field_name
+            ].proposed_value
+        )
+        for field_name
+        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    }
+
+    return _validate_new_grant_proposed_values(
+        proposed_values=proposed_values,
+    )
 
 
 def validate_coordinated_change_structure(
