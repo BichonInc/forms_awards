@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>New Grant Requests</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 1200px;
+            margin: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        th,
+        td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #f2f2f2;
+        }
+
+        .back-button {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 10px 20px;
+            background-color: #008CBA;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>New Grant Requests</h1>
+
+        {% if request_rows %}
+            <p>
+                These Grant IDs have been reserved for submitted New Grant
+                requests. The grant itself is not created until final approval
+                is completed.
+            </p>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Reserved Grant ID</th>
+                        <th>Program Title</th>
+                        <th>Contracting Agency</th>
+                        <th>Contract Number</th>
+                        <th>Status</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+
+                <tbody>
+                    {% for item in request_rows %}
+                        <tr>
+                            <td>{{ item.change_request.grant_id }}</td>
+                            <td>{{ item.program_title|default:"—" }}</td>
+                            <td>{{ item.contracting_agency|default:"—" }}</td>
+                            <td>{{ item.contract_number|default:"—" }}</td>
+                            <td>
+                                {{ item.change_request.get_status_display }}
+                            </td>
+                            <td>
+                                <a
+                                    href="{% url 'change_request_review' item.change_request.id %}"
+                                >
+                                    Open Request
+                                </a>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <p>
+                There are currently no active New Grant requests.
+            </p>
+        {% endif %}
+
+        <a
+            href="{% url 'grant_list' %}"
+            class="back-button"
+        >
+            Back to Grant List
+        </a>
+    </div>
+</body>
+</html>

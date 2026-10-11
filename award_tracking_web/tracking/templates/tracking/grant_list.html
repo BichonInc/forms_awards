@@ -46,6 +46,14 @@
             background-color: #008CBA;  /* Blue color */
         }
 
+        #new-grant-requests-button {
+            background-color: #6c757d;
+        }
+
+        #new-grant-requests-button:hover {
+            background-color: #545b62;
+        }
+
         /* Hover Effects */
         #create-button:hover {
             background-color: #388E3C;  /* Darker green on hover */
@@ -146,14 +154,34 @@
     <h1>Grant List</h1>
     <!-- grant_list.html -->
     <div class="button-container">
-       {% if can_create_grant %}
-            <a href="{% url 'grant_create' %}"
-            id="create-button"
-            class="button-common">
+        {% if can_create_grant %}
+            <a
+                href="{% url 'grant_create' %}"
+                id="create-button"
+                class="button-common"
+            >
                 Create New Grant
             </a>
         {% endif %}
-        <a href="{% url 'download_data_csv' %}" id="download-button" class="button-common">Download CSV</a>
+
+        {% if can_view_active_new_grant_requests %}
+            <a
+                href="{% url 'new_grant_requests' %}"
+                id="new-grant-requests-button"
+                class="button-common"
+            >
+                New Grant Requests
+                ({{ active_new_grant_request_count }})
+            </a>
+        {% endif %}
+
+        <a
+            href="{% url 'download_data_csv' %}"
+            id="download-button"
+            class="button-common"
+        >
+            Download CSV
+        </a>
     </div>
 
     {% if can_refresh_financial_data %}

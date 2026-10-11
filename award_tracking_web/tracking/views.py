@@ -157,8 +157,36 @@ def grant_list(request):
         )
     )
 
+    can_view_active_new_grant_requests = user_has_any_role(
+        request.user,
+        ROLE_EDITOR,
+        ROLE_APPROVER,
+    )
+
+    active_new_grant_request_count = 0
+
+    if can_view_active_new_grant_requests:
+        active_new_grant_request_count = (
+            ChangeRequest.objects
+            .filter(
+                request_type=ChangeRequest.RequestType.NEW_GRANT,
+                status__in=(
+                    ChangeRequest.Status.PENDING,
+                    ChangeRequest.Status.RETURNED,
+                ),
+                coordinated_change__isnull=True,
+            )
+            .count()
+        )
+
     context = {
         'grants': grants,
+        "active_new_grant_request_count": (
+            active_new_grant_request_count
+        ),
+        "can_view_active_new_grant_requests": (
+            can_view_active_new_grant_requests
+        ),
         "can_create_grant": user_has_any_role(
             request.user,
             ROLE_EDITOR,
@@ -170,6 +198,73 @@ def grant_list(request):
         "user_roles": user_roles,
     }
     return render(request, 'tracking/grant_list.html', context)
+
+
+@role_required(
+    ROLE_EDITOR,
+    ROLE_APPROVER,
+)
+def new_grant_requests(request):
+    active_requests = (
+        ChangeRequest.objects
+        .filter(
+            request_type=ChangeRequest.RequestType.NEW_GRANT,
+            status__in=(
+                ChangeRequest.Status.PENDING,
+                ChangeRequest.Status.RETURNED,
+            ),
+            coordinated_change__isnull=True,
+        )
+        .select_related("submitted_by")
+        .order_by("grant_id")
+    )
+
+    request_rows = []
+
+    for change_request in active_requests:
+        snapshots = {
+            snapshot.field_name: snapshot
+            for snapshot in ChangeRequestField.objects.filter(
+                change_request=change_request,
+                revision_no=change_request.current_revision,
+                field_name__in=(
+                    "program_title",
+                    "contracting_agency",
+                    "contract_number",
+                ),
+            )
+        }
+
+        request_rows.append(
+            {
+                "change_request": change_request,
+                "program_title": (
+                    snapshots["program_title"].proposed_value
+                    if "program_title" in snapshots
+                    else ""
+                ),
+                "contracting_agency": (
+                    snapshots[
+                        "contracting_agency"
+                    ].proposed_value
+                    if "contracting_agency" in snapshots
+                    else ""
+                ),
+                "contract_number": (
+                    snapshots["contract_number"].proposed_value
+                    if "contract_number" in snapshots
+                    else ""
+                ),
+            }
+        )
+
+    return render(
+        request,
+        "tracking/new_grant_requests.html",
+        {
+            "request_rows": request_rows,
+        },
+    )
 
 
 def format_change_request_display_value(field_name, value):
