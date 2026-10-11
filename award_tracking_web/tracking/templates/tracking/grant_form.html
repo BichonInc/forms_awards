@@ -38,8 +38,11 @@
             background-color: #4CAF50;
             color: white;
             border: none;
+            border-radius: 5px;
             padding: 10px 20px;
             cursor: pointer;
+            font-family: inherit;
+            font-size: 1em;
         }
         #back-button {
             margin-left: 20px;
@@ -332,7 +335,7 @@
 
                 formIsSubmitting = true;
                 saveButton.disabled = true;
-                saveButton.textContent = "Saving...";
+                saveButton.textContent = "Submitting...";
             });
         }
     });
@@ -340,7 +343,14 @@
 </head>
 <body>
     <div class="container">
-        <h1>{% if form.instance.pk %}Edit Grant{% else %}Create New Grant{% endif %}</h1>
+        <h1>Create New Grant Request</h1>
+
+        <p>
+            Submit the proposed grant information for approval.
+            A permanent Grant ID will be reserved when the request is
+            successfully submitted. The grant itself will not be created
+            until both required approvals are completed.
+        </p>
         {% if messages %}
             <div class="messages-container">
                 {% for message in messages %}
@@ -488,8 +498,16 @@
             </div>
 
             <div class="buttons">
-                <button type="submit" id="save-button">Save</button>
-                <a href="{% url 'grant_list' %}" id="back-button">Back to Grant List</a>
+                <button type="submit" id="save-button">
+                    Submit for Approval
+                </button>
+
+                <a
+                    href="{% url 'grant_list' %}"
+                    id="back-button"
+                >
+                    Discard
+                </a>
             </div>
         </form>
     </div>
