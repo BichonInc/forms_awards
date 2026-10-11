@@ -9760,6 +9760,255 @@ def withdraw_standalone_change_request(
         )
 
 
+def _resubmit_new_grant_revision(
+        *,
+        change_request,
+        resubmitter,
+        proposed_values,
+        resubmission_comment,
+):
+    """
+    Create the next formal revision of a returned standalone NEW_GRANT
+    Change Request.
+
+    The reserved Grant ID is retained. The previous revision remains
+    immutable. No authoritative Form1 is created and no GL rematch is
+    performed.
+    """
+    if (
+        change_request.request_type
+        != ChangeRequest.RequestType.NEW_GRANT
+    ):
+        raise ChangeRequestResubmitError(
+            "The New Grant resubmission helper requires a "
+            "NEW_GRANT Change Request."
+        )
+
+    if (
+        change_request.status
+        != ChangeRequest.Status.RETURNED
+    ):
+        raise ChangeRequestResubmitError(
+            "Only a New Grant request that is Returned for Revision "
+            "can be resubmitted."
+        )
+
+    if Form1.objects.filter(
+        grant_id=change_request.grant_id
+    ).exists():
+        raise ChangeRequestResubmitError(
+            "The reserved New Grant ID already exists as an "
+            "authoritative grant."
+        )
+
+    existing_integrity_issue = (
+        get_open_change_request_integrity_issue(
+            change_request,
+            lock=True,
+        )
+    )
+
+    if existing_integrity_issue is not None:
+        raise ChangeRequestIntegrityBlockedError(
+            existing_integrity_issue.id,
+            newly_detected=False,
+        )
+
+    previous_revision_no = (
+        change_request.current_revision
+    )
+
+    return_count = (
+        ChangeAction.objects
+        .filter(
+            change_request=change_request,
+            revision_no=previous_revision_no,
+            action=ChangeAction.Action.RETURN,
+        )
+        .count()
+    )
+
+    if return_count != 1:
+        raise ChangeRequestResubmitError(
+            "A returned New Grant revision must have exactly one "
+            "Return for Revision action."
+        )
+
+    approval_count = (
+        ChangeAction.objects
+        .filter(
+            change_request=change_request,
+            revision_no=previous_revision_no,
+            action=ChangeAction.Action.APPROVE,
+        )
+        .count()
+    )
+
+    if approval_count >= 2:
+        raise ChangeRequestResubmitError(
+            "A New Grant revision with two approvals cannot be "
+            "resubmitted."
+        )
+
+    try:
+        snapshots_by_field = (
+            get_basic_information_revision_snapshots(
+                change_request,
+                revision_no=previous_revision_no,
+            )
+        )
+
+    except ChangeRequestValidationError as exc:
+        raise ChangeRequestResubmitError(
+            str(exc)
+        ) from exc
+
+    invalid_current_fields = [
+        field_name
+        for field_name
+        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        if (
+            snapshots_by_field[
+                field_name
+            ].current_value
+            != ""
+        )
+    ]
+
+    if invalid_current_fields:
+        raise ChangeRequestResubmitError(
+            "The returned New Grant revision contains invalid "
+            "current-value snapshots for: "
+            + ", ".join(invalid_current_fields)
+            + "."
+        )
+
+    missing_proposed_fields = [
+        field_name
+        for field_name
+        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        if (
+            snapshots_by_field[
+                field_name
+            ].proposed_value
+            is None
+        )
+    ]
+
+    if missing_proposed_fields:
+        raise ChangeRequestResubmitError(
+            "The returned New Grant revision contains missing "
+            "proposed values for: "
+            + ", ".join(missing_proposed_fields)
+            + "."
+        )
+
+    try:
+        validation_result = (
+            _validate_new_grant_proposed_values(
+                proposed_values=proposed_values,
+            )
+        )
+
+    except ChangeRequestValidationError as exc:
+        raise ChangeRequestResubmitError(
+            str(exc)
+        ) from exc
+
+    new_revision_no = (
+        previous_revision_no + 1
+    )
+
+    if (
+        ChangeRequestField.objects
+        .filter(
+            change_request=change_request,
+            revision_no=new_revision_no,
+        )
+        .exists()
+    ):
+        raise ChangeRequestResubmitError(
+            "The next New Grant revision already contains field "
+            "snapshots."
+        )
+
+    if (
+        ChangeAction.objects
+        .filter(
+            change_request=change_request,
+            revision_no=new_revision_no,
+        )
+        .exists()
+    ):
+        raise ChangeRequestResubmitError(
+            "The next New Grant revision already contains workflow "
+            "actions."
+        )
+
+    serialized_values = {
+        field_name: (
+            serialize_change_request_value(
+                validation_result.proposed_values[
+                    field_name
+                ]
+            )
+        )
+        for field_name
+        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    }
+
+    field_snapshots = [
+        ChangeRequestField(
+            change_request=change_request,
+            revision_no=new_revision_no,
+            field_name=field_name,
+            current_value="",
+            proposed_value=(
+                serialized_values[field_name]
+            ),
+        )
+        for field_name
+        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    ]
+
+    ChangeRequestField.objects.bulk_create(
+        field_snapshots
+    )
+
+    ChangeAction.objects.create(
+        change_request=change_request,
+        revision_no=new_revision_no,
+        acted_by=resubmitter,
+        action=ChangeAction.Action.RESUBMIT,
+        comment=resubmission_comment,
+    )
+
+    change_request.current_revision = (
+        new_revision_no
+    )
+
+    change_request.status = (
+        ChangeRequest.Status.PENDING
+    )
+
+    change_request.save(
+        update_fields=[
+            "current_revision",
+            "status",
+        ]
+    )
+
+    return StandaloneResubmitResult(
+        change_request_id=change_request.id,
+        status=change_request.status,
+        previous_revision_no=previous_revision_no,
+        revision_no=new_revision_no,
+        changed_fields=tuple(
+            GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        ),
+    )
+
+
 def resubmit_standalone_change_request(
         *,
         change_request_id,
@@ -9771,20 +10020,22 @@ def resubmit_standalone_change_request(
     Create the next formal revision of a returned standalone Basic
     Information Change Request.
 
-    An ordinary returned request validates against the current formal
-    revision baseline.
+    For EDIT_GRANT, an ordinary returned request validates against the
+    current formal revision baseline. A request returned through
+    Administrator integrity disposition validates against the latest
+    applicable DISPOSITION checkpoint. If an authoritative baseline
+    mismatch is detected, the integrity incident is committed first and
+    resubmission is then blocked outside the transaction.
 
-    A request returned through Administrator integrity disposition
-    validates against the latest applicable DISPOSITION checkpoint.
+    For NEW_GRANT, no authoritative Form1 exists yet. The reserved Grant ID
+    is retained, the returned revision's snapshot structure is validated,
+    and the complete revised New Grant proposal must pass current Basic
+    Information and authoritative GL-overlap validation.
 
-    If an authoritative baseline mismatch is detected, the new integrity
-    incident is committed first and resubmission is then blocked outside
-    the transaction.
-
-    The previous formal revision remains immutable. A successful
-    resubmission creates a complete 14-field snapshot, records the actual
-    resubmitter, moves the request to the next revision, and starts that
-    revision PENDING with zero approvals.
+    For either request type, the previous formal revision remains immutable.
+    A successful resubmission creates a complete 14-field snapshot, records
+    the actual resubmitter, moves the request to the next revision, and
+    starts that revision PENDING with zero approvals.
     """
     resubmission_comment = (comment or "").strip()
 
@@ -9810,19 +10061,30 @@ def resubmit_standalone_change_request(
                 "through the standalone workflow."
             )
 
-        if (
-            change_request.request_type
-            != ChangeRequest.RequestType.EDIT_GRANT
-        ):
+        if change_request.request_type not in {
+            ChangeRequest.RequestType.EDIT_GRANT,
+            ChangeRequest.RequestType.NEW_GRANT,
+        }:
             raise ChangeRequestResubmitError(
-                "This resubmission service currently supports only "
-                "existing-grant Basic Information Change Requests."
+                "This resubmission service supports only standalone "
+                "Basic Information Change Requests."
             )
 
         if change_request.status != ChangeRequest.Status.RETURNED:
             raise ChangeRequestResubmitError(
                 "Only a Change Request that is Returned for Revision "
                 "can be resubmitted."
+            )
+
+        if (
+            change_request.request_type
+            == ChangeRequest.RequestType.NEW_GRANT
+        ):
+            return _resubmit_new_grant_revision(
+                change_request=change_request,
+                resubmitter=resubmitter,
+                proposed_values=proposed_form_data,
+                resubmission_comment=resubmission_comment,
             )
 
         existing_integrity_issue = (
