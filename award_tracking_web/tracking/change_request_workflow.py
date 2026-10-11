@@ -9089,9 +9089,13 @@ def return_standalone_change_request(
     The current revision and any approvals already recorded for it remain
     historical. No authoritative Form1 values are changed.
 
-    If an authoritative Basic Information baseline mismatch is detected,
-    the integrity incident is committed first and the normal Return for
-    Revision action is then blocked outside the transaction.
+    For EDIT_GRANT, the authoritative Basic Information baseline must still
+    match the formal revision snapshot. A mismatch creates an integrity
+    incident and blocks the normal Return action.
+
+    For NEW_GRANT, no authoritative Form1 exists yet. The formal revision
+    snapshot is instead validated for New Grant structural integrity before
+    the Return action is recorded.
     """
     feedback = (comment or "").strip()
 
@@ -9122,12 +9126,12 @@ def return_standalone_change_request(
                 "the standalone workflow."
             )
 
-        if (
-            change_request.request_type
-            != ChangeRequest.RequestType.EDIT_GRANT
-        ):
+        if change_request.request_type not in {
+            ChangeRequest.RequestType.EDIT_GRANT,
+            ChangeRequest.RequestType.NEW_GRANT,
+        }:
             raise ChangeRequestReturnError(
-                "This return service currently supports only existing-grant "
+                "This return service supports only standalone "
                 "Basic Information Change Requests."
             )
 
@@ -9190,6 +9194,93 @@ def return_standalone_change_request(
                 raise ChangeRequestReturnError(
                     "A fully approved revision cannot be returned for "
                     "changes."
+                )
+
+            if (
+                change_request.request_type
+                == ChangeRequest.RequestType.NEW_GRANT
+            ):
+                if Form1.objects.filter(
+                    grant_id=change_request.grant_id
+                ).exists():
+                    raise ChangeRequestReturnError(
+                        "The reserved New Grant ID already exists as an "
+                        "authoritative grant."
+                    )
+
+                try:
+                    snapshots_by_field = (
+                        get_basic_information_revision_snapshots(
+                            change_request
+                        )
+                    )
+
+                except ChangeRequestValidationError as exc:
+                    raise ChangeRequestReturnError(
+                        str(exc)
+                    ) from exc
+
+                invalid_current_fields = [
+                    field_name
+                    for field_name
+                    in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+                    if (
+                        snapshots_by_field[
+                            field_name
+                        ].current_value
+                        != ""
+                    )
+                ]
+
+                if invalid_current_fields:
+                    raise ChangeRequestReturnError(
+                        "The New Grant revision contains invalid "
+                        "current-value snapshots for: "
+                        + ", ".join(invalid_current_fields)
+                        + "."
+                    )
+
+                missing_proposed_fields = [
+                    field_name
+                    for field_name
+                    in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+                    if (
+                        snapshots_by_field[
+                            field_name
+                        ].proposed_value
+                        is None
+                    )
+                ]
+
+                if missing_proposed_fields:
+                    raise ChangeRequestReturnError(
+                        "The New Grant revision contains missing "
+                        "proposed values for: "
+                        + ", ".join(missing_proposed_fields)
+                        + "."
+                    )
+
+                ChangeAction.objects.create(
+                    change_request=change_request,
+                    revision_no=revision_no,
+                    acted_by=approver,
+                    action=ChangeAction.Action.RETURN,
+                    comment=feedback,
+                )
+
+                change_request.status = (
+                    ChangeRequest.Status.RETURNED
+                )
+
+                change_request.save(
+                    update_fields=["status"]
+                )
+
+                return StandaloneReturnResult(
+                    change_request_id=change_request.id,
+                    status=change_request.status,
+                    revision_no=revision_no,
+                    approval_count=approval_count,
                 )
 
             grant = (
