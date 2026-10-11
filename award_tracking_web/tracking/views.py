@@ -5435,10 +5435,10 @@ def change_request_review(request, request_id):
             and revision_submitter_id != request.user.id
             and not user_has_approved
             and approval_count < 2
-            and (
-                    change_request.request_type
-                    == ChangeRequest.RequestType.EDIT_GRANT
-            )
+            and change_request.request_type in {
+                ChangeRequest.RequestType.EDIT_GRANT,
+                ChangeRequest.RequestType.NEW_GRANT,
+            }
             and open_integrity_issue is None
     )
 
@@ -5452,10 +5452,10 @@ def change_request_review(request, request_id):
             and revision_submitter_id != request.user.id
             and not user_has_approved
             and approval_count < 2
-            and (
-                    change_request.request_type
-                    == ChangeRequest.RequestType.EDIT_GRANT
-            )
+            and change_request.request_type in {
+                ChangeRequest.RequestType.EDIT_GRANT,
+                ChangeRequest.RequestType.NEW_GRANT,
+            }
             and open_integrity_issue is None
     )
 
@@ -5473,10 +5473,10 @@ def change_request_review(request, request_id):
             and revision_submitter_id == request.user.id
             and approval_count < 2
             and change_request.coordinated_change_id is None
-            and (
-                    change_request.request_type
-                    == ChangeRequest.RequestType.EDIT_GRANT
-            )
+            and change_request.request_type in {
+                ChangeRequest.RequestType.EDIT_GRANT,
+                ChangeRequest.RequestType.NEW_GRANT,
+            }
             and open_integrity_issue is None
     )
 
@@ -5520,24 +5520,6 @@ def change_request_review(request, request_id):
 
     if request.method == "POST":
         action = request.POST.get("action")
-
-        if (
-                is_new_grant_request
-                and action != "approve"
-        ):
-            messages.error(
-                request,
-                (
-                    "Only approval is currently enabled for a New Grant "
-                    "request. Return, Deny, and Withdraw will be enabled "
-                    "after their New Grant workflow services are added."
-                ),
-            )
-
-            return redirect(
-                "change_request_review",
-                request_id=request_id,
-            )
 
         if (
             action in {
