@@ -1530,12 +1530,17 @@ def resubmit_grant_change_request(request, request_id):
             "Coordinated Change Requests use a separate workflow."
         )
 
-    if (
+    is_new_grant_request = (
         change_request.request_type
-        != ChangeRequest.RequestType.EDIT_GRANT
-    ):
+        == ChangeRequest.RequestType.NEW_GRANT
+    )
+
+    if change_request.request_type not in {
+        ChangeRequest.RequestType.EDIT_GRANT,
+        ChangeRequest.RequestType.NEW_GRANT,
+    }:
         raise PermissionDenied(
-            "This page supports only existing-grant "
+            "This page supports only standalone "
             "Basic Information Change Requests."
         )
 
@@ -1550,10 +1555,35 @@ def resubmit_grant_change_request(request, request_id):
             request_id=change_request.id,
         )
 
-    grant = get_object_or_404(
-        Form1,
-        grant_id=change_request.grant_id,
-    )
+    if is_new_grant_request:
+        grant = (
+            Form1.objects
+            .filter(
+                grant_id=change_request.grant_id,
+            )
+            .first()
+        )
+
+        if grant is not None:
+            messages.error(
+                request,
+                (
+                    "This New Grant request cannot be resubmitted because "
+                    "its reserved Grant ID already exists as an "
+                    "authoritative grant."
+                ),
+            )
+
+            return redirect(
+                "change_request_review",
+                request_id=change_request.id,
+            )
+
+    else:
+        grant = get_object_or_404(
+            Form1,
+            grant_id=change_request.grant_id,
+        )
 
     try:
         snapshots_by_field = (
@@ -1562,10 +1592,52 @@ def resubmit_grant_change_request(request, request_id):
             )
         )
 
-        validate_returned_resubmission_baseline(
-            change_request,
-            grant=grant,
-        )
+        if is_new_grant_request:
+            invalid_current_fields = [
+                field_name
+                for field_name
+                in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+                if (
+                        snapshots_by_field[
+                            field_name
+                        ].current_value
+                        != ""
+                )
+            ]
+
+            missing_proposed_fields = [
+                field_name
+                for field_name
+                in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+                if (
+                        snapshots_by_field[
+                            field_name
+                        ].proposed_value
+                        is None
+                )
+            ]
+
+            if invalid_current_fields:
+                raise ChangeRequestValidationError(
+                    "The returned New Grant revision contains invalid "
+                    "current-value snapshots for: "
+                    + ", ".join(invalid_current_fields)
+                    + "."
+                )
+
+            if missing_proposed_fields:
+                raise ChangeRequestValidationError(
+                    "The returned New Grant revision contains missing "
+                    "proposed values for: "
+                    + ", ".join(missing_proposed_fields)
+                    + "."
+                )
+
+        else:
+            validate_returned_resubmission_baseline(
+                change_request,
+                grant=grant,
+            )
 
     except ChangeRequestIntegrityBlockedError as exc:
         messages.error(
@@ -1629,29 +1701,47 @@ def resubmit_grant_change_request(request, request_id):
             request_id=change_request.id,
         )
 
-    # Capture authoritative display values before binding a ModelForm.
-    # ModelForm validation may update its instance in memory.
-    current_values = {
-        field_name: serialize_change_request_value(
-            getattr(grant, field_name)
-        )
-        for field_name
-        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
-    }
+    if is_new_grant_request:
+        current_values = {
+            field_name: "Not yet created"
+            for field_name
+            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        }
 
-    previous_proposed_values = {}
-
-    for field_name in GRANT_BASIC_INFORMATION_CHANGE_FIELDS:
-        snapshot = snapshots_by_field[field_name]
-
-        if snapshot.proposed_value is None:
-            previous_proposed_values[field_name] = (
-                current_values[field_name]
+        previous_proposed_values = {
+            field_name: (
+                snapshots_by_field[
+                    field_name
+                ].proposed_value
             )
-        else:
-            previous_proposed_values[field_name] = (
-                snapshot.proposed_value
+            for field_name
+            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        }
+
+    else:
+        # Capture authoritative display values before binding a ModelForm.
+        # ModelForm validation may update its instance in memory.
+        current_values = {
+            field_name: serialize_change_request_value(
+                getattr(grant, field_name)
             )
+            for field_name
+            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        }
+
+        previous_proposed_values = {}
+
+        for field_name in GRANT_BASIC_INFORMATION_CHANGE_FIELDS:
+            snapshot = snapshots_by_field[field_name]
+
+            if snapshot.proposed_value is None:
+                previous_proposed_values[field_name] = (
+                    current_values[field_name]
+                )
+            else:
+                previous_proposed_values[field_name] = (
+                    snapshot.proposed_value
+                )
 
     return_action = (
         ChangeAction.objects
@@ -1666,10 +1756,15 @@ def resubmit_grant_change_request(request, request_id):
     )
 
     if request.method == "POST":
-        form = GrantBasicInformationChangeForm(
-            request.POST,
-            instance=grant,
-        )
+        if is_new_grant_request:
+            form = GrantBasicInformationChangeForm(
+                request.POST,
+            )
+        else:
+            form = GrantBasicInformationChangeForm(
+                request.POST,
+                instance=grant,
+            )
 
         resubmission_comment = request.POST.get(
             "comment",
@@ -1677,11 +1772,21 @@ def resubmit_grant_change_request(request, request_id):
         )
 
         if form.is_valid():
+            if is_new_grant_request:
+                proposed_form_data = {
+                    field_name: form.cleaned_data.get(
+                        field_name
+                    )
+                    for field_name
+                    in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+                }
+            else:
+                proposed_form_data = request.POST
             try:
                 result = resubmit_standalone_change_request(
                     change_request_id=change_request.id,
                     resubmitter=request.user,
-                    proposed_form_data=request.POST,
+                    proposed_form_data=proposed_form_data,
                     comment=resubmission_comment,
                 )
 
@@ -1750,10 +1855,15 @@ def resubmit_grant_change_request(request, request_id):
                 )
 
     else:
-        form = GrantBasicInformationChangeForm(
-            instance=grant,
-            initial=previous_proposed_values,
-        )
+        if is_new_grant_request:
+            form = GrantBasicInformationChangeForm(
+                initial=previous_proposed_values,
+            )
+        else:
+            form = GrantBasicInformationChangeForm(
+                instance=grant,
+                initial=previous_proposed_values,
+            )
 
         #
         # A value proposed through "Add New" may not exist in Form1 yet,
@@ -1798,8 +1908,11 @@ def resubmit_grant_change_request(request, request_id):
             "return_action": return_action,
             "resubmission_comment": resubmission_comment,
             "is_resubmission": True,
+            "is_new_grant_request": is_new_grant_request,
             "page_title": (
-                "Revise and Resubmit Grant Basic Information"
+                "Revise and Resubmit New Grant Request"
+                if is_new_grant_request
+                else "Revise and Resubmit Grant Basic Information"
             ),
             "submit_button_text": "Resubmit Change Request",
         },
@@ -5490,10 +5603,10 @@ def change_request_review(request, request_id):
             == ChangeRequest.Status.RETURNED
         )
         and change_request.coordinated_change_id is None
-        and (
-            change_request.request_type
-            == ChangeRequest.RequestType.EDIT_GRANT
-        )
+        and change_request.request_type in {
+            ChangeRequest.RequestType.EDIT_GRANT,
+            ChangeRequest.RequestType.NEW_GRANT,
+        }
         and open_integrity_issue is None
     )
 

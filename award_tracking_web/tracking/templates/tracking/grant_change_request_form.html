@@ -352,7 +352,13 @@
             {{ page_title|default:"Propose Grant Basic Information Changes" }}
         </h1>
         <p>
-            <strong>Grant ID:</strong> {{ grant.grant_id }}<br>
+            <strong>Grant ID:</strong>
+            {% if is_new_grant_request %}
+                {{ change_request.grant_id }}
+            {% else %}
+                {{ grant.grant_id }}
+            {% endif %}
+            <br>
             <strong>Program Title:</strong> {{ current_values.program_title }}<br>
             <strong>Contracting Agency:</strong> {{ current_values.contracting_agency }}<br>
             <strong>Contract Number:</strong> {{ current_values.contract_number }}
