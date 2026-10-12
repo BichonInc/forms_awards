@@ -56,6 +56,7 @@ from .change_request_workflow import (
     ChangeRequestReturnError,
     ChangeRequestValidationError,
     CoordinatedChangeValidationError,
+    CoordinatedDraftCancelError,
     CoordinatedDraftConcurrencyError,
     CoordinatedDraftReviewMismatchError,
     CoordinatedDraftAuthoritativeChangeError,
@@ -71,6 +72,7 @@ from .change_request_workflow import (
     rebase_coordinated_basic_information_draft,
     create_coordinated_basic_information_draft,
     save_coordinated_basic_information_draft,
+    cancel_coordinated_basic_information_draft,
     resolve_change_request_integrity_issue,
     resubmit_standalone_change_request,
     return_standalone_change_request,
@@ -2989,11 +2991,87 @@ def coordinated_basic_information_draft_editor(
         )
 
         if (
-            coordinated_change.status
-            != CoordinatedChange.Status.DRAFT
+                coordinated_change.status
+                != CoordinatedChange.Status.DRAFT
         ):
             raise PermissionDenied(
                 "Only coordinated drafts can be edited."
+            )
+
+        # =====================================================
+        # Cancel an existing saved coordinated draft.
+        #
+        # Cancellation is intentionally handled before the
+        # ordinary authoritative-staleness inspection below.
+        # Authoritative Form1 changes must not prevent an
+        # abandoned draft from being cancelled and its child
+        # grants from being released.
+        # =====================================================
+
+        if (
+                request.method == "POST"
+                and action == "cancel_draft"
+        ):
+            try:
+                cancel_result = (
+                    cancel_coordinated_basic_information_draft(
+                        coordinated_change_id=(
+                            coordinated_change.id
+                        ),
+                        expected_concurrency_version=(
+                            request.POST.get(
+                                "concurrency_version",
+                                "",
+                            )
+                        ),
+                        cancelled_by=request.user,
+                        reason=request.POST.get(
+                            "cancellation_reason",
+                            "",
+                        ),
+                    )
+                )
+
+            except CoordinatedDraftConcurrencyError:
+                messages.error(
+                    request,
+                    (
+                        "This coordinated draft changed after the "
+                        "page was loaded. Review the latest saved "
+                        "draft before cancelling it."
+                    ),
+                )
+
+                return redirect(
+                    "coordinated_basic_information_draft_edit",
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                )
+
+            except CoordinatedDraftCancelError as exc:
+                messages.error(
+                    request,
+                    str(exc),
+                )
+
+                return redirect(
+                    "coordinated_basic_information_draft_edit",
+                    coordinated_change_id=(
+                        coordinated_change.id
+                    ),
+                )
+
+            messages.success(
+                request,
+                (
+                    "The coordinated draft has been cancelled. "
+                    "Its child grants are no longer held by the draft."
+                ),
+            )
+
+            return redirect(
+                "grant_list"
             )
 
         expected_version = (
@@ -4113,18 +4191,128 @@ def change_request_history(request, grant_id):
             status__in=CHANGE_REQUEST_HISTORY_STATUSES,
             submitted_at__isnull=False,
         )
-        .select_related("submitted_by")
+        .select_related(
+            "submitted_by",
+            "coordinated_change",
+        )
+        .prefetch_related("actions")
         .order_by("-submitted_at", "-id")
     )
+
+    history_rows = []
+
+    for change_request in change_requests:
+        actions = list(change_request.actions.all())
+
+        # Coordinated requests keep their existing package-level
+        # history behavior for now. The standalone revision-history
+        # enhancement below must not alter coordinated navigation.
+        if change_request.coordinated_change_id is not None:
+            history_rows.append(
+                {
+                    "change_request": change_request,
+                    "revision_no": (
+                        change_request.current_revision
+                    ),
+                    "status_label": (
+                        change_request.get_status_display()
+                    ),
+                    "submitted_by": (
+                        change_request.submitted_by
+                    ),
+                    "submitted_at": (
+                        change_request.submitted_at
+                    ),
+                    "use_revision_url": False,
+                }
+            )
+            continue
+
+        for revision_no in range(
+            change_request.current_revision,
+            0,
+            -1,
+        ):
+            if revision_no == 1:
+                revision_submitter = (
+                    change_request.submitted_by
+                )
+                revision_submitted_at = (
+                    change_request.submitted_at
+                )
+
+            else:
+                resubmit_actions = [
+                    action
+                    for action in actions
+                    if (
+                        action.revision_no == revision_no
+                        and action.action
+                        == ChangeAction.Action.RESUBMIT
+                    )
+                ]
+
+                if len(resubmit_actions) == 1:
+                    resubmit_action = resubmit_actions[0]
+                    revision_submitter = (
+                        resubmit_action.acted_by
+                    )
+                    revision_submitted_at = (
+                        resubmit_action.acted_at
+                    )
+                else:
+                    revision_submitter = None
+                    revision_submitted_at = None
+
+            if (
+                revision_no
+                == change_request.current_revision
+            ):
+                status_label = (
+                    change_request.get_status_display()
+                )
+
+            else:
+                return_actions = [
+                    action
+                    for action in actions
+                    if (
+                        action.revision_no == revision_no
+                        and action.action
+                        == ChangeAction.Action.RETURN
+                    )
+                ]
+
+                if len(return_actions) == 1:
+                    status_label = (
+                        ChangeRequest.Status.RETURNED.label
+                    )
+                else:
+                    status_label = (
+                        "Historical Revision "
+                        "(audit history incomplete)"
+                    )
+
+            history_rows.append(
+                {
+                    "change_request": change_request,
+                    "revision_no": revision_no,
+                    "status_label": status_label,
+                    "submitted_by": revision_submitter,
+                    "submitted_at": revision_submitted_at,
+                    "use_revision_url": True,
+                }
+            )
 
     return render(
         request,
         "tracking/change_request_history.html",
         {
             "grant": grant,
-            "change_requests": change_requests,
+            "history_rows": history_rows,
         },
     )
+
 
 @role_required(
     ROLE_ADMINISTRATOR,
@@ -5223,7 +5411,11 @@ def coordinated_change_review(
     ROLE_ACCOUNTANT,
     ROLE_APPROVER,
 )
-def change_request_review(request, request_id):
+def change_request_review(
+    request,
+    request_id,
+    revision_no=None,
+):
     change_request = get_object_or_404(
         ChangeRequest,
         id=request_id,
@@ -5288,13 +5480,36 @@ def change_request_review(request, request_id):
             "Completed Change Requests are read-only."
         )
 
-    revision_no = change_request.current_revision
+    requested_historical_revision = (
+            revision_no is not None
+    )
+
+    if revision_no is None:
+        revision_no = change_request.current_revision
+
+    if (
+            revision_no < 1
+            or revision_no > change_request.current_revision
+    ):
+        raise PermissionDenied(
+            "The requested Change Request revision is invalid."
+        )
+
+    if (
+            requested_historical_revision
+            and not is_history_request
+    ):
+        raise PermissionDenied(
+            "Historical revisions are available only for completed "
+            "Change Requests."
+        )
 
     revision_submitter_error = ""
 
     try:
         revision_submitter_id = get_revision_submitter_id(
-            change_request
+            change_request,
+            revision_no=revision_no,
         )
     except ChangeRequestApprovalError as exc:
         revision_submitter_id = None
@@ -5390,25 +5605,40 @@ def change_request_review(request, request_id):
         if not snapshot:
             continue
 
-        changed = snapshot.proposed_value is not None
+        current_display_value = (
+            "Not yet created"
+            if is_new_grant_request
+            else format_change_request_display_value(
+                field_name,
+                snapshot.current_value,
+            )
+        )
+
+        proposed_display_value = (
+            format_change_request_display_value(
+                field_name,
+                snapshot.proposed_value,
+            )
+            if snapshot.proposed_value is not None
+            else None
+        )
+
+        changed = (
+                snapshot.proposed_value is not None
+                and (
+                        is_new_grant_request
+                        or proposed_display_value
+                        != current_display_value
+                )
+        )
 
         review_rows.append(
             {
                 "field_name": field_name,
                 "label": label_form.fields[field_name].label,
-                "current_value": (
-                    "Not yet created"
-                    if is_new_grant_request
-                    else format_change_request_display_value(
-                        field_name,
-                        snapshot.current_value,
-                    )
-                ),
+                "current_value": current_display_value,
                 "proposed_value": (
-                    format_change_request_display_value(
-                        field_name,
-                        snapshot.proposed_value,
-                    )
+                    proposed_display_value
                     if changed
                     else "No change"
                 ),
@@ -5416,149 +5646,149 @@ def change_request_review(request, request_id):
             }
         )
 
-    integrity_issues = list(
-        ChangeRequestIntegrityIssue.objects
-        .filter(
-            change_request=change_request,
+        integrity_issues = list(
+            ChangeRequestIntegrityIssue.objects
+            .filter(
+                change_request=change_request,
+            )
+            .select_related(
+                "detected_by",
+                "closed_by",
+            )
+            .order_by("-detected_at", "-id")
         )
-        .select_related(
-            "detected_by",
-            "closed_by",
+
+        open_integrity_issue = next(
+            (
+                issue
+                for issue in integrity_issues
+                if (
+                    issue.status
+                    == ChangeRequestIntegrityIssue.Status.OPEN
+            )
+            ),
+            None,
         )
-        .order_by("-detected_at", "-id")
-    )
 
-    open_integrity_issue = next(
-        (
-            issue
-            for issue in integrity_issues
-            if (
-                issue.status
-                == ChangeRequestIntegrityIssue.Status.OPEN
-            )
-        ),
-        None,
-    )
+        integrity_issue_cards = []
 
-    integrity_issue_cards = []
+        for integrity_issue in integrity_issues:
+            evidence_rows = []
+            evidence_error = ""
+            baseline_source_label = ""
+            baseline_integrity_issue_id = None
+            has_disposition_checkpoint = False
 
-    for integrity_issue in integrity_issues:
-        evidence_rows = []
-        evidence_error = ""
-        baseline_source_label = ""
-        baseline_integrity_issue_id = None
-        has_disposition_checkpoint = False
-
-        try:
-            evidence = (
-                get_change_request_integrity_evidence(
-                    integrity_issue
+            try:
+                evidence = (
+                    get_change_request_integrity_evidence(
+                        integrity_issue
+                    )
                 )
-            )
 
-        except (
-            ChangeRequestIntegrityIssueError,
-            ChangeRequestValidationError,
-        ) as exc:
-            evidence_error = str(exc)
-
-        else:
-            baseline_integrity_issue_id = (
-                evidence.baseline_integrity_issue_id
-            )
-
-            if (
-                evidence.baseline_source
-                == RESUBMISSION_BASELINE_INTEGRITY_DISPOSITION
-            ):
-                baseline_source_label = (
-                    "Administrator Integrity Disposition "
-                    f"Checkpoint B from Incident "
-                    f"#{baseline_integrity_issue_id}"
-                )
+            except (
+                    ChangeRequestIntegrityIssueError,
+                    ChangeRequestValidationError,
+            ) as exc:
+                evidence_error = str(exc)
 
             else:
-                baseline_source_label = (
-                    "Formal Revision Snapshot"
+                baseline_integrity_issue_id = (
+                    evidence.baseline_integrity_issue_id
                 )
 
-            has_disposition_checkpoint = (
-                evidence.disposition_values
-                is not None
-            )
-
-            for field_name in (
-                GRANT_BASIC_INFORMATION_CHANGE_FIELDS
-            ):
-                is_mismatch = (
-                    field_name
-                    in evidence.mismatched_fields
-                )
-
-                disposition_value = None
-
-                if evidence.disposition_values is not None:
-                    disposition_value = (
-                        evidence.disposition_values[
-                            field_name
-                        ]
+                if (
+                        evidence.baseline_source
+                        == RESUBMISSION_BASELINE_INTEGRITY_DISPOSITION
+                ):
+                    baseline_source_label = (
+                        "Administrator Integrity Disposition "
+                        f"Checkpoint B from Incident "
+                        f"#{baseline_integrity_issue_id}"
                     )
 
-                evidence_rows.append(
-                    {
-                        "field_name": field_name,
-                        "label": (
-                            label_form
-                            .fields[field_name]
-                            .label
-                        ),
-                        "baseline_value": (
-                            format_change_request_display_value(
-                                field_name,
-                                evidence.baseline_values[
-                                    field_name
-                                ],
-                            )
-                        ),
-                        "detected_value": (
-                            format_change_request_display_value(
-                                field_name,
-                                evidence.detected_values[
-                                    field_name
-                                ],
-                            )
-                        ),
-                        "disposition_value": (
-                            format_change_request_display_value(
-                                field_name,
-                                disposition_value,
-                            )
-                            if (
-                                disposition_value
-                                is not None
-                            )
-                            else ""
-                        ),
-                        "is_mismatch": is_mismatch,
-                    }
+                else:
+                    baseline_source_label = (
+                        "Formal Revision Snapshot"
+                    )
+
+                has_disposition_checkpoint = (
+                        evidence.disposition_values
+                        is not None
                 )
 
-        integrity_issue_cards.append(
-            {
-                "issue": integrity_issue,
-                "evidence_rows": evidence_rows,
-                "evidence_error": evidence_error,
-                "baseline_source_label": (
-                    baseline_source_label
-                ),
-                "baseline_integrity_issue_id": (
-                    baseline_integrity_issue_id
-                ),
-                "has_disposition_checkpoint": (
-                    has_disposition_checkpoint
-                ),
-            }
-        )
+                for field_name in (
+                        GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+                ):
+                    is_mismatch = (
+                            field_name
+                            in evidence.mismatched_fields
+                    )
+
+                    disposition_value = None
+
+                    if evidence.disposition_values is not None:
+                        disposition_value = (
+                            evidence.disposition_values[
+                                field_name
+                            ]
+                        )
+
+                    evidence_rows.append(
+                        {
+                            "field_name": field_name,
+                            "label": (
+                                label_form
+                                .fields[field_name]
+                                .label
+                            ),
+                            "baseline_value": (
+                                format_change_request_display_value(
+                                    field_name,
+                                    evidence.baseline_values[
+                                        field_name
+                                    ],
+                                )
+                            ),
+                            "detected_value": (
+                                format_change_request_display_value(
+                                    field_name,
+                                    evidence.detected_values[
+                                        field_name
+                                    ],
+                                )
+                            ),
+                            "disposition_value": (
+                                format_change_request_display_value(
+                                    field_name,
+                                    disposition_value,
+                                )
+                                if (
+                                        disposition_value
+                                        is not None
+                                )
+                                else ""
+                            ),
+                            "is_mismatch": is_mismatch,
+                        }
+                    )
+
+            integrity_issue_cards.append(
+                {
+                    "issue": integrity_issue,
+                    "evidence_rows": evidence_rows,
+                    "evidence_error": evidence_error,
+                    "baseline_source_label": (
+                        baseline_source_label
+                    ),
+                    "baseline_integrity_issue_id": (
+                        baseline_integrity_issue_id
+                    ),
+                    "has_disposition_checkpoint": (
+                        has_disposition_checkpoint
+                    ),
+                }
+            )
 
     is_integrity_administrator = (
         user_has_any_role(
@@ -5619,6 +5849,16 @@ def change_request_review(request, request_id):
         .order_by("-acted_at", "-id")
         .first()
     )
+
+    if revision_no < change_request.current_revision:
+        if return_action is not None:
+            revision_status_label = "Returned for Revision"
+        else:
+            revision_status_label = "Historical Revision"
+    else:
+        revision_status_label = (
+            change_request.get_status_display()
+        )
 
     can_approve = (
             user_has_any_role(
@@ -5994,6 +6234,8 @@ def change_request_review(request, request_id):
         {
             "change_request": change_request,
             "grant": grant,
+            "revision_no": revision_no,
+            "revision_status_label": revision_status_label,
             "review_rows": review_rows,
             "approvals": approvals,
             "approval_count": approval_count,

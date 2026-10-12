@@ -84,8 +84,8 @@ class Form1(models.Model):
             MaxValueValidator(99),
         ],
     )
-    contract_start_date = models.DateTimeField(null=True, blank=True)
-    contract_end_date = models.DateTimeField(null=True, blank=True)
+    contract_start_date = models.DateField(null=True, blank=True)
+    contract_end_date = models.DateField(null=True, blank=True)
     contract_amount = models.DecimalField(max_digits=10, decimal_places=2)
     program_income_treatment = models.CharField(
         max_length=20,
@@ -132,8 +132,8 @@ class Form1(models.Model):
             if internal_award_code_int < 100 or internal_award_code_int > 999:
                 raise ValidationError("Internal Award Code must be between 100 and 999.")
 
-    internal_gl_start_date = models.DateTimeField(null=True, blank=True)
-    internal_gl_end_date = models.DateTimeField(null=True, blank=True)
+    internal_gl_start_date = models.DateField(null=True, blank=True)
+    internal_gl_end_date = models.DateField(null=True, blank=True)
     status = models.CharField(
         max_length=10,
         choices=[('active', 'Active'), ('inactive', 'Inactive')]

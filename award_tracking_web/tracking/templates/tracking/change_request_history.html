@@ -96,7 +96,7 @@
         </p>
     </div>
 
-    {% if change_requests %}
+    {% if history_rows %}
         <table>
             <thead>
             <tr>
@@ -111,33 +111,48 @@
             </thead>
 
             <tbody>
-            {% for change_request in change_requests %}
-                <tr>
-                    <td>{{ change_request.id }}</td>
-                    <td>
-                        {{ change_request.get_request_type_display }}
-                    </td>
-                    <td>
-                        {{ change_request.get_status_display }}
-                    </td>
-                    <td>
-                        {{ change_request.current_revision }}
-                    </td>
-                    <td>
-                        {{ change_request.submitted_by }}
-                    </td>
-                    <td>
-                        {{ change_request.submitted_at|localtime|date:"M j, Y, g:i A" }}
-                    </td>
-                    <td>
+            {% for row in history_rows %}
+            <tr>
+                <td>{{ row.change_request.id }}</td>
+
+                <td>
+                    {{ row.change_request.get_request_type_display }}
+                </td>
+
+                <td>
+                    {{ row.status_label }}
+                </td>
+
+                <td>
+                    {{ row.revision_no }}
+                </td>
+
+                <td>
+                    {{ row.submitted_by }}
+                </td>
+
+                <td>
+                    {{ row.submitted_at|localtime|date:"M j, Y, g:i A" }}
+                </td>
+
+                <td>
+                    {% if row.use_revision_url %}
                         <a
-                            href="{% url 'change_request_review' change_request.id %}"
+                            href="{% url 'change_request_revision_review' row.change_request.id row.revision_no %}"
                             class="button-common view-button"
                         >
                             View
                         </a>
-                    </td>
-                </tr>
+                    {% else %}
+                        <a
+                            href="{% url 'change_request_review' row.change_request.id %}"
+                            class="button-common view-button"
+                        >
+                            View
+                        </a>
+                    {% endif %}
+                </td>
+            </tr>
             {% endfor %}
             </tbody>
         </table>

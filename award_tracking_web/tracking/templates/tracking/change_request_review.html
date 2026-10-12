@@ -301,11 +301,11 @@
         {% endif %}
         <p>
             <strong>Status:</strong>
-            {{ change_request.get_status_display }}
+            {{ revision_status_label }}
         </p>
         <p>
             <strong>Revision:</strong>
-            {{ change_request.current_revision }}
+            {{ revision_no }}
         </p>
         {% if change_request.current_revision == 1 %}
             <p>
@@ -313,13 +313,9 @@
                 {{ current_revision_submitter }}
             </p>
         {% else %}
-            <p>
-                <strong>Original Submitted By:</strong>
-                {{ change_request.submitted_by }}
-            </p>
 
             <p>
-                <strong>Current Revision Submitted By:</strong>
+                <strong>Submitted By:</strong>
                 {{ current_revision_submitter }}
             </p>
 

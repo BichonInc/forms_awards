@@ -105,6 +105,38 @@
             padding: 10px 20px;
         }
 
+        .cancel-draft-section {
+            margin-top: 30px;
+            padding: 20px;
+            border: 1px solid #dc3545;
+            border-radius: 5px;
+        }
+
+        .cancel-draft-section h2 {
+            margin-top: 0;
+        }
+
+        .cancel-draft-section textarea {
+            width: 500px;
+            max-width: 100%;
+            min-height: 90px;
+            box-sizing: border-box;
+        }
+
+        .cancel-draft-button {
+            margin-top: 10px;
+            padding: 10px 20px;
+            background-color: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .cancel-draft-button:hover {
+            background-color: #b02a37;
+        }
+
         .back-link {
             margin-left: 20px;
         }
@@ -870,6 +902,58 @@
             </a>
         </div>
     </form>
+    {% if is_existing_draft %}
+        <div class="cancel-draft-section">
+            <h2>Cancel Coordinated Draft</h2>
+
+            <p>
+                Cancelling this draft is permanent. The draft and its
+                child Change Requests will be retained for audit history,
+                but the child grants will no longer be held by this draft.
+            </p>
+
+            <form method="post">
+                {% csrf_token %}
+
+                <input
+                    type="hidden"
+                    name="action"
+                    value="cancel_draft"
+                >
+
+                <input
+                    type="hidden"
+                    name="concurrency_version"
+                    value="{{ coordinated_change.concurrency_version }}"
+                >
+
+                <label for="id_cancellation_reason">
+                    <strong>Cancellation Reason:</strong>
+                </label>
+
+                <br>
+
+                <textarea
+                    id="id_cancellation_reason"
+                    name="cancellation_reason"
+                    maxlength="500"
+                    required
+                ></textarea>
+
+                <br>
+
+                <button
+                    type="submit"
+                    class="cancel-draft-button"
+                    onclick="return confirm(
+                        'Cancel this coordinated draft? This action cannot be undone.'
+                    );"
+                >
+                    Cancel Coordinated Draft
+                </button>
+            </form>
+        </div>
+    {% endif %}
     {% if is_existing_draft %}
         <div class="page-actions">
             <form

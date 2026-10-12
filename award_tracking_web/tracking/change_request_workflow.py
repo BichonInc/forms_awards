@@ -308,6 +308,14 @@ class CoordinatedChangeChildBaselineMismatchError(
         )
 
 
+class CoordinatedDraftCancelError(
+        CoordinatedChangeValidationError
+):
+    """
+    Raised when a coordinated draft cannot be cancelled.
+    """
+
+
 class CoordinatedDraftConcurrencyError(
         CoordinatedChangeValidationError
 ):
@@ -544,6 +552,19 @@ class CoordinatedDraftSaveResult:
     added_grant_ids: tuple
     retained_grant_ids: tuple
     removed_grant_ids: tuple
+
+
+@dataclass(frozen=True)
+class CoordinatedDraftCancelResult:
+    coordinated_change_id: int
+    status: str
+    revision_no: int
+    previous_concurrency_version: int
+    concurrency_version: int
+    change_request_ids: tuple
+    grant_ids: tuple
+    cancelled_by_id: int
+    cancelled_at: datetime
 
 
 @dataclass(frozen=True)
@@ -3354,9 +3375,9 @@ def _coordinated_gl_calendar_date(value):
     """
     Normalize a GL assignment date/datetime to its calendar date.
 
-    Form1 stores the GL fields as DateTimeField values, while the business
-    rule is date-based. Normalizing here prevents timezone offsets or DST
-    transitions from changing whether two GL periods overlap or touch.
+    Form1 now stores the GL fields as DateField values. This helper also
+    accepts datetime values for compatibility with historical workflow data
+    and defensive validation.
     """
     if value is None:
         return None
@@ -5240,6 +5261,254 @@ def save_coordinated_basic_information_draft(
             removed_grant_ids=(
                 removed_grant_ids
             ),
+        )
+
+
+def cancel_coordinated_basic_information_draft(
+        *,
+        coordinated_change_id,
+        expected_concurrency_version,
+        cancelled_by,
+        reason,
+):
+    """
+    Cancel an existing coordinated Basic Information draft.
+
+    Cancellation is terminal draft cleanup:
+
+      - the package must still be DRAFT;
+      - the caller must be working from the current concurrency version;
+      - the draft must never have been formally submitted;
+      - every existing child must still be DRAFT on the same revision;
+      - the parent and every child move to CANCELLED atomically;
+      - cancellation metadata is recorded on the parent;
+      - no authoritative Form1 values are changed;
+      - no GL rematch occurs; and
+      - the package concurrency version increments exactly once.
+
+    Draft cancellation intentionally does not perform authoritative
+    Form1 baseline-staleness validation. Authoritative changes must not
+    prevent an abandoned draft from being cancelled and its grants from
+    being released.
+    """
+    cancellation_reason = (
+        reason or ""
+    ).strip()
+
+    if (
+        cancelled_by is None
+        or getattr(cancelled_by, "pk", None) is None
+    ):
+        raise CoordinatedDraftCancelError(
+            "A saved user is required to cancel a coordinated draft."
+        )
+
+    if not cancellation_reason:
+        raise CoordinatedDraftCancelError(
+            "Cancellation requires a reason."
+        )
+
+    if len(cancellation_reason) > 500:
+        raise CoordinatedDraftCancelError(
+            "Cancellation reason cannot exceed 500 characters."
+        )
+
+    try:
+        expected_version = int(
+            expected_concurrency_version
+        )
+    except (TypeError, ValueError) as exc:
+        raise CoordinatedDraftCancelError(
+            "The expected coordinated draft version is invalid."
+        ) from exc
+
+    if expected_version < 1:
+        raise CoordinatedDraftCancelError(
+            "The expected coordinated draft version is invalid."
+        )
+
+    with transaction.atomic():
+
+        try:
+            coordinated_change = (
+                CoordinatedChange.objects
+                .select_for_update()
+                .get(
+                    pk=coordinated_change_id
+                )
+            )
+
+        except CoordinatedChange.DoesNotExist as exc:
+            raise CoordinatedDraftCancelError(
+                "The coordinated draft does not exist."
+            ) from exc
+
+        if (
+            coordinated_change.status
+            != CoordinatedChange.Status.DRAFT
+        ):
+            raise CoordinatedDraftCancelError(
+                "Only a coordinated draft can be cancelled."
+            )
+
+        if (
+            coordinated_change.concurrency_version
+            != expected_version
+        ):
+            raise CoordinatedDraftConcurrencyError(
+                expected_version=expected_version,
+                actual_version=(
+                    coordinated_change.concurrency_version
+                ),
+            )
+
+        revision_no = (
+            coordinated_change.current_revision
+        )
+
+        previous_concurrency_version = (
+            coordinated_change.concurrency_version
+        )
+
+        if (
+            coordinated_change.submitted_by_id is not None
+            or coordinated_change.submitted_at is not None
+        ):
+            raise CoordinatedDraftCancelError(
+                "A formally submitted coordinated package cannot be "
+                "cancelled as a draft."
+            )
+
+        if coordinated_change.applied_at is not None:
+            raise CoordinatedDraftCancelError(
+                "An applied coordinated package cannot be cancelled "
+                "as a draft."
+            )
+
+        if (
+            coordinated_change.cancelled_by_id is not None
+            or coordinated_change.cancelled_at is not None
+            or coordinated_change.cancellation_reason
+        ):
+            raise CoordinatedDraftCancelError(
+                "This coordinated draft already contains cancellation "
+                "metadata."
+            )
+
+        change_requests = tuple(
+            ChangeRequest.objects
+            .select_for_update()
+            .filter(
+                coordinated_change=coordinated_change
+            )
+            .order_by(
+                "grant_id",
+                "id",
+            )
+        )
+
+        for change_request in change_requests:
+
+            if (
+                change_request.status
+                != ChangeRequest.Status.DRAFT
+            ):
+                raise CoordinatedDraftCancelError(
+                    f"Child Change Request #{change_request.id} is "
+                    "not in Draft status."
+                )
+
+            if (
+                change_request.current_revision
+                != revision_no
+            ):
+                raise CoordinatedDraftCancelError(
+                    f"Child Change Request #{change_request.id} is "
+                    "not synchronized with the coordinated draft "
+                    "revision."
+                )
+
+            if (
+                change_request.submitted_by_id is not None
+                or change_request.submitted_at is not None
+            ):
+                raise CoordinatedDraftCancelError(
+                    f"Child Change Request #{change_request.id} "
+                    "contains formal submission history and cannot "
+                    "be cancelled as a draft."
+                )
+
+        cancelled_at = timezone.now()
+
+        for change_request in change_requests:
+            change_request.status = (
+                ChangeRequest.Status.CANCELLED
+            )
+
+        if change_requests:
+            ChangeRequest.objects.bulk_update(
+                change_requests,
+                ["status"],
+            )
+
+        coordinated_change.status = (
+            CoordinatedChange.Status.CANCELLED
+        )
+
+        coordinated_change.cancelled_by = (
+            cancelled_by
+        )
+
+        coordinated_change.cancelled_at = (
+            cancelled_at
+        )
+
+        coordinated_change.cancellation_reason = (
+            cancellation_reason
+        )
+
+        coordinated_change.concurrency_version = (
+            previous_concurrency_version + 1
+        )
+
+        coordinated_change.save(
+            update_fields=[
+                "status",
+                "cancelled_by",
+                "cancelled_at",
+                "cancellation_reason",
+                "concurrency_version",
+            ]
+        )
+
+        return CoordinatedDraftCancelResult(
+            coordinated_change_id=(
+                coordinated_change.id
+            ),
+            status=(
+                coordinated_change.status
+            ),
+            revision_no=revision_no,
+            previous_concurrency_version=(
+                previous_concurrency_version
+            ),
+            concurrency_version=(
+                coordinated_change.concurrency_version
+            ),
+            change_request_ids=tuple(
+                change_request.id
+                for change_request
+                in change_requests
+            ),
+            grant_ids=tuple(
+                change_request.grant_id
+                for change_request
+                in change_requests
+            ),
+            cancelled_by_id=(
+                cancelled_by.pk
+            ),
+            cancelled_at=cancelled_at,
         )
 
 
@@ -8729,16 +8998,35 @@ def _apply_validated_basic_information_values(
     )
 
 
-def get_revision_submitter_id(change_request):
+def get_revision_submitter_id(
+    change_request,
+    *,
+    revision_no=None,
+):
     """
-    Return the user responsible for submitting the current revision.
+    Return the user responsible for submitting one formal revision.
+
+    By default, use the Change Request's current revision. A specific
+    historical revision may also be requested.
 
     Revision 1 uses ChangeRequest.submitted_by.
     Later revisions use the RESUBMIT action recorded for that revision.
     """
-    revision_no = change_request.current_revision
+    resolved_revision_no = (
+        change_request.current_revision
+        if revision_no is None
+        else revision_no
+    )
 
-    if revision_no == 1:
+    if (
+        resolved_revision_no < 1
+        or resolved_revision_no > change_request.current_revision
+    ):
+        raise ChangeRequestApprovalError(
+            "The requested Change Request revision is invalid."
+        )
+
+    if resolved_revision_no == 1:
         if change_request.submitted_by_id is None:
             raise ChangeRequestApprovalError(
                 "This Change Request has no recorded submitter."
@@ -8749,7 +9037,7 @@ def get_revision_submitter_id(change_request):
     resubmit_actions = list(
         ChangeAction.objects.filter(
             change_request=change_request,
-            revision_no=revision_no,
+            revision_no=resolved_revision_no,
             action=ChangeAction.Action.RESUBMIT,
         ).values_list(
             "acted_by_id",
@@ -8759,8 +9047,8 @@ def get_revision_submitter_id(change_request):
 
     if len(resubmit_actions) != 1:
         raise ChangeRequestApprovalError(
-            "The current revision does not have exactly one recorded "
-            "resubmission action."
+            f"Revision {resolved_revision_no} does not have exactly "
+            "one recorded resubmission action."
         )
 
     return resubmit_actions[0]

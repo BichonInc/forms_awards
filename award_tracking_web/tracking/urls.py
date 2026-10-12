@@ -74,6 +74,14 @@ urlpatterns = [
     ),
     path(
         (
+            'change-requests/<int:request_id>/'
+            'revisions/<int:revision_no>/review/'
+        ),
+        views.change_request_review,
+        name='change_request_revision_review',
+    ),
+    path(
+        (
             "change-requests/integrity-issues/"
             "<int:issue_id>/resolve/"
         ),
