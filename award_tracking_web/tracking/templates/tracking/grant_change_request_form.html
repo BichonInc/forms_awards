@@ -548,6 +548,16 @@
                     {{ submit_button_text|default:"Submit Change Request" }}
                 </button>
 
+                {% if coordinated_conflict_grant_ids and not is_resubmission %}
+                    <button
+                        type="submit"
+                        name="action"
+                        value="create_coordinated_draft"
+                    >
+                        Create Coordinated Draft
+                    </button>
+                {% endif %}
+
                 {% if is_resubmission %}
                     <a
                         href="{% url 'change_request_review' change_request.id %}"

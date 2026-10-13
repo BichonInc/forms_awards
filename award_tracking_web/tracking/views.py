@@ -1390,6 +1390,8 @@ def create_grant_change_request(request, grant_id):
 
     snapshot_salt = "tracking.grant_basic_information_change"
 
+    coordinated_conflict_grant_ids = []
+
     if request.method == "POST":
         submitted_snapshot_token = request.POST.get(
             "snapshot_token",
@@ -1462,19 +1464,42 @@ def create_grant_change_request(request, grant_id):
             )
 
             if overlapping_grants.exists():
-                conflicting_grant_ids = ", ".join(
+                coordinated_conflict_grant_ids = list(
                     overlapping_grants.values_list(
                         "grant_id",
                         flat=True,
                     )
                 )
 
+                conflicting_grant_ids_text = ", ".join(
+                    coordinated_conflict_grant_ids
+                )
+
+                if (
+                        request.POST.get("action")
+                        == "create_coordinated_draft"
+                ):
+                    request.session[
+                        "coordinated_draft_conflict_handoff"
+                    ] = {
+                        "source_grant_id": grant_id,
+                        "grant_ids": [
+                            grant_id,
+                            *coordinated_conflict_grant_ids,
+                        ],
+                        "proposed_values": proposed_values,
+                    }
+
+                    return redirect(
+                        "coordinated_basic_information_draft_new"
+                    )
+
                 form.add_error(
                     "internal_gl_end_date",
                     (
                         "The proposed Internal Award Code and GL date "
                         "range overlap with: "
-                        f"{conflicting_grant_ids}."
+                        f"{conflicting_grant_ids_text}."
                     ),
                 )
             else:
@@ -1611,6 +1636,9 @@ def create_grant_change_request(request, grant_id):
             "form": form,
             "snapshot_token": snapshot_token,
             "current_values": current_values,
+            "coordinated_conflict_grant_ids": (
+                coordinated_conflict_grant_ids
+            ),
         },
     )
 
@@ -2971,6 +2999,76 @@ def coordinated_basic_information_draft_editor(
     saved_values_by_grant = {}
     persisted_grant_ids = set()
 
+    handoff_grant_ids = []
+
+    if (
+            coordinated_change_id is None
+            and request.method == "GET"
+    ):
+        handoff = request.session.pop(
+            "coordinated_draft_conflict_handoff",
+            None,
+        )
+
+        if isinstance(handoff, dict):
+            source_grant_id = str(
+                handoff.get("source_grant_id", "")
+            ).strip()
+
+            raw_grant_ids = handoff.get(
+                "grant_ids",
+                [],
+            )
+
+            proposed_values = handoff.get(
+                "proposed_values",
+                {},
+            )
+
+            if (
+                    source_grant_id
+                    and isinstance(raw_grant_ids, list)
+                    and isinstance(proposed_values, dict)
+            ):
+                handoff_grant_ids = []
+
+                for raw_grant_id in raw_grant_ids:
+                    handoff_grant_id = str(
+                        raw_grant_id
+                    ).strip()
+
+                    if (
+                            handoff_grant_id
+                            and handoff_grant_id
+                            not in handoff_grant_ids
+                    ):
+                        handoff_grant_ids.append(
+                            handoff_grant_id
+                        )
+
+                if (
+                        source_grant_id
+                        in handoff_grant_ids
+                        and all(
+                    field_name in proposed_values
+                    for field_name in (
+                            GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+                    )
+                )
+                ):
+                    saved_values_by_grant[
+                        source_grant_id
+                    ] = {
+                        field_name: proposed_values[
+                            field_name
+                        ]
+                        for field_name in (
+                            GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+                        )
+                    }
+                else:
+                    handoff_grant_ids = []
+
     action = (
         request.POST.get(
             "action",
@@ -3304,7 +3402,7 @@ def coordinated_basic_information_draft_editor(
         ]
 
     else:
-        membership_grant_ids = []
+        membership_grant_ids = handoff_grant_ids
 
     # =========================================================
     # Browser-only Add Grant.
