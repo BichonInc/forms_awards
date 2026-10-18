@@ -1413,6 +1413,17 @@ def create_grant_change_request(request, grant_id):
         for field_name in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
     }
 
+    current_display_values = {
+        field_name: (
+            format_change_request_display_value(
+                field_name,
+                current_values[field_name],
+            )
+        )
+        for field_name
+        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    }
+
     snapshot_salt = "tracking.grant_basic_information_change"
 
     coordinated_conflict_grant_ids = []
@@ -1661,6 +1672,7 @@ def create_grant_change_request(request, grant_id):
             "form": form,
             "snapshot_token": snapshot_token,
             "current_values": current_values,
+            "current_display_values": current_display_values,
             "coordinated_conflict_grant_ids": (
                 coordinated_conflict_grant_ids
             ),
@@ -1893,6 +1905,17 @@ def resubmit_grant_change_request(request, request_id):
                     snapshot.proposed_value
                 )
 
+    current_display_values = {
+        field_name: (
+            format_change_request_display_value(
+                field_name,
+                current_values[field_name],
+            )
+        )
+        for field_name
+        in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+    }
+
     return_action = (
         ChangeAction.objects
         .filter(
@@ -2055,6 +2078,7 @@ def resubmit_grant_change_request(request, request_id):
             "change_request": change_request,
             "form": form,
             "current_values": current_values,
+            "current_display_values": current_display_values,
             "return_action": return_action,
             "resubmission_comment": resubmission_comment,
             "is_resubmission": True,

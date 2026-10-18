@@ -755,6 +755,31 @@ def _serialize_basic_information_comparison_value(
             return value_text
 
 
+def _basic_information_values_match(
+        field_name,
+        first_value,
+        second_value,
+):
+    """
+    Compare Basic Information values using their business semantics.
+
+    Date-only contract/GL fields compare by calendar date so legacy
+    DateTimeField audit values remain compatible with current DateField
+    values. Stored audit evidence itself is not changed.
+    """
+    return (
+        _serialize_basic_information_comparison_value(
+            field_name,
+            first_value,
+        )
+        ==
+        _serialize_basic_information_comparison_value(
+            field_name,
+            second_value,
+        )
+    )
+
+
 def _calculate_next_new_grant_id():
     """
     Return the next permanent Grant ID.
@@ -1878,9 +1903,10 @@ def get_change_request_integrity_evidence(
         field_name
         for field_name
         in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
-        if (
-            baseline_values[field_name]
-            != detected_values[field_name]
+        if not _basic_information_values_match(
+            field_name,
+            baseline_values[field_name],
+            detected_values[field_name],
         )
     )
 
@@ -2028,9 +2054,10 @@ def validate_returned_resubmission_baseline(
             getattr(grant, field_name)
         )
 
-        if (
-            authoritative_value
-            != baseline_values[field_name]
+        if not _basic_information_values_match(
+                field_name,
+                authoritative_value,
+                baseline_values[field_name],
         ):
             stale_fields.append(field_name)
 
@@ -3079,7 +3106,11 @@ def validate_basic_information_revision_baseline(
             snapshots_by_field[field_name].current_value
         )
 
-        if authoritative_value != snapshot_current_value:
+        if not _basic_information_values_match(
+                field_name,
+                authoritative_value,
+                snapshot_current_value,
+        ):
             stale_fields.append(field_name)
 
     if stale_fields:

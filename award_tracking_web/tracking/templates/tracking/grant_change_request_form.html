@@ -12,7 +12,7 @@
         }
         .container {
             width: 100%;
-            max-width: 900px; /* Increased the width of the container */
+            max-width: 1400px; /* Increased the width of the container */
             margin: auto;
         }
         .form-group {
@@ -56,6 +56,79 @@
             background-color: #008CBA;
             color: white;
             border-radius: 5px;
+        }
+        .comparison-header,
+        .comparison-row {
+            display: grid;
+            grid-template-columns:
+                220px
+                minmax(220px, 1fr)
+                minmax(340px, 1.3fr);
+            column-gap: 20px;
+            align-items: start;
+        }
+
+        .comparison-header {
+            margin-top: 20px;
+            padding: 10px 12px;
+            background-color: #f2f2f2;
+            border: 1px solid #ccc;
+            font-weight: bold;
+        }
+
+        .comparison-row {
+            padding: 12px;
+            border-left: 1px solid #ddd;
+            border-right: 1px solid #ddd;
+            border-bottom: 1px solid #ddd;
+        }
+
+        .field-label {
+            font-weight: bold;
+        }
+
+        .current-value {
+            padding-top: 4px;
+            overflow-wrap: anywhere;
+        }
+
+        .proposed-value input,
+        .proposed-value select {
+            width: 320px;
+            max-width: 100%;
+            box-sizing: border-box;
+        }
+
+        .proposed-value input[type="text"] + input[type="text"] {
+            display: block;
+            margin-top: 6px;
+        }
+
+        .proposed-value .help-text {
+            margin-left: 0;
+        }
+
+        @media (max-width: 850px) {
+            .comparison-header {
+                display: none;
+            }
+
+            .comparison-row {
+                grid-template-columns: 1fr;
+                row-gap: 6px;
+            }
+
+            .current-value::before {
+                content: "Current: ";
+                font-weight: bold;
+            }
+
+            .proposed-value::before {
+                content: "Proposed: ";
+                display: block;
+                margin-bottom: 4px;
+                font-weight: bold;
+            }
         }
         .messages {
             margin-bottom: 20px;
@@ -405,123 +478,283 @@
                 </div>
             {% endif %}
 
-            <div class="form-group">
-                <label>Program Title:</label>
-                {{ form.program_title }}
-                {{ form.new_program_title }}
+            <div class="comparison-header">
+                <div>Field</div>
+                <div>Current Value</div>
+                <div>Proposed Value</div>
             </div>
-            <div class="form-group">
-                <label>Contracting Agency:</label>
-                {{ form.contracting_agency }}
-                {{ form.new_contracting_agency }}
-            </div>
-            <div class="form-group">
-                <label>Contract Number:</label>
-                {{ form.contract_number }}
-            </div>
-            <div class="form-group">
-                <label>Amendment Number:</label>
-                {{ form.amendment_no }}
-                {% if form.amendment_no.errors %}
-                    <div class="error-message">
-                        {{ form.amendment_no.errors }}
-                    </div>
-                {% endif %}
-                <div class="help-text">
-                    Enter 0 for the original contract.
+
+            <div class="comparison-row">
+                <div class="field-label">
+                    Program Title:
+                </div>
+                <div class="current-value">
+                    {{ current_display_values.program_title }}
+                </div>
+                <div class="proposed-value">
+                    {{ form.program_title }}
+                    {{ form.new_program_title }}
+
+                    {% if form.program_title.errors %}
+                        <div class="error-message">
+                            {{ form.program_title.errors }}
+                        </div>
+                    {% endif %}
+
+                    {% if form.new_program_title.errors %}
+                        <div class="error-message">
+                            {{ form.new_program_title.errors }}
+                        </div>
+                    {% endif %}
                 </div>
             </div>
-            <div class="form-group">
-                <label>Contract Start Date:</label>
-                {{ form.contract_start_date }}
-            </div>
-            <div class="form-group">
-                <label>Contract End Date:</label>
-                {{ form.contract_end_date }}
-                {% if form.contract_end_date.errors %}
-                    <div class="error-message">
-                        {{ form.contract_end_date.errors }}
-                    </div>
-                {% endif %}
-            </div>
-            <div class="form-group">
-                <label>Contract Amount:</label>
-                {{ form.contract_amount }}
-            </div>
-            <div class="form-group">
-                <label>Funding Sources:</label>
-                {{ form.funding_sources }}
-                {% if form.funding_sources.errors %}
-                    <div class="error-message">
-                        {{ form.funding_sources.errors }}
-                    </div>
-                {% endif %}
-            </div>
-            <div class="form-group" id="federal-status-group">
-                <label>Federal Information Status:</label>
-                {{ form.federal_information_status }}
-                {% if form.federal_information_status.errors %}
-                    <div class="error-message">
-                        {{ form.federal_information_status.errors }}
-                    </div>
-                {% endif %}
-            </div>
-            <div class="form-group" id="federal-grantor-group">
-                <label>Federal Grantor:</label>
-                {{ form.federal_grantor }}
-                {{ form.new_federal_grantor }}
 
-                {% if form.federal_grantor.errors %}
-                    <div class="error-message">
-                        {{ form.federal_grantor.errors }}
-                    </div>
-                {% endif %}
+            <div class="comparison-row">
+                <div class="field-label">
+                    Contracting Agency:
+                </div>
+                <div class="current-value">
+                    {{ current_display_values.contracting_agency }}
+                </div>
+                <div class="proposed-value">
+                    {{ form.contracting_agency }}
+                    {{ form.new_contracting_agency }}
 
-                {% if form.new_federal_grantor.errors %}
-                    <div class="error-message">
-                        {{ form.new_federal_grantor.errors }}
-                    </div>
-                {% endif %}
+                    {% if form.contracting_agency.errors %}
+                        <div class="error-message">
+                            {{ form.contracting_agency.errors }}
+                        </div>
+                    {% endif %}
+
+                    {% if form.new_contracting_agency.errors %}
+                        <div class="error-message">
+                            {{ form.new_contracting_agency.errors }}
+                        </div>
+                    {% endif %}
+                </div>
             </div>
 
-            <div class="form-group" id="federal-aln-group">
-                <label>Federal ALN:</label>
-                {{ form.federal_aln }}
-                {{ form.new_federal_aln }}
-                {% if form.federal_aln.errors %}
-                    <div class="error-message">
-                        {{ form.federal_aln.errors }}
-                    </div>
-                {% endif %}
-                {% if form.new_federal_aln.errors %}
-                    <div class="error-message">
-                        {{ form.new_federal_aln.errors }}
-                    </div>
-                {% endif %}
+            <div class="comparison-row">
+                <div class="field-label">
+                    Contract Number:
+                </div>
+                <div class="current-value">
+                    {{ current_display_values.contract_number }}
+                </div>
+                <div class="proposed-value">
+                    {{ form.contract_number }}
+                    {{ form.contract_number.errors }}
+                </div>
             </div>
 
-            <div class="form-group">
-                <label>Internal Award Code:</label>
-                {{ form.internal_award_code }}
-                {% if form.internal_award_code.errors %}
-                    <div class="error-message">
-                        {{ form.internal_award_code.errors }}
+            <div class="comparison-row">
+                <div class="field-label">
+                    Amendment Number:
+                </div>
+                <div class="current-value">
+                    {{ current_display_values.amendment_no }}
+                </div>
+                <div class="proposed-value">
+                    {{ form.amendment_no }}
+
+                    {% if form.amendment_no.errors %}
+                        <div class="error-message">
+                            {{ form.amendment_no.errors }}
+                        </div>
+                    {% endif %}
+
+                    <div class="help-text">
+                        Enter 0 for the original contract.
                     </div>
-                {% endif %}
+                </div>
             </div>
 
-            <div class="form-group">
-                <label>Internal GL Start Date:</label>
-                {{ form.internal_gl_start_date }}
+            <div class="comparison-row">
+                <div class="field-label">
+                    Contract Start Date:
+                </div>
+                <div class="current-value">
+                    {{ current_display_values.contract_start_date }}
+                </div>
+                <div class="proposed-value">
+                    {{ form.contract_start_date }}
+                    {{ form.contract_start_date.errors }}
+                </div>
             </div>
-            <div class="form-group">
-                <label>Internal GL End Date:</label>
-                {{ form.internal_gl_end_date }}
-                {% if form.internal_gl_end_date.errors %}
-                    <div class="error-message">
-                        {{ form.internal_gl_end_date.errors }}
-                    </div>
-                {% endif %}
+
+            <div class="comparison-row">
+                <div class="field-label">
+                    Contract End Date:
+                </div>
+                <div class="current-value">
+                    {{ current_display_values.contract_end_date }}
+                </div>
+                <div class="proposed-value">
+                    {{ form.contract_end_date }}
+
+                    {% if form.contract_end_date.errors %}
+                        <div class="error-message">
+                            {{ form.contract_end_date.errors }}
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="comparison-row">
+                <div class="field-label">
+                    Contract Amount:
+                </div>
+                <div class="current-value">
+                    {{ current_display_values.contract_amount }}
+                </div>
+                <div class="proposed-value">
+                    {{ form.contract_amount }}
+                    {{ form.contract_amount.errors }}
+                </div>
+            </div>
+
+            <div class="comparison-row">
+                <div class="field-label">
+                    Funding Sources:
+                </div>
+                <div class="current-value">
+                    {{ current_display_values.funding_sources }}
+                </div>
+                <div class="proposed-value">
+                    {{ form.funding_sources }}
+
+                    {% if form.funding_sources.errors %}
+                        <div class="error-message">
+                            {{ form.funding_sources.errors }}
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="comparison-row">
+                <div class="field-label">
+                    Federal Information Status:
+                </div>
+                <div class="current-value">
+                    {{ current_display_values.federal_information_status }}
+                </div>
+                <div
+                    class="proposed-value"
+                    id="federal-status-group"
+                >
+                    {{ form.federal_information_status }}
+
+                    {% if form.federal_information_status.errors %}
+                        <div class="error-message">
+                            {{ form.federal_information_status.errors }}
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="comparison-row">
+                <div class="field-label">
+                    Federal Grantor:
+                </div>
+                <div class="current-value">
+                    {{ current_display_values.federal_grantor }}
+                </div>
+                <div
+                    class="proposed-value"
+                    id="federal-grantor-group"
+                >
+                    {{ form.federal_grantor }}
+                    {{ form.new_federal_grantor }}
+
+                    {% if form.federal_grantor.errors %}
+                        <div class="error-message">
+                            {{ form.federal_grantor.errors }}
+                        </div>
+                    {% endif %}
+
+                    {% if form.new_federal_grantor.errors %}
+                        <div class="error-message">
+                            {{ form.new_federal_grantor.errors }}
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="comparison-row">
+                <div class="field-label">
+                    Federal ALN:
+                </div>
+                <div class="current-value">
+                    {{ current_display_values.federal_aln }}
+                </div>
+                <div
+                    class="proposed-value"
+                    id="federal-aln-group"
+                >
+                    {{ form.federal_aln }}
+                    {{ form.new_federal_aln }}
+
+                    {% if form.federal_aln.errors %}
+                        <div class="error-message">
+                            {{ form.federal_aln.errors }}
+                        </div>
+                    {% endif %}
+
+                    {% if form.new_federal_aln.errors %}
+                        <div class="error-message">
+                            {{ form.new_federal_aln.errors }}
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="comparison-row">
+                <div class="field-label">
+                    Internal Award Code:
+                </div>
+                <div class="current-value">
+                    {{ current_display_values.internal_award_code }}
+                </div>
+                <div class="proposed-value">
+                    {{ form.internal_award_code }}
+
+                    {% if form.internal_award_code.errors %}
+                        <div class="error-message">
+                            {{ form.internal_award_code.errors }}
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="comparison-row">
+                <div class="field-label">
+                    Internal GL Start Date:
+                </div>
+                <div class="current-value">
+                    {{ current_display_values.internal_gl_start_date }}
+                </div>
+                <div class="proposed-value">
+                    {{ form.internal_gl_start_date }}
+                    {{ form.internal_gl_start_date.errors }}
+                </div>
+            </div>
+
+            <div class="comparison-row">
+                <div class="field-label">
+                    Internal GL End Date:
+                </div>
+                <div class="current-value">
+                    {{ current_display_values.internal_gl_end_date }}
+                </div>
+                <div class="proposed-value">
+                    {{ form.internal_gl_end_date }}
+
+                    {% if form.internal_gl_end_date.errors %}
+                        <div class="error-message">
+                            {{ form.internal_gl_end_date.errors }}
+                        </div>
+                    {% endif %}
+                </div>
             </div>
 
             {% if is_resubmission %}
