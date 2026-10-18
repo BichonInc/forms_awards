@@ -569,7 +569,15 @@ document.addEventListener('DOMContentLoaded', function () {
                     <div>
                         <strong>Active Change Request:</strong>
                         {{ active_change_request.get_status_display }}
-                        {% if can_review_change_request %}
+
+                        {% if editable_coordinated_draft_id %}
+                            <a
+                                href="{% url 'coordinated_basic_information_draft_edit' editable_coordinated_draft_id %}"
+                                class="button-common fiscal-exception-action-button"
+                            >
+                                Continue Coordinated Draft
+                            </a>
+                        {% elif can_review_change_request %}
                             <a
                                 href="{% url 'change_request_review' active_change_request.id %}"
                                 class="button-common fiscal-exception-action-button"

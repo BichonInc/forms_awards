@@ -66,43 +66,164 @@
             margin-top: 0;
         }
 
-        .form-group {
-            margin-bottom: 15px;
+        .comparison-header,
+        .comparison-row {
+            display: grid;
+            grid-template-columns: 220px minmax(220px, 1fr) minmax(340px, 1.3fr);
+            column-gap: 20px;
+            align-items: start;
         }
 
-        .form-group label {
-            display: inline-block;
-            width: 220px;
+        .comparison-header {
+            margin-top: 20px;
+            padding: 10px 12px;
+            background-color: #f2f2f2;
+            border: 1px solid #ccc;
             font-weight: bold;
-            vertical-align: top;
         }
 
-        .form-group input,
-        .form-group select {
+        .comparison-row {
+            padding: 12px;
+            border-left: 1px solid #ddd;
+            border-right: 1px solid #ddd;
+            border-bottom: 1px solid #ddd;
+        }
+
+        .field-label {
+            font-weight: bold;
+        }
+
+        .current-value {
+            padding-top: 4px;
+            overflow-wrap: anywhere;
+        }
+
+        .proposed-value input,
+        .proposed-value select {
             width: 320px;
             max-width: 100%;
+            box-sizing: border-box;
+        }
+
+        .proposed-value input[type="text"] + input[type="text"] {
+            margin-top: 6px;
         }
 
         .error-message {
-            margin-left: 225px;
             margin-top: 5px;
             color: #b00020;
+        }
+
+        .comparison-row.has-change {
+            background-color: #fff8e1;
+        }
+
+        .comparison-row.has-change .proposed-value {
+            font-weight: 600;
+        }
+
+        @media (max-width: 850px) {
+            .comparison-header {
+                display: none;
+            }
+
+            .comparison-row {
+                grid-template-columns: 1fr;
+                row-gap: 6px;
+            }
+
+            .current-value::before {
+                content: "Current: ";
+                font-weight: bold;
+            }
+
+            .proposed-value::before {
+                content: "Proposed: ";
+                display: block;
+                margin-bottom: 4px;
+                font-weight: bold;
+            }
         }
 
         .card-actions {
             margin-top: 20px;
         }
 
-        .remove-button {
-            padding: 8px 14px;
-        }
-
         .page-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
             margin-top: 30px;
         }
 
-        .save-button {
+        .action-button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            box-sizing: border-box;
+            min-height: 42px;
             padding: 10px 20px;
+            border: 1px solid transparent;
+            border-radius: 5px;
+            font-family: Arial, sans-serif;
+            font-size: 16px;
+            line-height: 1.2;
+            text-decoration: none;
+            cursor: pointer;
+        }
+
+        .action-button-primary {
+            background-color: #4CAF50;
+            color: white;
+            border-color: #4CAF50;
+        }
+
+        .action-button-primary:hover {
+            background-color: #429a46;
+            border-color: #429a46;
+        }
+
+        .action-button-secondary {
+            background-color: #008CBA;
+            color: white;
+            border-color: #008CBA;
+        }
+
+        .action-button-secondary:hover {
+            background-color: #00779e;
+            border-color: #00779e;
+        }
+
+        .action-button-neutral {
+            background-color: #f2f2f2;
+            color: #222;
+            border-color: #888;
+        }
+
+        .action-button-neutral:hover {
+            background-color: #e4e4e4;
+        }
+
+        .action-button-danger {
+            background-color: #dc3545;
+            color: white;
+            border-color: #dc3545;
+        }
+
+        .action-button-danger:hover {
+            background-color: #b02a37;
+            border-color: #b02a37;
+        }
+
+        .submit-draft-notice {
+            margin-top: 30px;
+            margin-bottom: 12px;
+            padding: 12px 16px;
+            background-color: #fff8e1;
+            border: 1px solid #e6c76a;
+            border-radius: 5px;
+            font-size: 16px;
+            line-height: 1.4;
         }
 
         .cancel-draft-section {
@@ -121,24 +242,6 @@
             max-width: 100%;
             min-height: 90px;
             box-sizing: border-box;
-        }
-
-        .cancel-draft-button {
-            margin-top: 10px;
-            padding: 10px 20px;
-            background-color: #dc3545;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-        }
-
-        .cancel-draft-button:hover {
-            background-color: #b02a37;
-        }
-
-        .back-link {
-            margin-left: 20px;
         }
 
         .help-text {
@@ -576,6 +679,116 @@
                     }
 
                     updateFederalFields();
+
+                    function getEffectiveProposedValue(
+                        fieldName
+                    ) {
+                        const proposedField = field(
+                            fieldName
+                        );
+
+                        if (!proposedField) {
+                            return "";
+                        }
+
+                        const addNewPair = addNewPairs.find(
+                            function (pair) {
+                                return pair[0] === fieldName;
+                            }
+                        );
+
+                        if (
+                            addNewPair &&
+                            proposedField.value === "Add New"
+                        ) {
+                            const newValueField = field(
+                                addNewPair[1]
+                            );
+
+                            return newValueField
+                                ? newValueField.value
+                                : "";
+                        }
+
+                        return proposedField.value;
+                    }
+
+                    function normalizeComparisonValue(
+                        fieldName,
+                        value
+                    ) {
+                        let normalizedValue = (
+                            value || ""
+                        ).trim();
+
+                        if (
+                            fieldName === "contract_amount" &&
+                            normalizedValue !== ""
+                        ) {
+                            const numericValue = Number(
+                                normalizedValue.replace(
+                                    /,/g,
+                                    ""
+                                )
+                            );
+
+                            if (!Number.isNaN(numericValue)) {
+                                normalizedValue = (
+                                    numericValue.toFixed(2)
+                                );
+                            }
+                        }
+
+                        return normalizedValue;
+                    }
+
+                    function updateChangeHighlights() {
+                        card.querySelectorAll(
+                            ".comparison-row[data-field-name]"
+                        ).forEach(function (row) {
+                            const fieldName = (
+                                row.dataset.fieldName
+                            );
+
+                            const currentValue = (
+                                normalizeComparisonValue(
+                                    fieldName,
+                                    row.dataset.currentValue || ""
+                                )
+                            );
+
+                            const proposedValue = (
+                                normalizeComparisonValue(
+                                    fieldName,
+                                    getEffectiveProposedValue(
+                                        fieldName
+                                    )
+                                )
+                            );
+
+                            row.classList.toggle(
+                                "has-change",
+                                proposedValue !== currentValue
+                            );
+                        });
+                    }
+
+                    card.querySelectorAll(
+                        ".proposed-value input, " +
+                        ".proposed-value select"
+                    ).forEach(function (control) {
+                        control.addEventListener(
+                            "input",
+                            updateChangeHighlights
+                        );
+
+                        control.addEventListener(
+                            "change",
+                            updateChangeHighlights
+                        );
+                    });
+
+                    updateChangeHighlights();
                 });
             }
         );
@@ -663,172 +876,296 @@
                     </div>
                 {% endif %}
 
-                <div class="form-group">
-                    <label>
+                <div class="comparison-header">
+                    <div>Field</div>
+                    <div>Current Value</div>
+                    <div>Proposed Value</div>
+                </div>
+
+                <div
+                    class="comparison-row"
+                    data-field-name="program_title"
+                    data-current-value="{{ card.current_serialized_values.program_title }}"
+                >
+                    <div class="field-label">
                         Program Title:
-                    </label>
-                    {{ card.form.program_title }}
-                    {{ card.form.new_program_title }}
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.program_title }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.program_title }}
+                        {{ card.form.new_program_title }}
 
-                    {% if card.form.program_title.errors %}
-                        <div class="error-message">
-                            {{ card.form.program_title.errors }}
-                        </div>
-                    {% endif %}
+                        {% if card.form.program_title.errors %}
+                            <div class="error-message">
+                                {{ card.form.program_title.errors }}
+                            </div>
+                        {% endif %}
 
-                    {% if card.form.new_program_title.errors %}
-                        <div class="error-message">
-                            {{ card.form.new_program_title.errors }}
-                        </div>
-                    {% endif %}
+                        {% if card.form.new_program_title.errors %}
+                            <div class="error-message">
+                                {{ card.form.new_program_title.errors }}
+                            </div>
+                        {% endif %}
+                    </div>
                 </div>
 
-                <div class="form-group">
-                    <label>
+                <div
+                    class="comparison-row"
+                    data-field-name="contracting_agency"
+                    data-current-value="{{ card.current_serialized_values.contracting_agency }}"
+                >
+                    <div class="field-label">
                         Contracting Agency:
-                    </label>
-                    {{ card.form.contracting_agency }}
-                    {{ card.form.new_contracting_agency }}
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.contracting_agency }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.contracting_agency }}
+                        {{ card.form.new_contracting_agency }}
 
-                    {% if card.form.contracting_agency.errors %}
-                        <div class="error-message">
-                            {{ card.form.contracting_agency.errors }}
-                        </div>
-                    {% endif %}
+                        {% if card.form.contracting_agency.errors %}
+                            <div class="error-message">
+                                {{ card.form.contracting_agency.errors }}
+                            </div>
+                        {% endif %}
 
-                    {% if card.form.new_contracting_agency.errors %}
-                        <div class="error-message">
-                            {{ card.form.new_contracting_agency.errors }}
-                        </div>
-                    {% endif %}
+                        {% if card.form.new_contracting_agency.errors %}
+                            <div class="error-message">
+                                {{ card.form.new_contracting_agency.errors }}
+                            </div>
+                        {% endif %}
+                    </div>
                 </div>
 
-                <div class="form-group">
-                    <label>
+                <div
+                    class="comparison-row"
+                    data-field-name="contract_number"
+                    data-current-value="{{ card.current_serialized_values.contract_number }}"
+                >
+                    <div class="field-label">
                         Contract Number:
-                    </label>
-                    {{ card.form.contract_number }}
-                    {{ card.form.contract_number.errors }}
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.contract_number }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.contract_number }}
+                        {{ card.form.contract_number.errors }}
+                    </div>
                 </div>
 
-                <div class="form-group">
-                    <label>
+                <div
+                    class="comparison-row"
+                    data-field-name="amendment_no"
+                    data-current-value="{{ card.current_serialized_values.amendment_no }}"
+                >
+                    <div class="field-label">
                         Amendment Number:
-                    </label>
-                    {{ card.form.amendment_no }}
-                    {{ card.form.amendment_no.errors }}
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.amendment_no }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.amendment_no }}
+                        {{ card.form.amendment_no.errors }}
+                    </div>
                 </div>
 
-                <div class="form-group">
-                    <label>
+                <div
+                    class="comparison-row"
+                    data-field-name="contract_start_date"
+                    data-current-value="{{ card.current_serialized_values.contract_start_date }}"
+                >
+                    <div class="field-label">
                         Contract Start Date:
-                    </label>
-                    {{ card.form.contract_start_date }}
-                    {{ card.form.contract_start_date.errors }}
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.contract_start_date }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.contract_start_date }}
+                        {{ card.form.contract_start_date.errors }}
+                    </div>
                 </div>
 
-                <div class="form-group">
-                    <label>
+                <div
+                    class="comparison-row"
+                    data-field-name="contract_end_date"
+                    data-current-value="{{ card.current_serialized_values.contract_end_date }}"
+                >
+                    <div class="field-label">
                         Contract End Date:
-                    </label>
-                    {{ card.form.contract_end_date }}
-                    {{ card.form.contract_end_date.errors }}
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.contract_end_date }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.contract_end_date }}
+                        {{ card.form.contract_end_date.errors }}
+                    </div>
                 </div>
 
-                <div class="form-group">
-                    <label>
+                <div
+                    class="comparison-row"
+                    data-field-name="contract_amount"
+                    data-current-value="{{ card.current_serialized_values.contract_amount }}"
+                >
+                    <div class="field-label">
                         Contract Amount:
-                    </label>
-                    {{ card.form.contract_amount }}
-                    {{ card.form.contract_amount.errors }}
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.contract_amount }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.contract_amount }}
+                        {{ card.form.contract_amount.errors }}
+                    </div>
                 </div>
 
-                <div class="form-group">
-                    <label>
+                <div
+                    class="comparison-row"
+                    data-field-name="funding_sources"
+                    data-current-value="{{ card.current_serialized_values.funding_sources }}"
+                >
+                    <div class="field-label">
                         Funding Sources:
-                    </label>
-                    {{ card.form.funding_sources }}
-                    {{ card.form.funding_sources.errors }}
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.funding_sources }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.funding_sources }}
+                        {{ card.form.funding_sources.errors }}
+                    </div>
                 </div>
 
                 <div
-                    class="form-group federal-status-group"
+                    class="comparison-row"
+                    data-field-name="federal_information_status"
+                    data-current-value="{{ card.current_serialized_values.federal_information_status }}"
                 >
-                    <label>
+                    <div class="field-label">
                         Federal Information Status:
-                    </label>
-                    {{ card.form.federal_information_status }}
-                    {{ card.form.federal_information_status.errors }}
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.federal_information_status }}
+                    </div>
+                    <div class="proposed-value federal-status-group">
+                        {{ card.form.federal_information_status }}
+                        {{ card.form.federal_information_status.errors }}
+                    </div>
                 </div>
 
                 <div
-                    class="form-group federal-grantor-group"
+                    class="comparison-row"
+                    data-field-name="federal_grantor"
+                    data-current-value="{{ card.current_serialized_values.federal_grantor }}"
                 >
-                    <label>
+                    <div class="field-label">
                         Federal Grantor:
-                    </label>
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.federal_grantor }}
+                    </div>
+                    <div class="proposed-value federal-grantor-group">
+                        {{ card.form.federal_grantor }}
+                        {{ card.form.new_federal_grantor }}
 
-                    {{ card.form.federal_grantor }}
-                    {{ card.form.new_federal_grantor }}
+                        {% if card.form.federal_grantor.errors %}
+                            <div class="error-message">
+                                {{ card.form.federal_grantor.errors }}
+                            </div>
+                        {% endif %}
 
-                    {% if card.form.federal_grantor.errors %}
-                        <div class="error-message">
-                            {{ card.form.federal_grantor.errors }}
-                        </div>
-                    {% endif %}
-
-                    {% if card.form.new_federal_grantor.errors %}
-                        <div class="error-message">
-                            {{ card.form.new_federal_grantor.errors }}
-                        </div>
-                    {% endif %}
+                        {% if card.form.new_federal_grantor.errors %}
+                            <div class="error-message">
+                                {{ card.form.new_federal_grantor.errors }}
+                            </div>
+                        {% endif %}
+                    </div>
                 </div>
 
                 <div
-                    class="form-group federal-aln-group"
+                    class="comparison-row"
+                    data-field-name="federal_aln"
+                    data-current-value="{{ card.current_serialized_values.federal_aln }}"
                 >
-                    <label>
+                    <div class="field-label">
                         Federal ALN:
-                    </label>
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.federal_aln }}
+                    </div>
+                    <div class="proposed-value federal-aln-group">
+                        {{ card.form.federal_aln }}
+                        {{ card.form.new_federal_aln }}
 
-                    {{ card.form.federal_aln }}
-                    {{ card.form.new_federal_aln }}
+                        {% if card.form.federal_aln.errors %}
+                            <div class="error-message">
+                                {{ card.form.federal_aln.errors }}
+                            </div>
+                        {% endif %}
 
-                    {% if card.form.federal_aln.errors %}
-                        <div class="error-message">
-                            {{ card.form.federal_aln.errors }}
-                        </div>
-                    {% endif %}
-
-                    {% if card.form.new_federal_aln.errors %}
-                        <div class="error-message">
-                            {{ card.form.new_federal_aln.errors }}
-                        </div>
-                    {% endif %}
+                        {% if card.form.new_federal_aln.errors %}
+                            <div class="error-message">
+                                {{ card.form.new_federal_aln.errors }}
+                            </div>
+                        {% endif %}
+                    </div>
                 </div>
 
-                <div class="form-group">
-                    <label>
+                <div
+                    class="comparison-row"
+                    data-field-name="internal_award_code"
+                    data-current-value="{{ card.current_serialized_values.internal_award_code }}"
+                >
+                    <div class="field-label">
                         Internal Award Code:
-                    </label>
-                    {{ card.form.internal_award_code }}
-                    {{ card.form.internal_award_code.errors }}
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.internal_award_code }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.internal_award_code }}
+                        {{ card.form.internal_award_code.errors }}
+                    </div>
                 </div>
 
-                <div class="form-group">
-                    <label>
+                <div
+                    class="comparison-row"
+                    data-field-name="internal_gl_start_date"
+                    data-current-value="{{ card.current_serialized_values.internal_gl_start_date }}"
+                >
+                    <div class="field-label">
                         Internal GL Start Date:
-                    </label>
-                    {{ card.form.internal_gl_start_date }}
-                    {{ card.form.internal_gl_start_date.errors }}
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.internal_gl_start_date }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.internal_gl_start_date }}
+                        {{ card.form.internal_gl_start_date.errors }}
+                    </div>
                 </div>
 
-                <div class="form-group">
-                    <label>
+                <div
+                    class="comparison-row"
+                    data-field-name="internal_gl_end_date"
+                    data-current-value="{{ card.current_serialized_values.internal_gl_end_date }}"
+                >
+                    <div class="field-label">
                         Internal GL End Date:
-                    </label>
-                    {{ card.form.internal_gl_end_date }}
-                    {{ card.form.internal_gl_end_date.errors }}
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.internal_gl_end_date }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.internal_gl_end_date }}
+                        {{ card.form.internal_gl_end_date.errors }}
+                    </div>
                 </div>
 
                 <div class="card-actions">
@@ -836,7 +1173,7 @@
                         type="submit"
                         name="remove_grant_id"
                         value="{{ card.grant.grant_id }}"
-                        class="remove-button"
+                        class="action-button action-button-neutral"
                         formnovalidate
                     >
                         Remove from Request
@@ -878,6 +1215,7 @@
                 type="submit"
                 name="action"
                 value="add_grant"
+                class="action-button action-button-secondary"
                 formnovalidate
             >
                 Add Grant
@@ -889,14 +1227,14 @@
                 type="submit"
                 name="action"
                 value="save_draft"
-                class="save-button"
+                class="action-button action-button-primary"
             >
                 Save Draft
             </button>
 
             <a
                 href="{% url 'grant_list' %}"
-                class="back-link"
+                class="action-button action-button-secondary"
             >
                 Return to Grant List
             </a>
@@ -944,7 +1282,7 @@
 
                 <button
                     type="submit"
-                    class="cancel-draft-button"
+                    class="action-button action-button-danger"
                     onclick="return confirm(
                         'Cancel this coordinated draft? This action cannot be undone.'
                     );"
@@ -955,6 +1293,12 @@
         </div>
     {% endif %}
     {% if is_existing_draft %}
+        <div class="submit-draft-notice">
+            <strong>Important:</strong>
+            Submit for Approval uses the last saved draft.
+            <strong>Save Draft first if you made any changes.</strong>
+        </div>
+
         <div class="page-actions">
             <form
                 method="post"
@@ -979,17 +1323,11 @@
 
                 <button
                     type="submit"
-                    class="save-button"
+                    class="action-button action-button-primary"
                 >
                     Submit for Approval
                 </button>
             </form>
-        </div>
-
-        <div class="help-text">
-            Submit for Approval uses the last saved version of this draft.
-            Save any field, Add Grant, or Remove from Request changes before
-            submitting.
         </div>
     {% endif %}
 

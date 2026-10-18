@@ -362,6 +362,28 @@ def grant_detail(request, grant_id):
         )
     )
 
+    editable_coordinated_draft_id = None
+
+    if (
+            can_request_change
+            and active_change_request is not None
+            and (
+            active_change_request.status
+            == ChangeRequest.Status.DRAFT
+    )
+            and (
+            active_change_request.coordinated_change_id
+            is not None
+    )
+            and (
+            active_change_request.coordinated_change.status
+            == CoordinatedChange.Status.DRAFT
+    )
+    ):
+        editable_coordinated_draft_id = (
+            active_change_request.coordinated_change_id
+        )
+
     can_edit_fiscal_data = user_has_any_role(
         request.user,
         ROLE_ACCOUNTANT,
@@ -1325,6 +1347,9 @@ def grant_detail(request, grant_id):
         "can_request_change": can_request_change,
         "active_change_request": active_change_request,
         "can_review_change_request": can_review_change_request,
+        "editable_coordinated_draft_id": (
+            editable_coordinated_draft_id
+        ),
         "can_edit_fiscal_data": can_edit_fiscal_data,
         'fiscal_breakdown': fiscal_breakdown,
         'total_expenditure_sum': total_expenditure_sum,
@@ -3615,13 +3640,46 @@ def coordinated_basic_information_draft_editor(
                     desired_values,
                 )
 
+        current_serialized_values = {
+            field_name: (
+                serialize_change_request_value(
+                    getattr(
+                        grant,
+                        field_name,
+                    )
+                )
+            )
+            for field_name
+            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        }
+
+        current_values = {
+            field_name: (
+                format_change_request_display_value(
+                    field_name,
+                    serialize_change_request_value(
+                        getattr(
+                            grant,
+                            field_name,
+                        )
+                    ),
+                )
+            )
+            for field_name
+            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        }
+
         form_cards.append(
             {
                 "grant": grant,
                 "form": form,
+                "current_values": current_values,
+                "current_serialized_values": (
+                    current_serialized_values
+                ),
                 "was_saved": (
-                    grant_id
-                    in persisted_grant_ids
+                        grant_id
+                        in persisted_grant_ids
                 ),
             }
         )
