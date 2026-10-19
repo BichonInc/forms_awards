@@ -40,22 +40,58 @@
             margin-left: 10px;
         }
         .buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
             margin-top: 20px;
         }
-        #save-button {
-            background-color: #4CAF50;
-            color: white;
-            border: none;
+
+        .action-button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            box-sizing: border-box;
+            min-height: 42px;
             padding: 10px 20px;
+            border: 1px solid transparent;
+            border-radius: 5px;
+            font-family: Arial, sans-serif;
+            font-size: 16px;
+            line-height: 1.2;
+            text-decoration: none;
             cursor: pointer;
         }
-        #back-button {
-            margin-left: 20px;
-            text-decoration: none;
-            padding: 10px 20px;
+
+        .action-button-primary {
+            background-color: #4CAF50;
+            color: white;
+            border-color: #4CAF50;
+        }
+
+        .action-button-primary:hover {
+            background-color: #429a46;
+            border-color: #429a46;
+        }
+
+        .action-button-secondary {
             background-color: #008CBA;
             color: white;
-            border-radius: 5px;
+            border-color: #008CBA;
+        }
+
+        .action-button-secondary:hover {
+            background-color: #00779e;
+            border-color: #00779e;
+        }
+
+        .action-button-neutral {
+            background-color: #f2f2f2;
+            color: #222;
+            border-color: #888;
+        }
+
+        .action-button-neutral:hover {
+            background-color: #e4e4e4;
         }
         .comparison-header,
         .comparison-row {
@@ -977,7 +1013,11 @@
             {% endif %}
 
             <div class="buttons">
-                <button type="submit" id="save-button">
+                <button
+                    type="submit"
+                    id="save-button"
+                    class="action-button action-button-primary"
+                >
                     {{ submit_button_text|default:"Submit Change Request" }}
                 </button>
 
@@ -986,6 +1026,7 @@
                         type="submit"
                         name="action"
                         value="create_coordinated_draft"
+                        class="action-button action-button-secondary"
                     >
                         Create Coordinated Draft
                     </button>
@@ -994,14 +1035,23 @@
                 {% if is_resubmission %}
                     <a
                         href="{% url 'change_request_review' change_request.id %}"
-                        id="back-button"
+                        class="action-button action-button-neutral"
                     >
                         Back to Review
                     </a>
+
+                    {% if not is_new_grant_request %}
+                        <a
+                            href="{% url 'grant_detail' grant.grant_id %}"
+                            class="action-button action-button-neutral"
+                        >
+                            Return to Grant Detail
+                        </a>
+                    {% endif %}
                 {% else %}
                     <a
                         href="{% url 'grant_detail' grant.grant_id %}"
-                        id="back-button"
+                        class="action-button action-button-neutral"
                     >
                         Discard
                     </a>
