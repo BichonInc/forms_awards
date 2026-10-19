@@ -83,6 +83,14 @@
             border-bottom: 1px solid #ddd;
         }
 
+        .comparison-row.has-change {
+            background-color: #fff8e1;
+        }
+
+        .comparison-row.has-change .proposed-value {
+            font-weight: 600;
+        }
+
         .field-label {
             font-weight: bold;
         }
@@ -395,6 +403,114 @@
         }
 
         updateFederalFields();
+                function getEffectiveProposedValue(fieldName) {
+            const proposedField = document.getElementById(
+                "id_" + fieldName
+            );
+
+            if (!proposedField) {
+                return "";
+            }
+
+            const addNewPair = addNewPairs.find(
+                function (pair) {
+                    return pair[0] === "id_" + fieldName;
+                }
+            );
+
+            if (
+                addNewPair &&
+                proposedField.value === "Add New"
+            ) {
+                const newValueField = document.getElementById(
+                    addNewPair[1]
+                );
+
+                return newValueField
+                    ? newValueField.value
+                    : "";
+            }
+
+            return proposedField.value;
+        }
+
+        function normalizeComparisonValue(
+            fieldName,
+            value
+        ) {
+            let normalizedValue = (
+                value || ""
+            ).trim();
+
+            if (
+                fieldName === "contract_amount" &&
+                normalizedValue !== ""
+            ) {
+                const numericValue = Number(
+                    normalizedValue.replace(
+                        /,/g,
+                        ""
+                    )
+                );
+
+                if (!Number.isNaN(numericValue)) {
+                    normalizedValue = (
+                        numericValue.toFixed(2)
+                    );
+                }
+            }
+
+            return normalizedValue;
+        }
+
+        function updateChangeHighlights() {
+            document.querySelectorAll(
+                ".comparison-row[data-field-name]"
+            ).forEach(function (row) {
+                const fieldName = (
+                    row.dataset.fieldName
+                );
+
+                const currentValue = (
+                    normalizeComparisonValue(
+                        fieldName,
+                        row.dataset.currentValue || ""
+                    )
+                );
+
+                const proposedValue = (
+                    normalizeComparisonValue(
+                        fieldName,
+                        getEffectiveProposedValue(
+                            fieldName
+                        )
+                    )
+                );
+
+                row.classList.toggle(
+                    "has-change",
+                    proposedValue !== currentValue
+                );
+            });
+        }
+
+        document.querySelectorAll(
+            ".proposed-value input, " +
+            ".proposed-value select"
+        ).forEach(function (control) {
+            control.addEventListener(
+                "input",
+                updateChangeHighlights
+            );
+
+            control.addEventListener(
+                "change",
+                updateChangeHighlights
+            );
+        });
+
+        updateChangeHighlights();
+
         const grantForm = document.getElementById(
             "grant-change-request-form"
         );
@@ -484,7 +600,13 @@
                 <div>Proposed Value</div>
             </div>
 
-            <div class="comparison-row">
+            <div
+                class="comparison-row"
+                {% if not is_new_grant_request %}
+                    data-field-name="program_title"
+                    data-current-value="{{ current_values.program_title }}"
+                {% endif %}
+            >
                 <div class="field-label">
                     Program Title:
                 </div>
@@ -509,7 +631,13 @@
                 </div>
             </div>
 
-            <div class="comparison-row">
+            <div
+                class="comparison-row"
+                {% if not is_new_grant_request %}
+                    data-field-name="contracting_agency"
+                    data-current-value="{{ current_values.contracting_agency }}"
+                {% endif %}
+            >
                 <div class="field-label">
                     Contracting Agency:
                 </div>
@@ -534,7 +662,13 @@
                 </div>
             </div>
 
-            <div class="comparison-row">
+            <div
+                class="comparison-row"
+                {% if not is_new_grant_request %}
+                    data-field-name="contract_number"
+                    data-current-value="{{ current_values.contract_number }}"
+                {% endif %}
+            >
                 <div class="field-label">
                     Contract Number:
                 </div>
@@ -547,7 +681,13 @@
                 </div>
             </div>
 
-            <div class="comparison-row">
+            <div
+                class="comparison-row"
+                {% if not is_new_grant_request %}
+                    data-field-name="amendment_no"
+                    data-current-value="{{ current_values.amendment_no }}"
+                {% endif %}
+            >
                 <div class="field-label">
                     Amendment Number:
                 </div>
@@ -569,7 +709,13 @@
                 </div>
             </div>
 
-            <div class="comparison-row">
+            <div
+                class="comparison-row"
+                {% if not is_new_grant_request %}
+                    data-field-name="contract_start_date"
+                    data-current-value="{{ current_values.contract_start_date }}"
+                {% endif %}
+            >
                 <div class="field-label">
                     Contract Start Date:
                 </div>
@@ -582,7 +728,13 @@
                 </div>
             </div>
 
-            <div class="comparison-row">
+            <div
+                class="comparison-row"
+                {% if not is_new_grant_request %}
+                    data-field-name="contract_end_date"
+                    data-current-value="{{ current_values.contract_end_date }}"
+                {% endif %}
+            >
                 <div class="field-label">
                     Contract End Date:
                 </div>
@@ -600,7 +752,13 @@
                 </div>
             </div>
 
-            <div class="comparison-row">
+            <div
+                class="comparison-row"
+                {% if not is_new_grant_request %}
+                    data-field-name="contract_amount"
+                    data-current-value="{{ current_values.contract_amount }}"
+                {% endif %}
+            >
                 <div class="field-label">
                     Contract Amount:
                 </div>
@@ -613,7 +771,13 @@
                 </div>
             </div>
 
-            <div class="comparison-row">
+            <div
+                class="comparison-row"
+                {% if not is_new_grant_request %}
+                    data-field-name="funding_sources"
+                    data-current-value="{{ current_values.funding_sources }}"
+                {% endif %}
+            >
                 <div class="field-label">
                     Funding Sources:
                 </div>
@@ -631,7 +795,13 @@
                 </div>
             </div>
 
-            <div class="comparison-row">
+            <div
+                class="comparison-row"
+                {% if not is_new_grant_request %}
+                    data-field-name="federal_information_status"
+                    data-current-value="{{ current_values.federal_information_status }}"
+                {% endif %}
+            >
                 <div class="field-label">
                     Federal Information Status:
                 </div>
@@ -652,7 +822,13 @@
                 </div>
             </div>
 
-            <div class="comparison-row">
+            <div
+                class="comparison-row"
+                {% if not is_new_grant_request %}
+                    data-field-name="federal_grantor"
+                    data-current-value="{{ current_values.federal_grantor }}"
+                {% endif %}
+            >
                 <div class="field-label">
                     Federal Grantor:
                 </div>
@@ -680,7 +856,13 @@
                 </div>
             </div>
 
-            <div class="comparison-row">
+            <div
+                class="comparison-row"
+                {% if not is_new_grant_request %}
+                    data-field-name="federal_aln"
+                    data-current-value="{{ current_values.federal_aln }}"
+                {% endif %}
+            >
                 <div class="field-label">
                     Federal ALN:
                 </div>
@@ -708,7 +890,13 @@
                 </div>
             </div>
 
-            <div class="comparison-row">
+            <div
+                class="comparison-row"
+                {% if not is_new_grant_request %}
+                    data-field-name="internal_award_code"
+                    data-current-value="{{ current_values.internal_award_code }}"
+                {% endif %}
+            >
                 <div class="field-label">
                     Internal Award Code:
                 </div>
@@ -726,7 +914,13 @@
                 </div>
             </div>
 
-            <div class="comparison-row">
+            <div
+                class="comparison-row"
+                {% if not is_new_grant_request %}
+                    data-field-name="internal_gl_start_date"
+                    data-current-value="{{ current_values.internal_gl_start_date }}"
+                {% endif %}
+            >
                 <div class="field-label">
                     Internal GL Start Date:
                 </div>
@@ -739,7 +933,13 @@
                 </div>
             </div>
 
-            <div class="comparison-row">
+            <div
+                class="comparison-row"
+                {% if not is_new_grant_request %}
+                    data-field-name="internal_gl_end_date"
+                    data-current-value="{{ current_values.internal_gl_end_date }}"
+                {% endif %}
+            >
                 <div class="field-label">
                     Internal GL End Date:
                 </div>
