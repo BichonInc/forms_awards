@@ -127,6 +127,20 @@
             font-weight: 600;
         }
 
+        #grant-change-request-form.new-grant-layout
+        .comparison-header,
+        #grant-change-request-form.new-grant-layout
+        .comparison-row {
+            grid-template-columns:
+                220px
+                minmax(340px, 1fr);
+        }
+
+        #grant-change-request-form.new-grant-layout
+        .current-value {
+            display: none;
+        }
+
         .field-label {
             font-weight: bold;
         }
@@ -577,16 +591,28 @@
             {{ page_title|default:"Propose Grant Basic Information Changes" }}
         </h1>
         <p>
-            <strong>Grant ID:</strong>
+            <strong>
+                {% if is_new_grant_request %}
+                    Reserved Grant ID:
+                {% else %}
+                    Grant ID:
+                {% endif %}
+            </strong>
+
             {% if is_new_grant_request %}
                 {{ change_request.grant_id }}
             {% else %}
                 {{ grant.grant_id }}
+                <br>
+                <strong>Program Title:</strong>
+                {{ current_values.program_title }}
+                <br>
+                <strong>Contracting Agency:</strong>
+                {{ current_values.contracting_agency }}
+                <br>
+                <strong>Contract Number:</strong>
+                {{ current_values.contract_number }}
             {% endif %}
-            <br>
-            <strong>Program Title:</strong> {{ current_values.program_title }}<br>
-            <strong>Contracting Agency:</strong> {{ current_values.contracting_agency }}<br>
-            <strong>Contract Number:</strong> {{ current_values.contract_number }}
         </p>
         {% if messages %}
             <div class="messages-container">
@@ -606,6 +632,9 @@
                 action="{% url 'create_grant_change_request' grant.grant_id %}"
             {% endif %}
             id="grant-change-request-form"
+            {% if is_new_grant_request %}
+                class="new-grant-layout"
+            {% endif %}
         >
             {% csrf_token %}
             {% if not is_resubmission %}
@@ -632,7 +661,11 @@
 
             <div class="comparison-header">
                 <div>Field</div>
-                <div>Current Value</div>
+
+                {% if not is_new_grant_request %}
+                    <div>Current Value</div>
+                {% endif %}
+
                 <div>Proposed Value</div>
             </div>
 
