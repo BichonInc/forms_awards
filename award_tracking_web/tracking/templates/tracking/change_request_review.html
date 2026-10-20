@@ -607,22 +607,28 @@
         <thead>
         <tr>
             <th>Field</th>
-            <th>
-                {% if is_new_grant_request %}
-                    Authoritative Value at Submission
-                {% else %}
-                    Current Value
-                {% endif %}
-            </th>
+
+            {% if not is_new_grant_request %}
+                <th>Current Value</th>
+            {% endif %}
+
             <th>Proposed Value</th>
         </tr>
         </thead>
 
         <tbody>
         {% for row in review_rows %}
-            <tr {% if row.changed %}class="changed-row"{% endif %}>
+            <tr
+                {% if not is_new_grant_request and row.changed %}
+                    class="changed-row"
+                {% endif %}
+            >
                 <td>{{ row.label }}</td>
-                <td>{{ row.current_value }}</td>
+
+                {% if not is_new_grant_request %}
+                    <td>{{ row.current_value }}</td>
+                {% endif %}
+
                 <td>{{ row.proposed_value }}</td>
             </tr>
         {% endfor %}
