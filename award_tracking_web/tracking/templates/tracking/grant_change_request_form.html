@@ -945,16 +945,18 @@
                     {{ form.federal_aln }}
                     {{ form.new_federal_aln }}
 
-                    {% if form.federal_aln.errors %}
-                        <div class="error-message">
-                            {{ form.federal_aln.errors }}
-                        </div>
-                    {% endif %}
-
-                    {% if form.new_federal_aln.errors %}
-                        <div class="error-message">
-                            {{ form.new_federal_aln.errors }}
-                        </div>
+                    {% if form.federal_aln.value == "Add New" %}
+                        {% if form.new_federal_aln.errors %}
+                            <div class="error-message">
+                                {{ form.new_federal_aln.errors }}
+                            </div>
+                        {% endif %}
+                    {% else %}
+                        {% if form.federal_aln.errors %}
+                            <div class="error-message">
+                                {{ form.federal_aln.errors }}
+                            </div>
+                        {% endif %}
                     {% endif %}
                 </div>
             </div>
