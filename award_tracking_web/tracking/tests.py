@@ -1,27 +1,37 @@
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from django.test import TestCase
+from django.contrib.auth import get_user_model
+from django.utils import timezone
 
 from .change_request_workflow import (
+    ChangeRequestValidationError,
     _serialize_basic_information_comparison_value,
     build_basic_information_field_snapshot_values,
+    resubmit_standalone_change_request,
     serialize_change_request_value,
 )
 from .forms import (
     GRANT_BASIC_INFORMATION_CHANGE_FIELDS,
     GrantBasicInformationChangeForm,
 )
-from .models import Form1
+from .models import (
+    ChangeAction,
+    ChangeRequest,
+    ChangeRequestField,
+    Form1,
+)
 
 
 class BusinessDateWorkflowRegressionTests(TestCase):
     """
     Protect business-date handling in Basic Information Change Requests.
 
-    Form1 currently stores contract and Internal GL business dates in
-    DateTimeField columns, while the web interface intentionally treats
-    them as calendar dates.
+    Form1 stores contract and Internal GL business dates as DateFields.
+    Legacy Change Request audit values may still contain timezone-aware
+    DateTimeField-era values, which must continue to compare by calendar
+    date.
     """
 
     def setUp(self):
@@ -338,4 +348,303 @@ class BusinessDateWorkflowRegressionTests(TestCase):
                 "proposed_value"
             ],
             "2021-11-02T00:00:00-07:00",
+        )
+
+class StandaloneResubmissionRegressionTests(TestCase):
+    """
+    Protect returned standalone resubmission boundaries.
+
+    A returned standalone request that is revised into a cross-grant
+    Internal GL conflict must remain standalone and must not advance to
+    a new revision. The Editor is instead guided to withdraw it and
+    begin again through Propose Changes as a Coordinated Change Request.
+    """
+
+    def setUp(self):
+        User = get_user_model()
+
+        self.editor = User.objects.create_user(
+            username="editor_test",
+            password="test-password",
+        )
+
+        self.approver = User.objects.create_user(
+            username="approver_test",
+            password="test-password",
+        )
+
+        self.grant = Form1.objects.create(
+            grant_id="A90001",
+            program_title="Regression Test Grant",
+            contracting_agency="Regression Test Agency",
+            contract_number="REG-001",
+            amendment_no=0,
+            contract_start_date=date(
+                2025,
+                1,
+                1,
+            ),
+            contract_end_date=date(
+                2025,
+                12,
+                31,
+            ),
+            contract_amount="100000.00",
+            funding_sources=(
+                Form1.FundingSource.NONFEDERAL
+            ),
+            federal_information_status=(
+                Form1.FederalInformationStatus
+                .NOT_APPLICABLE
+            ),
+            federal_grantor=None,
+            federal_aln=None,
+            internal_award_code=900,
+            internal_gl_start_date=date(
+                2025,
+                1,
+                1,
+            ),
+            internal_gl_end_date=date(
+                2025,
+                1,
+                31,
+            ),
+            status="active",
+        )
+
+        self.conflicting_grant = Form1.objects.create(
+            grant_id="A90002",
+            program_title="Conflicting Regression Grant",
+            contracting_agency="Regression Test Agency",
+            contract_number="REG-002",
+            amendment_no=0,
+            contract_start_date=date(
+                2025,
+                1,
+                1,
+            ),
+            contract_end_date=date(
+                2025,
+                12,
+                31,
+            ),
+            contract_amount="100000.00",
+            funding_sources=(
+                Form1.FundingSource.NONFEDERAL
+            ),
+            federal_information_status=(
+                Form1.FederalInformationStatus
+                .NOT_APPLICABLE
+            ),
+            federal_grantor=None,
+            federal_aln=None,
+            internal_award_code=900,
+            internal_gl_start_date=date(
+                2025,
+                3,
+                1,
+            ),
+            internal_gl_end_date=date(
+                2025,
+                3,
+                31,
+            ),
+            status="active",
+        )
+
+        self.change_request = ChangeRequest.objects.create(
+            grant_id=self.grant.grant_id,
+            request_type=(
+                ChangeRequest.RequestType.EDIT_GRANT
+            ),
+            status=ChangeRequest.Status.RETURNED,
+            current_revision=1,
+            submitted_by=self.editor,
+            submitted_at=timezone.now(),
+        )
+
+        original_proposal = {
+            field_name: getattr(
+                self.grant,
+                field_name,
+            )
+            for field_name
+            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        }
+
+        # Revision 1 proposed a legitimate change that did not overlap
+        # the second grant.
+        original_proposal[
+            "internal_gl_end_date"
+        ] = date(
+            2025,
+            2,
+            15,
+        )
+
+        snapshots = (
+            build_basic_information_field_snapshot_values(
+                grant=self.grant,
+                proposed_values=original_proposal,
+            )
+        )
+
+        ChangeRequestField.objects.bulk_create(
+            [
+                ChangeRequestField(
+                    change_request=self.change_request,
+                    revision_no=1,
+                    field_name=snapshot["field_name"],
+                    current_value=snapshot["current_value"],
+                    proposed_value=snapshot[
+                        "proposed_value"
+                    ],
+                )
+                for snapshot
+                in snapshots
+            ]
+        )
+
+        ChangeAction.objects.create(
+            change_request=self.change_request,
+            revision_no=1,
+            acted_by=self.approver,
+            action=ChangeAction.Action.RETURN,
+            comment="Please revise the GL assignment.",
+        )
+
+    def test_returned_standalone_gl_conflict_blocks_resubmission(
+            self,
+    ):
+        proposed_form_data = {
+            "program_title": self.grant.program_title,
+            "contracting_agency": (
+                self.grant.contracting_agency
+            ),
+            "contract_number": self.grant.contract_number,
+            "amendment_no": str(
+                self.grant.amendment_no
+            ),
+            "contract_start_date": (
+                self.grant.contract_start_date.isoformat()
+            ),
+            "contract_end_date": (
+                self.grant.contract_end_date.isoformat()
+            ),
+            "contract_amount": str(
+                self.grant.contract_amount
+            ),
+            "funding_sources": (
+                Form1.FundingSource.NONFEDERAL
+            ),
+            "federal_information_status": (
+                Form1.FederalInformationStatus
+                .NOT_APPLICABLE
+            ),
+            "federal_grantor": "",
+            "federal_aln": "",
+            "internal_award_code": "900",
+            "internal_gl_start_date": "2025-01-01",
+            "internal_gl_end_date": "2025-03-15",
+        }
+
+        revision_one_snapshot_count = (
+            ChangeRequestField.objects
+            .filter(
+                change_request=self.change_request,
+                revision_no=1,
+            )
+            .count()
+        )
+
+        with self.assertRaises(
+                ChangeRequestValidationError
+        ) as error_context:
+            resubmit_standalone_change_request(
+                change_request_id=(
+                    self.change_request.id
+                ),
+                resubmitter=self.editor,
+                proposed_form_data=(
+                    proposed_form_data
+                ),
+                comment="Revised GL dates.",
+            )
+
+        error_message = str(
+            error_context.exception
+        )
+
+        self.assertIn(
+            "A90002",
+            error_message,
+        )
+        self.assertIn(
+            "return to Review",
+            error_message,
+        )
+        self.assertIn(
+            "withdraw this Change Request",
+            error_message,
+        )
+        self.assertIn(
+            "Propose Changes",
+            error_message,
+        )
+        self.assertIn(
+            "Coordinated Change Request",
+            error_message,
+        )
+
+        self.change_request.refresh_from_db()
+        self.grant.refresh_from_db()
+
+        self.assertEqual(
+            self.change_request.status,
+            ChangeRequest.Status.RETURNED,
+        )
+        self.assertEqual(
+            self.change_request.current_revision,
+            1,
+        )
+
+        self.assertEqual(
+            ChangeRequestField.objects.filter(
+                change_request=self.change_request,
+                revision_no=1,
+            ).count(),
+            revision_one_snapshot_count,
+        )
+
+        self.assertFalse(
+            ChangeRequestField.objects.filter(
+                change_request=self.change_request,
+                revision_no=2,
+            ).exists()
+        )
+
+        self.assertFalse(
+            ChangeAction.objects.filter(
+                change_request=self.change_request,
+                revision_no=2,
+                action=ChangeAction.Action.RESUBMIT,
+            ).exists()
+        )
+
+        self.assertEqual(
+            self.grant.internal_gl_start_date,
+            date(
+                2025,
+                1,
+                1,
+            ),
+        )
+        self.assertEqual(
+            self.grant.internal_gl_end_date,
+            date(
+                2025,
+                1,
+                31,
+            ),
         )
