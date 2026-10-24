@@ -587,6 +587,12 @@ document.addEventListener('DOMContentLoaded', function () {
                         {% endif %}
                     </div>
                 {% else %}
+                    <div>
+                        Start all Basic Information changes here. If another grant
+                        must also be changed, you will be guided to create a
+                        Coordinated Change Request.
+                    </div>
+
                     <a
                         href="{% url 'create_grant_change_request' grant.grant_id %}"
                         class="button-common fiscal-exception-action-button"

@@ -3125,6 +3125,7 @@ def _validate_standalone_basic_information_overlap(
         *,
         change_request,
         proposed_values,
+        resubmission_guidance=False,
 ):
     """
     Validate one standalone edit's proposed Internal Award Code and
@@ -3153,16 +3154,36 @@ def _validate_standalone_basic_information_overlap(
     )
 
     if overlapping_grants.exists():
-        conflicting_grant_ids = ", ".join(
+        conflicting_grant_ids = list(
             overlapping_grants.values_list(
                 "grant_id",
                 flat=True,
             )
         )
 
+        conflicting_grant_text = ", ".join(
+            conflicting_grant_ids
+        )
+
+        if resubmission_guidance:
+            grant_word = (
+                "Grant"
+                if len(conflicting_grant_ids) == 1
+                else "Grants"
+            )
+
+            raise ChangeRequestValidationError(
+                "The revised Internal GL assignment conflicts with "
+                f"{grant_word} {conflicting_grant_text}. "
+                "If these grants also need changes, "
+                "return to Review, withdraw this Change Request, "
+                "then use Propose Changes from Grant Detail to create "
+                "a Coordinated Change Request."
+            )
+
         raise ChangeRequestValidationError(
             "The proposed Internal Award Code and GL date range overlap "
-            f"with: {conflicting_grant_ids}."
+            f"with: {conflicting_grant_text}."
         )
 
 
@@ -10567,6 +10588,7 @@ def resubmit_standalone_change_request(
                     proposed_values=(
                         validation_result.proposed_values
                     ),
+                    resubmission_guidance=True,
                 )
 
                 new_revision_no = (
