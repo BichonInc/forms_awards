@@ -1531,11 +1531,14 @@ def create_grant_change_request(request, grant_id):
                     )
 
                 form.add_error(
-                    "internal_gl_end_date",
+                    None,
                     (
-                        "The proposed Internal Award Code and GL date "
-                        "range overlap with: "
-                        f"{conflicting_grant_ids_text}."
+                        "The proposed Internal Award Code and GL date range "
+                        f"overlap with: {conflicting_grant_ids_text}. "
+                        "If changes to the conflicting grant records are also "
+                        "needed, select Create Coordinated Draft below. "
+                        "Otherwise, revise the proposed values to remove "
+                        "the overlap."
                     ),
                 )
             else:
