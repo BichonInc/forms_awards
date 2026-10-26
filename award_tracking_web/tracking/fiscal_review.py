@@ -24,6 +24,30 @@ def _money(value):
     return (value or ZERO).quantize(CENT)
 
 
+def _funding_sources_need_review(grant):
+    return (
+        not grant.funding_sources
+        or grant.funding_sources
+        == Form1.FundingSource.REVIEW_REQUIRED
+    )
+
+
+def _federal_information_needs_review(grant):
+    if (
+        grant.funding_sources
+        == Form1.FundingSource.NONFEDERAL
+    ):
+        return False
+
+    return (
+        grant.federal_information_status
+        not in {
+            Form1.FederalInformationStatus.COMPLETE,
+            Form1.FederalInformationStatus.NO_ALN,
+        }
+    )
+
+
 def _get_fiscal_year_totals(model, grant_id):
     """
     Return current source totals by fiscal year for a grant.
@@ -110,6 +134,44 @@ def get_grant_fiscal_review(grant):
         )
 
     reasons = []
+
+    # ---------------------------------------------------------
+    # Funding Sources classification
+    # ---------------------------------------------------------
+
+    funding_sources_need_review = (
+        _funding_sources_need_review(grant)
+    )
+
+    if funding_sources_need_review:
+        reasons.append(
+            {
+                "code": "FUNDING_SOURCES_CLASSIFICATION",
+                "message": (
+                    "Funding Sources has not yet been classified "
+                    "as Federal, Non-federal, or Both."
+                ),
+            }
+        )
+
+    # ---------------------------------------------------------
+    # Federal Information
+    # ---------------------------------------------------------
+
+    federal_information_needs_review = (
+        _federal_information_needs_review(grant)
+    )
+
+    if federal_information_needs_review:
+        reasons.append(
+            {
+                "code": "FEDERAL_INFORMATION",
+                "message": (
+                    "Federal funding information is pending "
+                    "or incomplete."
+                ),
+            }
+        )
 
     # ---------------------------------------------------------
     # Program Income Treatment
@@ -294,6 +356,12 @@ def get_grant_fiscal_review(grant):
         "total_subsequent": total_subsequent,
         "contract_total_allowed_expenditure": (
             contract_total_allowed_expenditure
+        ),
+        "funding_sources_need_review": (
+            funding_sources_need_review
+        ),
+        "federal_information_needs_review": (
+            federal_information_needs_review
         ),
         "total_program_income": total_program_income,
         "contract_balance": contract_balance,
@@ -550,6 +618,16 @@ def get_grant_fiscal_review_summaries(grants):
             )
 
         reason_codes = []
+
+        if _funding_sources_need_review(grant):
+            reason_codes.append(
+                "FUNDING_SOURCES_CLASSIFICATION"
+            )
+
+        if _federal_information_needs_review(grant):
+            reason_codes.append(
+                "FEDERAL_INFORMATION"
+            )
 
         if (
             total_program_income != ZERO
