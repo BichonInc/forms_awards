@@ -52,6 +52,86 @@
             border-radius: 5px;
         }
 
+        .comparison-header,
+        .comparison-row {
+            display: grid;
+            grid-template-columns: 220px minmax(220px, 1fr) minmax(340px, 1.3fr);
+            column-gap: 20px;
+            align-items: start;
+        }
+
+        .comparison-header {
+            margin-top: 20px;
+            padding: 10px 12px;
+            background-color: #f2f2f2;
+            border: 1px solid #ccc;
+            font-weight: bold;
+        }
+
+        .comparison-row {
+            padding: 12px;
+            border-left: 1px solid #ddd;
+            border-right: 1px solid #ddd;
+            border-bottom: 1px solid #ddd;
+        }
+
+        .field-label {
+            font-weight: bold;
+        }
+
+        .current-value {
+            padding-top: 4px;
+            overflow-wrap: anywhere;
+        }
+
+        .proposed-value input,
+        .proposed-value select {
+            width: 320px;
+            max-width: 100%;
+            box-sizing: border-box;
+        }
+
+        .proposed-value input[type="text"] + input[type="text"] {
+            margin-top: 6px;
+        }
+
+        .error-message {
+            margin-top: 5px;
+            color: #b00020;
+        }
+
+        .comparison-row.has-change {
+            background-color: #fff8e1;
+        }
+
+        .comparison-row.has-change .proposed-value {
+            font-weight: 600;
+        }
+
+        @media (max-width: 850px) {
+            .comparison-header {
+                display: none;
+            }
+
+            .comparison-row {
+                grid-template-columns: 1fr;
+                row-gap: 6px;
+            }
+
+            .current-value::before {
+                content: "Current: ";
+                font-weight: bold;
+            }
+
+            .proposed-value::before {
+                content: "Proposed: ";
+                display: block;
+                margin-bottom: 4px;
+                font-weight: bold;
+            }
+        }
+
+
         .form-group {
             margin-bottom: 16px;
         }
@@ -162,6 +242,544 @@
         }
 
     </style>
+
+    <script>
+        document.addEventListener(
+            "DOMContentLoaded",
+            function () {
+
+                document.querySelectorAll(
+                    ".grant-card"
+                ).forEach(function (card) {
+
+                    const prefix = (
+                        card.dataset.formPrefix
+                    );
+
+                    function field(name) {
+                        return card.querySelector(
+                            '[name="' +
+                            prefix +
+                            '-' +
+                            name +
+                            '"]'
+                        );
+                    }
+
+                    const addNewPairs = [
+                        [
+                            "program_title",
+                            "new_program_title"
+                        ],
+                        [
+                            "contracting_agency",
+                            "new_contracting_agency"
+                        ],
+                        [
+                            "federal_grantor",
+                            "new_federal_grantor"
+                        ],
+                        [
+                            "federal_aln",
+                            "new_federal_aln"
+                        ],
+                    ];
+
+                    function configureAddNewField(
+                        selectName,
+                        inputName
+                    ) {
+                        const selectElement = (
+                            field(selectName)
+                        );
+
+                        const inputElement = (
+                            field(inputName)
+                        );
+
+                        if (
+                            !selectElement ||
+                            !inputElement
+                        ) {
+                            return;
+                        }
+
+                        function updateAddNewField() {
+                            const showInput = (
+                                selectElement.value
+                                === "Add New"
+                            );
+
+                            inputElement.style.display = (
+                                showInput
+                                ? "inline-block"
+                                : "none"
+                            );
+
+                            inputElement.required = (
+                                showInput
+                            );
+
+                            if (!showInput) {
+                                inputElement.value = "";
+                            }
+                        }
+
+                        selectElement.addEventListener(
+                            "change",
+                            updateAddNewField
+                        );
+
+                        updateAddNewField();
+                    }
+
+                    addNewPairs.forEach(
+                        function (pair) {
+                            configureAddNewField(
+                                pair[0],
+                                pair[1]
+                            );
+                        }
+                    );
+
+                    const fundingField = (
+                        field("funding_sources")
+                    );
+
+                    const statusField = (
+                        field(
+                            "federal_information_status"
+                        )
+                    );
+
+                    const grantorField = (
+                        field("federal_grantor")
+                    );
+
+                    const newGrantorField = (
+                        field("new_federal_grantor")
+                    );
+
+                    const alnField = (
+                        field("federal_aln")
+                    );
+
+                    const newAlnField = (
+                        field("new_federal_aln")
+                    );
+
+                    const statusGroup = (
+                        card.querySelector(
+                            ".federal-status-group"
+                        )
+                    );
+
+                    const grantorGroup = (
+                        card.querySelector(
+                            ".federal-grantor-group"
+                        )
+                    );
+
+                    const alnGroup = (
+                        card.querySelector(
+                            ".federal-aln-group"
+                        )
+                    );
+
+                    const notApplicableOption = (
+                        statusField
+                        ? statusField.querySelector(
+                            'option[value="NOT_APPLICABLE"]'
+                        )
+                        : null
+                    );
+
+                    function hasServerError(group) {
+                        return (
+                            group &&
+                            group.querySelector(
+                                ".error-message, .errorlist"
+                            )
+                        );
+                    }
+
+                    function setGroupVisibility(
+                        group,
+                        visible
+                    ) {
+                        if (!group) {
+                            return;
+                        }
+
+                        group.style.display = (
+                            visible ||
+                            hasServerError(group)
+                        )
+                            ? "block"
+                            : "none";
+                    }
+
+                    function setFieldsDisabled(
+                        fields,
+                        disabled
+                    ) {
+                        fields.forEach(
+                            function (item) {
+                                if (item) {
+                                    item.disabled = (
+                                        disabled
+                                    );
+                                }
+                            }
+                        );
+                    }
+
+                    function clearFields(fields) {
+                        fields.forEach(
+                            function (item) {
+                                if (item) {
+                                    item.value = "";
+                                }
+                            }
+                        );
+                    }
+
+                    function updateFederalFields() {
+                        if (
+                            !fundingField ||
+                            !statusField
+                        ) {
+                            return;
+                        }
+
+                        const fundingValue = (
+                            fundingField.value
+                        );
+
+                        if (fundingValue === "") {
+                            if (
+                                notApplicableOption
+                            ) {
+                                notApplicableOption
+                                    .disabled = true;
+
+                                notApplicableOption
+                                    .hidden = true;
+                            }
+
+                            statusField.value = "";
+
+                            setGroupVisibility(
+                                statusGroup,
+                                false
+                            );
+
+                            setGroupVisibility(
+                                grantorGroup,
+                                false
+                            );
+
+                            setGroupVisibility(
+                                alnGroup,
+                                false
+                            );
+
+                            setFieldsDisabled(
+                                [
+                                    grantorField,
+                                    newGrantorField,
+                                    alnField,
+                                    newAlnField,
+                                ],
+                                true
+                            );
+
+                            return;
+                        }
+
+                        if (
+                            fundingValue
+                            === "NONFEDERAL"
+                        ) {
+                            if (
+                                notApplicableOption
+                            ) {
+                                notApplicableOption
+                                    .disabled = false;
+
+                                notApplicableOption
+                                    .hidden = false;
+                            }
+
+                            statusField.value = (
+                                "NOT_APPLICABLE"
+                            );
+
+                            setGroupVisibility(
+                                statusGroup,
+                                false
+                            );
+
+                            setGroupVisibility(
+                                grantorGroup,
+                                false
+                            );
+
+                            setGroupVisibility(
+                                alnGroup,
+                                false
+                            );
+
+                            clearFields(
+                                [
+                                    grantorField,
+                                    newGrantorField,
+                                    alnField,
+                                    newAlnField,
+                                ]
+                            );
+
+                            setFieldsDisabled(
+                                [
+                                    grantorField,
+                                    newGrantorField,
+                                    alnField,
+                                    newAlnField,
+                                ],
+                                true
+                            );
+
+                            return;
+                        }
+
+                        if (notApplicableOption) {
+                            notApplicableOption
+                                .disabled = true;
+
+                            notApplicableOption
+                                .hidden = true;
+                        }
+
+                        if (
+                            statusField.value
+                            === "NOT_APPLICABLE"
+                        ) {
+                            statusField.value = "";
+                        }
+
+                        setGroupVisibility(
+                            statusGroup,
+                            true
+                        );
+
+                        setFieldsDisabled(
+                            [
+                                grantorField,
+                                newGrantorField,
+                                alnField,
+                                newAlnField,
+                            ],
+                            false
+                        );
+
+                        const federalStatus = (
+                            statusField.value
+                        );
+
+                        if (
+                            federalStatus
+                            === "NO_ALN"
+                        ) {
+                            setGroupVisibility(
+                                grantorGroup,
+                                true
+                            );
+
+                            setGroupVisibility(
+                                alnGroup,
+                                false
+                            );
+
+                            if (
+                                !hasServerError(
+                                    alnGroup
+                                )
+                            ) {
+                                clearFields(
+                                    [
+                                        alnField,
+                                        newAlnField,
+                                    ]
+                                );
+
+                                setFieldsDisabled(
+                                    [
+                                        alnField,
+                                        newAlnField,
+                                    ],
+                                    true
+                                );
+                            }
+
+                        } else if (
+                            federalStatus
+                            === "PENDING" ||
+                            federalStatus
+                            === "COMPLETE"
+                        ) {
+                            setGroupVisibility(
+                                grantorGroup,
+                                true
+                            );
+
+                            setGroupVisibility(
+                                alnGroup,
+                                true
+                            );
+
+                        } else {
+                            setGroupVisibility(
+                                grantorGroup,
+                                false
+                            );
+
+                            setGroupVisibility(
+                                alnGroup,
+                                false
+                            );
+                        }
+                    }
+
+                    if (fundingField) {
+                        fundingField.addEventListener(
+                            "change",
+                            updateFederalFields
+                        );
+                    }
+
+                    if (statusField) {
+                        statusField.addEventListener(
+                            "change",
+                            updateFederalFields
+                        );
+                    }
+
+                    updateFederalFields();
+
+                    function getEffectiveProposedValue(
+                        fieldName
+                    ) {
+                        const proposedField = field(
+                            fieldName
+                        );
+
+                        if (!proposedField) {
+                            return "";
+                        }
+
+                        const addNewPair = addNewPairs.find(
+                            function (pair) {
+                                return pair[0] === fieldName;
+                            }
+                        );
+
+                        if (
+                            addNewPair &&
+                            proposedField.value === "Add New"
+                        ) {
+                            const newValueField = field(
+                                addNewPair[1]
+                            );
+
+                            return newValueField
+                                ? newValueField.value
+                                : "";
+                        }
+
+                        return proposedField.value;
+                    }
+
+                    function normalizeComparisonValue(
+                        fieldName,
+                        value
+                    ) {
+                        let normalizedValue = (
+                            value || ""
+                        ).trim();
+
+                        if (
+                            fieldName === "contract_amount" &&
+                            normalizedValue !== ""
+                        ) {
+                            const numericValue = Number(
+                                normalizedValue.replace(
+                                    /,/g,
+                                    ""
+                                )
+                            );
+
+                            if (!Number.isNaN(numericValue)) {
+                                normalizedValue = (
+                                    numericValue.toFixed(2)
+                                );
+                            }
+                        }
+
+                        return normalizedValue;
+                    }
+
+                    function updateChangeHighlights() {
+                        card.querySelectorAll(
+                            ".comparison-row[data-field-name]"
+                        ).forEach(function (row) {
+                            const fieldName = (
+                                row.dataset.fieldName
+                            );
+
+                            const currentValue = (
+                                normalizeComparisonValue(
+                                    fieldName,
+                                    row.dataset.currentValue || ""
+                                )
+                            );
+
+                            const proposedValue = (
+                                normalizeComparisonValue(
+                                    fieldName,
+                                    getEffectiveProposedValue(
+                                        fieldName
+                                    )
+                                )
+                            );
+
+                            row.classList.toggle(
+                                "has-change",
+                                proposedValue !== currentValue
+                            );
+                        });
+                    }
+
+                    card.querySelectorAll(
+                        ".proposed-value input, " +
+                        ".proposed-value select"
+                    ).forEach(function (control) {
+                        control.addEventListener(
+                            "input",
+                            updateChangeHighlights
+                        );
+
+                        control.addEventListener(
+                            "change",
+                            updateChangeHighlights
+                        );
+                    });
+
+                    updateChangeHighlights();
+                });
+            }
+        );
+    </script>
+
 </head>
 
 <body>
@@ -389,7 +1007,10 @@
 
         {% for card in form_cards %}
 
-            <div class="grant-card">
+            <div
+                class="grant-card"
+                data-form-prefix="{{ card.form.prefix }}"
+            >
 
                 <div class="grant-summary">
 
@@ -424,29 +1045,300 @@
                     {{ hidden }}
                 {% endfor %}
 
-                {% for field in card.form.visible_fields %}
+                <div class="comparison-header">
+                    <div>Field</div>
+                    <div>Current Value</div>
+                    <div>Proposed Value</div>
+                </div>
 
-                    <div class="form-group">
-
-                        {{ field.label_tag }}
-
-                        {{ field }}
-
-                        {% if field.help_text %}
-                            <div>
-                                {{ field.help_text }}
-                            </div>
-                        {% endif %}
-
-                        {% if field.errors %}
-                            <div class="field-error">
-                                {{ field.errors }}
-                            </div>
-                        {% endif %}
-
+                <div
+                    class="comparison-row"
+                    data-field-name="program_title"
+                    data-current-value="{{ card.current_serialized_values.program_title }}"
+                >
+                    <div class="field-label">
+                        Program Title:
                     </div>
+                    <div class="current-value">
+                        {{ card.current_values.program_title }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.program_title }}
+                        {{ card.form.new_program_title }}
 
-                {% endfor %}
+                        {% if card.form.program_title.errors %}
+                            <div class="error-message">
+                                {{ card.form.program_title.errors }}
+                            </div>
+                        {% endif %}
+
+                        {% if card.form.new_program_title.errors %}
+                            <div class="error-message">
+                                {{ card.form.new_program_title.errors }}
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <div
+                    class="comparison-row"
+                    data-field-name="contracting_agency"
+                    data-current-value="{{ card.current_serialized_values.contracting_agency }}"
+                >
+                    <div class="field-label">
+                        Contracting Agency:
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.contracting_agency }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.contracting_agency }}
+                        {{ card.form.new_contracting_agency }}
+
+                        {% if card.form.contracting_agency.errors %}
+                            <div class="error-message">
+                                {{ card.form.contracting_agency.errors }}
+                            </div>
+                        {% endif %}
+
+                        {% if card.form.new_contracting_agency.errors %}
+                            <div class="error-message">
+                                {{ card.form.new_contracting_agency.errors }}
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <div
+                    class="comparison-row"
+                    data-field-name="contract_number"
+                    data-current-value="{{ card.current_serialized_values.contract_number }}"
+                >
+                    <div class="field-label">
+                        Contract Number:
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.contract_number }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.contract_number }}
+                        {{ card.form.contract_number.errors }}
+                    </div>
+                </div>
+
+                <div
+                    class="comparison-row"
+                    data-field-name="amendment_no"
+                    data-current-value="{{ card.current_serialized_values.amendment_no }}"
+                >
+                    <div class="field-label">
+                        Amendment Number:
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.amendment_no }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.amendment_no }}
+                        {{ card.form.amendment_no.errors }}
+                    </div>
+                </div>
+
+                <div
+                    class="comparison-row"
+                    data-field-name="contract_start_date"
+                    data-current-value="{{ card.current_serialized_values.contract_start_date }}"
+                >
+                    <div class="field-label">
+                        Contract Start Date:
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.contract_start_date }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.contract_start_date }}
+                        {{ card.form.contract_start_date.errors }}
+                    </div>
+                </div>
+
+                <div
+                    class="comparison-row"
+                    data-field-name="contract_end_date"
+                    data-current-value="{{ card.current_serialized_values.contract_end_date }}"
+                >
+                    <div class="field-label">
+                        Contract End Date:
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.contract_end_date }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.contract_end_date }}
+                        {{ card.form.contract_end_date.errors }}
+                    </div>
+                </div>
+
+                <div
+                    class="comparison-row"
+                    data-field-name="contract_amount"
+                    data-current-value="{{ card.current_serialized_values.contract_amount }}"
+                >
+                    <div class="field-label">
+                        Contract Amount:
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.contract_amount }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.contract_amount }}
+                        {{ card.form.contract_amount.errors }}
+                    </div>
+                </div>
+
+                <div
+                    class="comparison-row"
+                    data-field-name="funding_sources"
+                    data-current-value="{{ card.current_serialized_values.funding_sources }}"
+                >
+                    <div class="field-label">
+                        Funding Sources:
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.funding_sources }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.funding_sources }}
+                        {{ card.form.funding_sources.errors }}
+                    </div>
+                </div>
+
+                <div
+                    class="comparison-row"
+                    data-field-name="federal_information_status"
+                    data-current-value="{{ card.current_serialized_values.federal_information_status }}"
+                >
+                    <div class="field-label">
+                        Federal Information Status:
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.federal_information_status }}
+                    </div>
+                    <div class="proposed-value federal-status-group">
+                        {{ card.form.federal_information_status }}
+                        {{ card.form.federal_information_status.errors }}
+                    </div>
+                </div>
+
+                <div
+                    class="comparison-row"
+                    data-field-name="federal_grantor"
+                    data-current-value="{{ card.current_serialized_values.federal_grantor }}"
+                >
+                    <div class="field-label">
+                        Federal Grantor:
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.federal_grantor }}
+                    </div>
+                    <div class="proposed-value federal-grantor-group">
+                        {{ card.form.federal_grantor }}
+                        {{ card.form.new_federal_grantor }}
+
+                        {% if card.form.federal_grantor.errors %}
+                            <div class="error-message">
+                                {{ card.form.federal_grantor.errors }}
+                            </div>
+                        {% endif %}
+
+                        {% if card.form.new_federal_grantor.errors %}
+                            <div class="error-message">
+                                {{ card.form.new_federal_grantor.errors }}
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <div
+                    class="comparison-row"
+                    data-field-name="federal_aln"
+                    data-current-value="{{ card.current_serialized_values.federal_aln }}"
+                >
+                    <div class="field-label">
+                        Federal ALN:
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.federal_aln }}
+                    </div>
+                    <div class="proposed-value federal-aln-group">
+                        {{ card.form.federal_aln }}
+                        {{ card.form.new_federal_aln }}
+
+                        {% if card.form.federal_aln.value == "Add New" %}
+                            {% if card.form.new_federal_aln.errors %}
+                                <div class="error-message">
+                                    {{ card.form.new_federal_aln.errors }}
+                                </div>
+                            {% endif %}
+                        {% else %}
+                            {% if card.form.federal_aln.errors %}
+                                <div class="error-message">
+                                    {{ card.form.federal_aln.errors }}
+                                </div>
+                            {% endif %}
+                        {% endif %}
+                    </div>
+                </div>
+
+                <div
+                    class="comparison-row"
+                    data-field-name="internal_award_code"
+                    data-current-value="{{ card.current_serialized_values.internal_award_code }}"
+                >
+                    <div class="field-label">
+                        Internal Award Code:
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.internal_award_code }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.internal_award_code }}
+                        {{ card.form.internal_award_code.errors }}
+                    </div>
+                </div>
+
+                <div
+                    class="comparison-row"
+                    data-field-name="internal_gl_start_date"
+                    data-current-value="{{ card.current_serialized_values.internal_gl_start_date }}"
+                >
+                    <div class="field-label">
+                        Internal GL Start Date:
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.internal_gl_start_date }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.internal_gl_start_date }}
+                        {{ card.form.internal_gl_start_date.errors }}
+                    </div>
+                </div>
+
+                <div
+                    class="comparison-row"
+                    data-field-name="internal_gl_end_date"
+                    data-current-value="{{ card.current_serialized_values.internal_gl_end_date }}"
+                >
+                    <div class="field-label">
+                        Internal GL End Date:
+                    </div>
+                    <div class="current-value">
+                        {{ card.current_values.internal_gl_end_date }}
+                    </div>
+                    <div class="proposed-value">
+                        {{ card.form.internal_gl_end_date }}
+                        {{ card.form.internal_gl_end_date.errors }}
+                    </div>
+                </div>
+
 
             </div>
 

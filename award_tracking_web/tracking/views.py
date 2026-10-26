@@ -2876,15 +2876,35 @@ def coordinated_change_resubmit(
                 desired_values,
             )
 
+        current_serialized_values = (
+            current_values_by_grant[
+                child.grant_id
+            ]
+        )
+
+        current_display_values = {
+            field_name: (
+                format_change_request_display_value(
+                    field_name,
+                    current_serialized_values[
+                        field_name
+                    ],
+                )
+            )
+            for field_name
+            in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+        }
+
         form_cards.append(
             {
                 "change_request": child,
                 "grant": grant,
                 "form": form,
                 "current_values": (
-                    current_values_by_grant[
-                        child.grant_id
-                    ]
+                    current_display_values
+                ),
+                "current_serialized_values": (
+                    current_serialized_values
                 ),
             }
         )
@@ -4521,6 +4541,11 @@ def coordinated_change_review(
         == CoordinatedChange.Status.PENDING
     )
 
+    is_returned_package = (
+        coordinated_change.status
+        == CoordinatedChange.Status.RETURNED
+    )
+
     is_history_package = (
             coordinated_change.status
             in (
@@ -4530,7 +4555,10 @@ def coordinated_change_review(
             )
     )
 
-    if is_active_package:
+    if (
+        is_active_package
+        or is_returned_package
+    ):
         if not user_has_any_role(
             request.user,
             ROLE_EDITOR,
@@ -4553,6 +4581,16 @@ def coordinated_change_review(
     ):
         raise PermissionDenied(
             "Completed coordinated packages are read-only."
+        )
+
+    if (
+        request.method == "POST"
+        and is_returned_package
+    ):
+        raise PermissionDenied(
+            "Returned coordinated packages are read-only on "
+            "the review page. Use Revise Coordinated Package "
+            "to make changes."
         )
 
     children = tuple(
@@ -4596,6 +4634,11 @@ def coordinated_change_review(
     if is_active_package:
         expected_child_status = (
             ChangeRequest.Status.PENDING
+        )
+
+    elif is_returned_package:
+        expected_child_status = (
+            ChangeRequest.Status.RETURNED
         )
 
     elif (
@@ -5149,6 +5192,15 @@ def coordinated_change_review(
 
     can_deny = can_approve
 
+    can_revise = (
+        is_returned_package
+        and user_has_any_role(
+            request.user,
+            ROLE_EDITOR,
+        )
+        and not workflow_errors
+    )
+
     can_withdraw = (
         is_active_package
         and user_has_any_role(
@@ -5582,6 +5634,10 @@ def coordinated_change_review(
             "is_history_package": (
                 is_history_package
             ),
+            "is_returned_package": (
+                is_returned_package
+            ),
+            "can_revise": can_revise,
         },
     )
 

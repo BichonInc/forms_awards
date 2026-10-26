@@ -522,6 +522,26 @@
 
         {% if not is_history_package %}
 
+        {% if is_returned_package %}
+
+            <div class="workflow-alert">
+                <p>
+                    This coordinated package was returned for revision.
+                    Package membership is fixed.
+                </p>
+
+                {% if can_revise %}
+                    <a
+                        href="{% url 'coordinated_change_resubmit' coordinated_change.id %}"
+                        class="button-common approve-button"
+                    >
+                        Revise Coordinated Package
+                    </a>
+                {% endif %}
+            </div>
+
+        {% endif %}
+
             {% if can_return %}
 
                 <div class="return-panel">
