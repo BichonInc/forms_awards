@@ -5800,6 +5800,8 @@ def change_request_review(
         revision_submitter_id = None
         revision_submitter_error = str(exc)
 
+    current_revision_submitted_at = None
+
     if revision_no == 1:
         current_revision_submitter = (
             change_request.submitted_by
@@ -5809,6 +5811,12 @@ def change_request_review(
             )
             else None
         )
+
+        if current_revision_submitter is not None:
+            current_revision_submitted_at = (
+                change_request.submitted_at
+            )
+
         resubmit_action = None
     else:
         resubmit_actions = list(
@@ -5832,6 +5840,11 @@ def change_request_review(
                 )
                 else None
             )
+
+            if current_revision_submitter is not None:
+                current_revision_submitted_at = (
+                    resubmit_action.acted_at
+                )
         else:
             resubmit_action = None
             current_revision_submitter = None
@@ -6074,6 +6087,18 @@ def change_request_review(
                     ),
                 }
             )
+
+    open_integrity_issue_cards = [
+        card
+        for card in integrity_issue_cards
+        if card["issue"].status == "OPEN"
+    ]
+
+    closed_integrity_issue_cards = [
+        card
+        for card in integrity_issue_cards
+        if card["issue"].status == "CLOSED"
+    ]
 
     is_integrity_administrator = (
         user_has_any_role(
@@ -6536,6 +6561,9 @@ def change_request_review(
             "current_revision_submitter": (
                 current_revision_submitter
             ),
+            "current_revision_submitted_at": (
+                current_revision_submitted_at
+            ),
             "resubmit_action": resubmit_action,
             "revision_submitter_error": (
                 revision_submitter_error
@@ -6543,6 +6571,12 @@ def change_request_review(
             "can_resubmit": can_resubmit,
             "integrity_issue_cards": (
                 integrity_issue_cards
+            ),
+            "open_integrity_issue_cards": (
+                open_integrity_issue_cards
+            ),
+            "closed_integrity_issue_cards": (
+                closed_integrity_issue_cards
             ),
             "open_integrity_issue": (
                 open_integrity_issue
