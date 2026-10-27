@@ -4407,24 +4407,59 @@ def change_request_history(request, grant_id):
     for change_request in change_requests:
         actions = list(change_request.actions.all())
 
-        # Coordinated requests keep their existing package-level
-        # history behavior for now. The standalone revision-history
-        # enhancement below must not alter coordinated navigation.
+        # Coordinated requests remain package-level navigation,
+        # but the displayed submission metadata must correspond
+        # to the package's current formal revision.
         if change_request.coordinated_change_id is not None:
+            revision_no = (
+                change_request.current_revision
+            )
+
+            if revision_no == 1:
+                revision_submitter = (
+                    change_request.submitted_by
+                )
+                revision_submitted_at = (
+                    change_request.submitted_at
+                )
+
+            else:
+                resubmit_actions = [
+                    action
+                    for action in actions
+                    if (
+                        action.revision_no == revision_no
+                        and action.action
+                        == ChangeAction.Action.RESUBMIT
+                    )
+                ]
+
+                if len(resubmit_actions) == 1:
+                    resubmit_action = (
+                        resubmit_actions[0]
+                    )
+                    revision_submitter = (
+                        resubmit_action.acted_by
+                    )
+                    revision_submitted_at = (
+                        resubmit_action.acted_at
+                    )
+                else:
+                    revision_submitter = None
+                    revision_submitted_at = None
+
             history_rows.append(
                 {
                     "change_request": change_request,
-                    "revision_no": (
-                        change_request.current_revision
-                    ),
+                    "revision_no": revision_no,
                     "status_label": (
                         change_request.get_status_display()
                     ),
                     "submitted_by": (
-                        change_request.submitted_by
+                        revision_submitter
                     ),
                     "submitted_at": (
-                        change_request.submitted_at
+                        revision_submitted_at
                     ),
                     "use_revision_url": False,
                 }
@@ -4800,16 +4835,21 @@ def coordinated_change_review(
         revision_submitter_id = None
 
     current_revision_submitter = None
+    current_revision_submitted_at = None
 
     if revision_submitter_id is not None:
 
-        if (
-            coordinated_change.submitted_by_id
-            == revision_submitter_id
-        ):
-            current_revision_submitter = (
-                coordinated_change.submitted_by
-            )
+        if revision_no == 1:
+            if (
+                coordinated_change.submitted_by_id
+                == revision_submitter_id
+            ):
+                current_revision_submitter = (
+                    coordinated_change.submitted_by
+                )
+                current_revision_submitted_at = (
+                    coordinated_change.submitted_at
+                )
 
         elif children:
             resubmit_action = (
@@ -4837,6 +4877,9 @@ def coordinated_change_review(
             if resubmit_action is not None:
                 current_revision_submitter = (
                     resubmit_action.acted_by
+                )
+                current_revision_submitted_at = (
+                    resubmit_action.acted_at
                 )
 
     # ---------------------------------------------------------
@@ -5610,6 +5653,9 @@ def coordinated_change_review(
             "revision_no": revision_no,
             "current_revision_submitter": (
                 current_revision_submitter
+            ),
+            "current_revision_submitted_at": (
+                current_revision_submitted_at
             ),
             "revision_submitter_error": (
                 revision_submitter_error

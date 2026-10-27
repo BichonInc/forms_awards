@@ -271,8 +271,8 @@
 
         <p>
             <strong>Submitted At:</strong>
-            {% if coordinated_change.submitted_at %}
-                {{ coordinated_change.submitted_at|date:"M j, Y, g:i A" }}
+            {% if current_revision_submitted_at %}
+                {{ current_revision_submitted_at|date:"M j, Y, g:i A" }}
             {% else %}
                 Unavailable
             {% endif %}
