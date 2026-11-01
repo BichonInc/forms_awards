@@ -252,7 +252,7 @@
 
         <p>
             <strong>Status:</strong>
-            {{ coordinated_change.get_status_display }}
+            {{ revision_status_label }}
         </p>
 
         <p>
@@ -307,6 +307,37 @@
         {% endif %}
 
     </div>
+
+    {% if historical_return_action %}
+        <div class="return-panel">
+
+            <h2>Package Return for Revision</h2>
+
+            <p>
+                <strong>Returned By:</strong>
+                {{ historical_return_action.acted_by.username }}
+            </p>
+
+            <p>
+                <strong>Returned At:</strong>
+                {{ historical_return_action.acted_at|date:"M j, Y, g:i A" }}
+            </p>
+
+            <p>
+                <strong>Return Feedback:</strong><br>
+                {{ historical_return_action.comment }}
+            </p>
+
+            <p>
+                <em>
+                    This Return for Revision action is mirrored on every
+                    child Change Request in the coordinated package.
+                </em>
+            </p>
+
+        </div>
+    {% endif %}
+
     {% if deny_action %}
         <div class="deny-history">
 
@@ -440,7 +471,11 @@
 
                 <p>
                     <strong>Status:</strong>
-                    {{ card.change_request.get_status_display }}
+                    {% if is_historical_revision %}
+                        {{ revision_status_label }}
+                    {% else %}
+                        {{ card.change_request.get_status_display }}
+                    {% endif %}
                 </p>
 
                 {% if card.grant %}

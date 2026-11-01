@@ -113,10 +113,20 @@
             <tbody>
             {% for row in history_rows %}
             <tr>
-                <td>{{ row.change_request.id }}</td>
+                <td>
+                    {% if row.use_coordinated_revision_url %}
+                        Package {{ row.coordinated_change_id }}
+                    {% else %}
+                        {{ row.change_request.id }}
+                    {% endif %}
+                </td>
 
                 <td>
-                    {{ row.change_request.get_request_type_display }}
+                    {% if row.use_coordinated_revision_url %}
+                        Coordinated Change
+                    {% else %}
+                        {{ row.change_request.get_request_type_display }}
+                    {% endif %}
                 </td>
 
                 <td>
@@ -136,7 +146,14 @@
                 </td>
 
                 <td>
-                    {% if row.use_revision_url %}
+                    {% if row.use_coordinated_revision_url %}
+                        <a
+                            href="{% url 'coordinated_change_revision_review' row.coordinated_change_id row.revision_no %}"
+                            class="button-common view-button"
+                        >
+                            View
+                        </a>
+                    {% elif row.use_revision_url %}
                         <a
                             href="{% url 'change_request_revision_review' row.change_request.id row.revision_no %}"
                             class="button-common view-button"

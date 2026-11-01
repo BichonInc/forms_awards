@@ -4407,63 +4407,92 @@ def change_request_history(request, grant_id):
     for change_request in change_requests:
         actions = list(change_request.actions.all())
 
-        # Coordinated requests remain package-level navigation,
-        # but the displayed submission metadata must correspond
-        # to the package's current formal revision.
+        # Completed coordinated packages expose every formal
+        # revision in read-only history, matching standalone and
+        # New Grant revision-history behavior.
         if change_request.coordinated_change_id is not None:
-            revision_no = (
-                change_request.current_revision
-            )
-
-            if revision_no == 1:
-                revision_submitter = (
-                    change_request.submitted_by
-                )
-                revision_submitted_at = (
-                    change_request.submitted_at
-                )
-
-            else:
-                resubmit_actions = [
-                    action
-                    for action in actions
-                    if (
-                        action.revision_no == revision_no
-                        and action.action
-                        == ChangeAction.Action.RESUBMIT
-                    )
-                ]
-
-                if len(resubmit_actions) == 1:
-                    resubmit_action = (
-                        resubmit_actions[0]
-                    )
+            for revision_no in range(
+                change_request.current_revision,
+                0,
+                -1,
+            ):
+                if revision_no == 1:
                     revision_submitter = (
-                        resubmit_action.acted_by
+                        change_request.submitted_by
                     )
                     revision_submitted_at = (
-                        resubmit_action.acted_at
+                        change_request.submitted_at
                     )
-                else:
-                    revision_submitter = None
-                    revision_submitted_at = None
 
-            history_rows.append(
-                {
-                    "change_request": change_request,
-                    "revision_no": revision_no,
-                    "status_label": (
-                        change_request.get_status_display()
-                    ),
-                    "submitted_by": (
-                        revision_submitter
-                    ),
-                    "submitted_at": (
-                        revision_submitted_at
-                    ),
-                    "use_revision_url": False,
-                }
-            )
+                else:
+                    resubmit_actions = [
+                        action
+                        for action in actions
+                        if (
+                            action.revision_no == revision_no
+                            and action.action
+                            == ChangeAction.Action.RESUBMIT
+                        )
+                    ]
+
+                    if len(resubmit_actions) == 1:
+                        resubmit_action = (
+                            resubmit_actions[0]
+                        )
+                        revision_submitter = (
+                            resubmit_action.acted_by
+                        )
+                        revision_submitted_at = (
+                            resubmit_action.acted_at
+                        )
+                    else:
+                        revision_submitter = None
+                        revision_submitted_at = None
+
+                if (
+                    revision_no
+                    == change_request.current_revision
+                ):
+                    status_label = (
+                        change_request.coordinated_change
+                        .get_status_display()
+                    )
+
+                else:
+                    return_actions = [
+                        action
+                        for action in actions
+                        if (
+                            action.revision_no == revision_no
+                            and action.action
+                            == ChangeAction.Action.RETURN
+                        )
+                    ]
+
+                    if len(return_actions) == 1:
+                        status_label = (
+                            ChangeRequest.Status.RETURNED.label
+                        )
+                    else:
+                        status_label = (
+                            "Historical Revision"
+                        )
+
+                history_rows.append(
+                    {
+                        "change_request": change_request,
+                        "revision_no": revision_no,
+                        "status_label": status_label,
+                        "submitted_by": revision_submitter,
+                        "submitted_at": revision_submitted_at,
+                        "coordinated_change_id": (
+                            change_request.coordinated_change_id
+                        ),
+                        "use_coordinated_revision_url": True,
+                        "use_revision_url": False,
+                    }
+                )
+
             continue
 
         for revision_no in range(
@@ -4562,6 +4591,7 @@ def change_request_history(request, grant_id):
 def coordinated_change_review(
         request,
         coordinated_change_id,
+        revision_no=None,
 ):
     coordinated_change = get_object_or_404(
         CoordinatedChange.objects.select_related(
@@ -4650,64 +4680,94 @@ def coordinated_change_review(
             "two child Change Requests."
         )
 
-    revision_no = (
-        coordinated_change.current_revision
+    requested_revision_no = revision_no
+
+    if revision_no is None:
+        revision_no = (
+            coordinated_change.current_revision
+        )
+
+    if (
+        revision_no < 1
+        or revision_no
+        > coordinated_change.current_revision
+    ):
+        raise PermissionDenied(
+            "The requested coordinated package revision is invalid."
+        )
+
+    if (
+        requested_revision_no is not None
+        and not is_history_package
+    ):
+        raise PermissionDenied(
+            "Historical coordinated revisions are available only "
+            "for completed coordinated packages."
+        )
+
+    is_historical_revision = (
+        revision_no
+        < coordinated_change.current_revision
     )
 
-    revision_mismatches = [
-        child.id
-        for child in children
-        if child.current_revision != revision_no
-    ]
+    # Current package state must remain synchronized exactly as before.
+    # Historical revisions are reconstructed from immutable snapshots
+    # and revision-specific action history instead.
+    if not is_historical_revision:
+        revision_mismatches = [
+            child.id
+            for child in children
+            if child.current_revision != revision_no
+        ]
 
-    if revision_mismatches:
-        workflow_errors.append(
-            "The coordinated package and its child Change Requests "
-            "are not on the same revision."
-        )
+        if revision_mismatches:
+            workflow_errors.append(
+                "The coordinated package and its child Change Requests "
+                "are not on the same revision."
+            )
 
-    if is_active_package:
-        expected_child_status = (
-            ChangeRequest.Status.PENDING
-        )
+        if is_active_package:
+            expected_child_status = (
+                ChangeRequest.Status.PENDING
+            )
 
-    elif is_returned_package:
-        expected_child_status = (
-            ChangeRequest.Status.RETURNED
-        )
+        elif is_returned_package:
+            expected_child_status = (
+                ChangeRequest.Status.RETURNED
+            )
 
-    elif (
-            coordinated_change.status
-            == CoordinatedChange.Status.APPLIED
-    ):
-        expected_child_status = (
-            ChangeRequest.Status.APPROVED
-        )
+        elif (
+                coordinated_change.status
+                == CoordinatedChange.Status.APPLIED
+        ):
+            expected_child_status = (
+                ChangeRequest.Status.APPROVED
+            )
 
-    elif (
-            coordinated_change.status
-            == CoordinatedChange.Status.DENIED
-    ):
-        expected_child_status = (
-            ChangeRequest.Status.DENIED
-        )
+        elif (
+                coordinated_change.status
+                == CoordinatedChange.Status.DENIED
+        ):
+            expected_child_status = (
+                ChangeRequest.Status.DENIED
+            )
 
-    else:
-        expected_child_status = (
-            ChangeRequest.Status.WITHDRAWN
-        )
+        else:
+            expected_child_status = (
+                ChangeRequest.Status.WITHDRAWN
+            )
 
-    status_mismatches = [
-        child.id
-        for child in children
-        if child.status != expected_child_status
-    ]
+        status_mismatches = [
+            child.id
+            for child in children
+            if child.status != expected_child_status
+        ]
 
-    if status_mismatches:
-        workflow_errors.append(
-            "The coordinated package and its child Change Requests "
-            "do not have synchronized statuses."
-        )
+        if status_mismatches:
+            workflow_errors.append(
+                "The coordinated package and its child Change Requests "
+                "do not have synchronized statuses."
+            )
 
     label_form = (
         GrantBasicInformationChangeForm()
@@ -4735,6 +4795,23 @@ def coordinated_change_review(
                 )
             )
         }
+
+        if is_historical_revision:
+            missing_snapshot_fields = [
+                field_name
+                for field_name
+                in GRANT_BASIC_INFORMATION_CHANGE_FIELDS
+                if field_name not in snapshots
+            ]
+
+            if missing_snapshot_fields:
+                workflow_errors.append(
+                    (
+                        f"Child Change Request #{child.id} "
+                        f"does not contain a complete Revision "
+                        f"{revision_no} snapshot."
+                    )
+                )
 
         review_rows = []
 
@@ -4801,7 +4878,8 @@ def coordinated_change_review(
         try:
             child_submitter_id = (
                 get_revision_submitter_id(
-                    child
+                    child,
+                    revision_no=revision_no,
                 )
             )
 
@@ -4972,6 +5050,98 @@ def coordinated_change_review(
         )
 
     # ---------------------------------------------------------
+    # Historical revision status / Return history.
+    #
+    # Ordinary coordinated Return is mirrored onto every child.
+    # Historical revisions with no ordinary RETURN action remain
+    # valid audit history, but are labelled generically.
+    # ---------------------------------------------------------
+
+    historical_return_action = None
+
+    if is_historical_revision:
+        revision_status_label = "Historical Revision"
+
+        return_actions_by_child = {}
+
+        for child in children:
+            child_returns = tuple(
+                ChangeAction.objects
+                .filter(
+                    change_request=child,
+                    revision_no=revision_no,
+                    action=ChangeAction.Action.RETURN,
+                )
+                .select_related("acted_by")
+                .order_by("acted_at", "id")
+            )
+
+            return_actions_by_child[
+                child.id
+            ] = child_returns
+
+        return_counts = [
+            len(child_returns)
+            for child_returns
+            in return_actions_by_child.values()
+        ]
+
+        if return_counts and all(
+            count == 1
+            for count in return_counts
+        ):
+            first_child = children[0]
+
+            first_return_action = (
+                return_actions_by_child[
+                    first_child.id
+                ][0]
+            )
+
+            first_return_signature = (
+                first_return_action.acted_by_id,
+                first_return_action.comment,
+            )
+
+            return_histories_synchronized = all(
+                (
+                    child_returns[0].acted_by_id,
+                    child_returns[0].comment,
+                )
+                == first_return_signature
+                for child_returns
+                in return_actions_by_child.values()
+            )
+
+            if return_histories_synchronized:
+                historical_return_action = (
+                    first_return_action
+                )
+                revision_status_label = (
+                    ChangeRequest.Status.RETURNED.label
+                )
+
+            else:
+                workflow_errors.append(
+                    "The coordinated package child Return "
+                    "histories are not synchronized."
+                )
+
+        elif return_counts and any(
+            count != 0
+            for count in return_counts
+        ):
+            workflow_errors.append(
+                "The coordinated package contains incomplete "
+                "Return history for this historical revision."
+            )
+
+    else:
+        revision_status_label = (
+            coordinated_change.get_status_display()
+        )
+
+    # ---------------------------------------------------------
     # Deny history must also be synchronized across all children.
     #
     # A terminal DENIED package contains exactly one DENY action
@@ -5006,7 +5176,8 @@ def coordinated_change_review(
         ] = child_denials
 
     if (
-            coordinated_change.status
+            not is_historical_revision
+            and coordinated_change.status
             == CoordinatedChange.Status.DENIED
     ):
 
@@ -5104,7 +5275,8 @@ def coordinated_change_review(
         ] = child_withdrawals
 
     if (
-            coordinated_change.status
+            not is_historical_revision
+            and coordinated_change.status
             == CoordinatedChange.Status.WITHDRAWN
     ):
 
@@ -5651,6 +5823,15 @@ def coordinated_change_review(
             ),
             "child_cards": child_cards,
             "revision_no": revision_no,
+            "revision_status_label": (
+                revision_status_label
+            ),
+            "is_historical_revision": (
+                is_historical_revision
+            ),
+            "historical_return_action": (
+                historical_return_action
+            ),
             "current_revision_submitter": (
                 current_revision_submitter
             ),

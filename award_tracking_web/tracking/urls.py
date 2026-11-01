@@ -57,6 +57,15 @@ urlpatterns = [
     path(
         (
             "coordinated-changes/"
+            "<int:coordinated_change_id>/"
+            "revisions/<int:revision_no>/review/"
+        ),
+        views.coordinated_change_review,
+        name="coordinated_change_revision_review",
+    ),
+    path(
+        (
+            "coordinated-changes/"
             "<int:coordinated_change_id>/resubmit/"
         ),
         views.coordinated_change_resubmit,
