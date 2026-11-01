@@ -731,9 +731,7 @@
                         Approve
                     </button>
                 </form>
-            {% elif user_has_approved %}
-                <strong>You approved this revision.</strong>
-            {% elif approval_count == 1 %}
+            {% elif approval_count == 1 and not user_has_approved %}
                 <strong>
                     1 of 2 approvals received.
                 </strong>
@@ -942,6 +940,12 @@
             </div>
         {% endfor %}
     {% endif %}
+
+        {% if user_has_approved %}
+            <strong style="margin-right: 15px;">
+                You approved this revision.
+            </strong>
+        {% endif %}
 
         {% if grant %}
             <a
