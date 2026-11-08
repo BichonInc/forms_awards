@@ -7912,119 +7912,454 @@ def format_date_for_csv(value):
     return value.strftime("%Y-%m-%d")
 
 
+def format_money_for_csv(value):
+    """
+    Format monetary CSV values consistently to two decimal places.
+    """
+    if value is None:
+        return ""
+
+    return f"{Decimal(str(value)).quantize(Decimal('0.01')):.2f}"
+
+
 @login_required
 def download_data_csv(request):
-    # Create HTTP response with CSV content type
-    response = HttpResponse(content_type='text/csv')
-    response['Content-Disposition'] = 'attachment; filename="grant_data.csv"'
+    """
+    Export grant and fiscal information using the same
+    classification, allocation, and Fiscal Review rules
+    displayed by the application.
+    """
+
+    response = HttpResponse(
+        content_type="text/csv"
+    )
+
+    response[
+        "Content-Disposition"
+    ] = 'attachment; filename="grant_data.csv"'
 
     writer = csv.writer(response)
 
-    # Write the CSV header
-    writer.writerow([
-        'Grant ID', 'Program Title', 'Contracting Agency', 'Contract Number',
-        'Contract Start Date', 'Contract End Date', 'Contract Amount',
-        'Federal Grantor', 'Federal ALN', 'Internal Award Code',
-        'Internal GL Start Date', 'Internal GL End Date', 'Status',
-        'Source', 'Fiscal Year', 'Total Expenditure', 'Federal',
-        'Nonfederal', 'Difference'
-    ])
+    writer.writerow(
+        [
+            "Grant ID",
+            "Program Title",
+            "Contracting Agency",
+            "Contract Number",
+            "Contract Start Date",
+            "Contract End Date",
+            "Contract Amount",
+            "Funding Sources",
+            "Federal Information Status",
+            "Federal Grantor",
+            "Federal ALN",
+            "Internal Award Code",
+            "Internal GL Start Date",
+            "Internal GL End Date",
+            "Status",
+            "Source",
+            "Fiscal Year",
+            "Total Expenditure",
+            "Federal",
+            "Nonfederal",
+            "Fiscal Review",
+            "Fiscal Review Reasons",
+        ]
+    )
 
-    # Fetch all Form1 records
-    form1_records = Form1.objects.all().order_by('grant_id')
+    grants = list(
+        Form1.objects.all().order_by(
+            "grant_id"
+        )
+    )
 
-    # Loop through each Form1 record
-    for form in form1_records:
-        grant_id = form.grant_id
+    fiscal_review_summaries = (
+        get_grant_fiscal_review_summaries(
+            grants
+        )
+    )
 
-        # Grouped data from GLExpenditure by fiscal_year
-        gl_expenditures = GLExpenditure.objects.filter(grant_id=grant_id).values('fiscal_year').annotate(
-            total_expenditure=Sum('net_expenditure')
-        ).order_by('fiscal_year')
+    fiscal_review_reason_labels = {
+        "FUNDING_SOURCES_CLASSIFICATION": (
+            "Funding Sources Needs Review"
+        ),
+        "FEDERAL_INFORMATION": (
+            "Federal Information Incomplete"
+        ),
+        "PROGRAM_INCOME_TREATMENT": (
+            "Program Income Treatment Needs Review"
+        ),
+        "NEGATIVE_CONTRACT_BALANCE": (
+            "Negative Contract Balance Needs Review"
+        ),
+        "IN_PERIOD_ALLOCATION": (
+            "In-Period Allocation Needs Review"
+        ),
+        "SUBSEQUENT_ALLOCATION": (
+            "Subsequent Adjustment Allocation Needs Review"
+        ),
+    }
+
+    def get_classification_display(
+            grant,
+            fiscal_summary,
+    ):
+        reason_codes = set(
+            fiscal_summary.get(
+                "reason_codes",
+                [],
+            )
+        )
+
+        if (
+            "FUNDING_SOURCES_CLASSIFICATION"
+            in reason_codes
+        ):
+            funding_sources_display = (
+                "Needs Review"
+            )
+        else:
+            funding_sources_display = (
+                grant.get_funding_sources_display()
+                or ""
+            )
+
+        if (
+            "FEDERAL_INFORMATION"
+            in reason_codes
+        ):
+            federal_information_display = (
+                "Federal Information Incomplete"
+            )
+        else:
+            federal_information_display = (
+                grant
+                .get_federal_information_status_display()
+                or ""
+            )
+
+        return (
+            funding_sources_display,
+            federal_information_display,
+        )
+
+    def get_allocation_values(
+            grant,
+            total_expenditure,
+            allocation_record,
+    ):
+        total_expenditure = (
+            total_expenditure
+            or Decimal("0.00")
+        )
+
+        if (
+            grant.funding_sources
+            == Form1.FundingSource.FEDERAL
+        ):
+            federal = total_expenditure
+            nonfederal = Decimal("0.00")
+
+        elif (
+            grant.funding_sources
+            == Form1.FundingSource.NONFEDERAL
+        ):
+            federal = Decimal("0.00")
+            nonfederal = total_expenditure
+
+        elif (
+            grant.funding_sources
+            == Form1.FundingSource.BOTH
+        ):
+            federal = (
+                allocation_record.federal
+                if allocation_record
+                else Decimal("0.00")
+            )
+
+            nonfederal = (
+                total_expenditure
+                - federal
+            )
+
+        else:
+            # Funding Sources still requires review.
+            # Preserve legacy allocation values for
+            # reference but do not treat them as
+            # authoritative.
+            federal = (
+                allocation_record.federal
+                if allocation_record
+                else Decimal("0.00")
+            )
+
+            nonfederal = (
+                allocation_record.nonfederal
+                if allocation_record
+                else Decimal("0.00")
+            )
+
+        return (
+            federal,
+            nonfederal,
+        )
+
+    for grant in grants:
+        grant_id = grant.grant_id
+
+        fiscal_summary = (
+            fiscal_review_summaries.get(
+                grant_id,
+                {
+                    "needs_attention": False,
+                    "issue_count": 0,
+                    "reason_codes": [],
+                },
+            )
+        )
+
+        (
+            funding_sources_display,
+            federal_information_display,
+        ) = get_classification_display(
+            grant,
+            fiscal_summary,
+        )
+
+        fiscal_review_issue_count = (
+            fiscal_summary.get(
+                "issue_count",
+                0,
+            )
+        )
+
+        fiscal_review_reasons = "; ".join(
+            fiscal_review_reason_labels.get(
+                reason_code,
+                reason_code,
+            )
+            for reason_code
+            in fiscal_summary.get(
+                "reason_codes",
+                [],
+            )
+        )
+
+        common_values = [
+            grant_id,
+            grant.program_title,
+            grant.contracting_agency,
+            grant.contract_number,
+            format_date_for_csv(
+                grant.contract_start_date
+            ),
+            format_date_for_csv(
+                grant.contract_end_date
+            ),
+            format_money_for_csv(
+                grant.contract_amount
+            ),
+            funding_sources_display,
+            federal_information_display,
+            grant.federal_grantor or "",
+            grant.federal_aln or "",
+            grant.internal_award_code,
+            format_date_for_csv(
+                grant.internal_gl_start_date
+            ),
+            format_date_for_csv(
+                grant.internal_gl_end_date
+            ),
+            grant.status,
+        ]
+
+        # ====================================================
+        # In-Period GL Expenditure
+        # ====================================================
+
+        gl_expenditures = (
+            GLExpenditure.objects
+            .filter(
+                grant_id=grant_id
+            )
+            .exclude(
+                fiscal_year__isnull=True
+            )
+            .exclude(
+                fiscal_year=""
+            )
+            .values(
+                "fiscal_year"
+            )
+            .annotate(
+                total_expenditure=Sum(
+                    "net_expenditure"
+                )
+            )
+            .order_by(
+                "fiscal_year"
+            )
+        )
 
         if gl_expenditures.exists():
-            for gl in gl_expenditures:
-                fiscal_year = gl['fiscal_year']
-                total_expenditure = gl['total_expenditure']
+            for gl_row in gl_expenditures:
+                fiscal_year = (
+                    gl_row["fiscal_year"]
+                )
 
-                # Fetch federal and nonfederal from FiscalBreakdown
-                fiscal_record = FiscalBreakdown.objects.filter(
-                    grant_id=grant_id, fiscal_year=fiscal_year
-                ).first()
+                total_expenditure = (
+                    gl_row[
+                        "total_expenditure"
+                    ]
+                    or Decimal("0.00")
+                )
 
-                federal = fiscal_record.federal if fiscal_record else 0
-                nonfederal = fiscal_record.nonfederal if fiscal_record else 0
-                difference = total_expenditure - federal - nonfederal
+                allocation_record = (
+                    FiscalBreakdown.objects
+                    .filter(
+                        grant_id=grant,
+                        fiscal_year=fiscal_year,
+                    )
+                    .first()
+                )
 
-                writer.writerow([
-                    grant_id, form.program_title, form.contracting_agency, form.contract_number,
-                    format_date_for_csv(form.contract_start_date),
-                    format_date_for_csv(form.contract_end_date),
-                    form.contract_amount,
-                    form.federal_grantor, form.federal_aln, form.internal_award_code,
-                    format_date_for_csv(form.internal_gl_start_date),
-                    format_date_for_csv(form.internal_gl_end_date),
-                    form.status,
-                    'GL Expenditure', fiscal_year, total_expenditure, federal,
-                    nonfederal, difference
-                ])
+                (
+                    federal,
+                    nonfederal,
+                ) = get_allocation_values(
+                    grant,
+                    total_expenditure,
+                    allocation_record,
+                )
+
+                writer.writerow(
+                    common_values
+                    + [
+                        "GL Expenditure",
+                        fiscal_year,
+                        format_money_for_csv(
+                            total_expenditure
+                        ),
+                        format_money_for_csv(
+                            federal
+                        ),
+                        format_money_for_csv(
+                            nonfederal
+                        ),
+                        fiscal_review_issue_count,
+                        fiscal_review_reasons,
+                    ]
+                )
+
         else:
-            # Write a row for the grant even if no GLExpenditure data exists
-            writer.writerow([
-                grant_id, form.program_title, form.contracting_agency, form.contract_number,
-                format_date_for_csv(form.contract_start_date),
-                format_date_for_csv(form.contract_end_date),
-                form.contract_amount,
-                form.federal_grantor, form.federal_aln, form.internal_award_code,
-                format_date_for_csv(form.internal_gl_start_date),
-                format_date_for_csv(form.internal_gl_end_date),
-                form.status,
-                'No Current Expenditure', '', '', '', '', ''
-            ])
+            writer.writerow(
+                common_values
+                + [
+                    "No Current Expenditure",
+                    "",
+                    "",
+                    "",
+                    "",
+                    fiscal_review_issue_count,
+                    fiscal_review_reasons,
+                ]
+            )
 
-        # Grouped data from SubsequentAdjustment by fiscal_year
-        subsequent_adjustments = SubsequentAdjustment.objects.filter(grant_id=grant_id).values('fiscal_year').annotate(
-            total_adjustment=Sum('net_expenditure')
-        ).order_by('fiscal_year')
+        # ====================================================
+        # Subsequent Adjustment
+        # ====================================================
+
+        subsequent_adjustments = (
+            SubsequentAdjustment.objects
+            .filter(
+                grant_id=grant_id
+            )
+            .exclude(
+                fiscal_year__isnull=True
+            )
+            .exclude(
+                fiscal_year=""
+            )
+            .values(
+                "fiscal_year"
+            )
+            .annotate(
+                total_adjustment=Sum(
+                    "net_expenditure"
+                )
+            )
+            .order_by(
+                "fiscal_year"
+            )
+        )
 
         if subsequent_adjustments.exists():
-            for sa in subsequent_adjustments:
-                fiscal_year = sa['fiscal_year']
-                total_adjustment = sa['total_adjustment']
+            for adjustment_row in (
+                subsequent_adjustments
+            ):
+                fiscal_year = (
+                    adjustment_row[
+                        "fiscal_year"
+                    ]
+                )
 
-                # Fetch federal and nonfederal from SubsequentFiscalBreakdown
-                sub_fiscal_record = SubsequentFiscalBreakdown.objects.filter(
-                    grant_id=grant_id, fiscal_year=fiscal_year
-                ).first()
+                total_adjustment = (
+                    adjustment_row[
+                        "total_adjustment"
+                    ]
+                    or Decimal("0.00")
+                )
 
-                federal_sub = sub_fiscal_record.federal if sub_fiscal_record else 0
-                nonfederal_sub = sub_fiscal_record.nonfederal if sub_fiscal_record else 0
-                difference_sub = total_adjustment - federal_sub - nonfederal_sub
+                allocation_record = (
+                    SubsequentFiscalBreakdown
+                    .objects
+                    .filter(
+                        grant_id=grant,
+                        fiscal_year=fiscal_year,
+                    )
+                    .first()
+                )
 
-                writer.writerow([
-                    grant_id, form.program_title, form.contracting_agency, form.contract_number,
-                    format_date_for_csv(form.contract_start_date),
-                    format_date_for_csv(form.contract_end_date),
-                    form.contract_amount,
-                    form.federal_grantor, form.federal_aln, form.internal_award_code,
-                    format_date_for_csv(form.internal_gl_start_date),
-                    format_date_for_csv(form.internal_gl_end_date),
-                    form.status,
-                    'Subsequent Adjustment', fiscal_year, total_adjustment, federal_sub,
-                    nonfederal_sub, difference_sub
-                ])
+                (
+                    federal,
+                    nonfederal,
+                ) = get_allocation_values(
+                    grant,
+                    total_adjustment,
+                    allocation_record,
+                )
+
+                writer.writerow(
+                    common_values
+                    + [
+                        "Subsequent Adjustment",
+                        fiscal_year,
+                        format_money_for_csv(
+                            total_adjustment
+                        ),
+                        format_money_for_csv(
+                            federal
+                        ),
+                        format_money_for_csv(
+                            nonfederal
+                        ),
+                        fiscal_review_issue_count,
+                        fiscal_review_reasons,
+                    ]
+                )
+
         else:
-            # Write a row for the grant even if no SubsequentAdjustment data exists
-            writer.writerow([
-                grant_id, form.program_title, form.contracting_agency, form.contract_number,
-                format_date_for_csv(form.contract_start_date),
-                format_date_for_csv(form.contract_end_date),
-                form.contract_amount,
-                form.federal_grantor, form.federal_aln, form.internal_award_code,
-                format_date_for_csv(form.internal_gl_start_date),
-                format_date_for_csv(form.internal_gl_end_date),
-                form.status,
-                'No Subsequent Adjustment', '', '', '', '', ''
-            ])
+            writer.writerow(
+                common_values
+                + [
+                    "No Subsequent Adjustment",
+                    "",
+                    "",
+                    "",
+                    "",
+                    fiscal_review_issue_count,
+                    fiscal_review_reasons,
+                ]
+            )
 
     return response

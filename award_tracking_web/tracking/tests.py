@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from django.test import TestCase
@@ -1261,4 +1262,603 @@ class ActionQueueRegressionTests(TestCase):
                 "active_new_grant_request_count"
             ],
             0,
+        )
+
+class CsvExportRegressionTests(TestCase):
+    """
+    Protect CSV export classification, allocation, and Fiscal Review
+    behavior.
+
+    The CSV must use the same current Funding Sources logic as Grant
+    Detail rather than relying on legacy stored allocation values.
+    """
+
+    def setUp(self):
+        User = get_user_model()
+
+        self.user = User.objects.create_user(
+            username="csv_regression_user",
+            password="test-password",
+        )
+
+        self.client.force_login(
+            self.user
+        )
+
+    def _create_grant(
+            self,
+            *,
+            grant_id,
+            award_code,
+            funding_sources,
+            federal_information_status,
+            federal_grantor=None,
+            federal_aln=None,
+    ):
+        return Form1.objects.create(
+            grant_id=grant_id,
+            program_title="CSV Regression Program",
+            contracting_agency="CSV Regression Agency",
+            contract_number=f"CSV-{grant_id}",
+            amendment_no=0,
+            contract_start_date=date(
+                2025,
+                1,
+                1,
+            ),
+            contract_end_date=date(
+                2025,
+                12,
+                31,
+            ),
+            contract_amount="100000.00",
+            funding_sources=funding_sources,
+            federal_information_status=(
+                federal_information_status
+            ),
+            federal_grantor=federal_grantor,
+            federal_aln=federal_aln,
+            internal_award_code=award_code,
+            internal_gl_start_date=date(
+                2025,
+                1,
+                1,
+            ),
+            internal_gl_end_date=date(
+                2025,
+                12,
+                31,
+            ),
+        )
+
+    def _create_gl_expenditure(
+            self,
+            *,
+            grant,
+            amount,
+            fiscal_year="FY24-25",
+    ):
+        from .models import GLExpenditure
+
+        grant_field = (
+            GLExpenditure
+            ._meta
+            .get_field("grant_id")
+        )
+
+        kwargs = {
+            "effective_date": date(
+                2025,
+                6,
+                30,
+            ),
+            "award_code": str(
+                grant.internal_award_code
+            ),
+            "debit": "0.00",
+            "credit": str(amount),
+            "net_expenditure": str(amount),
+            "fiscal_year": fiscal_year,
+        }
+
+        if grant_field.is_relation:
+            kwargs["grant_id"] = grant
+        else:
+            kwargs["grant_id"] = grant.grant_id
+
+        return GLExpenditure.objects.create(
+            **kwargs
+        )
+
+    def _download_rows(self):
+        import csv
+        from io import StringIO
+
+        response = self.client.get(
+            reverse("download_data_csv"),
+        )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        text = response.content.decode(
+            "utf-8"
+        )
+
+        reader = csv.DictReader(
+            StringIO(text)
+        )
+
+        return (
+            reader.fieldnames,
+            list(reader),
+        )
+
+    def _get_gl_row(
+            self,
+            rows,
+            grant_id,
+            fiscal_year="FY24-25",
+    ):
+        matches = [
+            row
+            for row in rows
+            if (
+                row["Grant ID"] == grant_id
+                and row["Source"]
+                == "GL Expenditure"
+                and row["Fiscal Year"]
+                == fiscal_year
+            )
+        ]
+
+        self.assertEqual(
+            len(matches),
+            1,
+        )
+
+        return matches[0]
+
+    def test_csv_uses_current_headers(self):
+        self._create_grant(
+            grant_id="A92001",
+            award_code=920,
+            funding_sources=(
+                Form1.FundingSource.NONFEDERAL
+            ),
+            federal_information_status=(
+                Form1.FederalInformationStatus
+                .NOT_APPLICABLE
+            ),
+        )
+
+        fieldnames, _ = (
+            self._download_rows()
+        )
+
+        self.assertIn(
+            "Funding Sources",
+            fieldnames,
+        )
+
+        self.assertIn(
+            "Federal Information Status",
+            fieldnames,
+        )
+
+        self.assertIn(
+            "Fiscal Review",
+            fieldnames,
+        )
+
+        self.assertIn(
+            "Fiscal Review Reasons",
+            fieldnames,
+        )
+
+        self.assertNotIn(
+            "Difference",
+            fieldnames,
+        )
+
+        self.assertNotIn(
+            "Fiscal Review Issues",
+            fieldnames,
+        )
+
+    def test_federal_to_nonfederal_reallocates_current_gl_total(
+            self,
+    ):
+        from .models import GLExpenditure
+
+        grant = self._create_grant(
+            grant_id="A92002",
+            award_code=921,
+            funding_sources=(
+                Form1.FundingSource.FEDERAL
+            ),
+            federal_information_status=(
+                Form1.FederalInformationStatus
+                .COMPLETE
+            ),
+            federal_grantor="Federal Agency",
+            federal_aln="93.001",
+        )
+
+        gl_row = self._create_gl_expenditure(
+            grant=grant,
+            amount="123.45",
+        )
+
+        _, rows = self._download_rows()
+
+        csv_row = self._get_gl_row(
+            rows,
+            grant.grant_id,
+        )
+
+        self.assertEqual(
+            csv_row["Total Expenditure"],
+            "123.45",
+        )
+
+        self.assertEqual(
+            csv_row["Federal"],
+            "123.45",
+        )
+
+        self.assertEqual(
+            csv_row["Nonfederal"],
+            "0.00",
+        )
+
+        original_gl_id = gl_row.pk
+
+        grant.funding_sources = (
+            Form1.FundingSource.NONFEDERAL
+        )
+
+        grant.federal_information_status = (
+            Form1.FederalInformationStatus
+            .NOT_APPLICABLE
+        )
+
+        grant.federal_grantor = None
+        grant.federal_aln = None
+
+        grant.save(
+            update_fields=[
+                "funding_sources",
+                "federal_information_status",
+                "federal_grantor",
+                "federal_aln",
+            ]
+        )
+
+        _, rows = self._download_rows()
+
+        csv_row = self._get_gl_row(
+            rows,
+            grant.grant_id,
+        )
+
+        self.assertEqual(
+            csv_row["Federal"],
+            "0.00",
+        )
+
+        self.assertEqual(
+            csv_row["Nonfederal"],
+            "123.45",
+        )
+
+        # Funding classification does not alter GL ownership.
+        self.assertTrue(
+            GLExpenditure.objects.filter(
+                pk=original_gl_id,
+                grant_id=grant.grant_id,
+            ).exists()
+        )
+
+    def test_csv_exports_classification_review_labels(
+            self,
+    ):
+        funding_review_grant = (
+            self._create_grant(
+                grant_id="A92003",
+                award_code=922,
+                funding_sources=(
+                    Form1.FundingSource
+                    .REVIEW_REQUIRED
+                ),
+                federal_information_status=(
+                    Form1.FederalInformationStatus
+                    .COMPLETE
+                ),
+                federal_grantor="Federal Agency",
+                federal_aln="93.002",
+            )
+        )
+
+        federal_info_grant = (
+            self._create_grant(
+                grant_id="A92004",
+                award_code=923,
+                funding_sources=(
+                    Form1.FundingSource.FEDERAL
+                ),
+                federal_information_status=(
+                    Form1.FederalInformationStatus
+                    .PENDING
+                ),
+            )
+        )
+
+        _, rows = self._download_rows()
+
+        funding_rows = [
+            row
+            for row in rows
+            if (
+                row["Grant ID"]
+                == funding_review_grant.grant_id
+            )
+        ]
+
+        self.assertTrue(
+            funding_rows
+        )
+
+        for row in funding_rows:
+            self.assertEqual(
+                row["Funding Sources"],
+                "Needs Review",
+            )
+
+            self.assertEqual(
+                row["Fiscal Review"],
+                "1",
+            )
+
+            self.assertIn(
+                "Funding Sources Needs Review",
+                row["Fiscal Review Reasons"],
+            )
+
+        federal_info_rows = [
+            row
+            for row in rows
+            if (
+                row["Grant ID"]
+                == federal_info_grant.grant_id
+            )
+        ]
+
+        self.assertTrue(
+            federal_info_rows
+        )
+
+        for row in federal_info_rows:
+            self.assertEqual(
+                row[
+                    "Federal Information Status"
+                ],
+                "Federal Information Incomplete",
+            )
+
+            self.assertEqual(
+                row["Fiscal Review"],
+                "1",
+            )
+
+            self.assertIn(
+                "Federal Information Incomplete",
+                row["Fiscal Review Reasons"],
+            )
+
+    def test_both_stale_allocation_is_recalculated_and_flagged(
+            self,
+    ):
+        from .models import FiscalBreakdown
+
+        grant = self._create_grant(
+            grant_id="A92005",
+            award_code=924,
+            funding_sources=(
+                Form1.FundingSource.BOTH
+            ),
+            federal_information_status=(
+                Form1.FederalInformationStatus
+                .COMPLETE
+            ),
+            federal_grantor="Federal Agency",
+            federal_aln="93.003",
+        )
+
+        self._create_gl_expenditure(
+            grant=grant,
+            amount="120.00",
+        )
+
+        FiscalBreakdown.objects.create(
+            grant_id=grant,
+            fiscal_year="FY24-25",
+            federal="40.00",
+            nonfederal="60.00",
+            reviewed_total_allowed_expenditure=(
+                "100.00"
+            ),
+        )
+
+        _, rows = self._download_rows()
+
+        csv_row = self._get_gl_row(
+            rows,
+            grant.grant_id,
+        )
+
+        self.assertEqual(
+            csv_row["Total Expenditure"],
+            "120.00",
+        )
+
+        self.assertEqual(
+            csv_row["Federal"],
+            "40.00",
+        )
+
+        self.assertEqual(
+            csv_row["Nonfederal"],
+            "80.00",
+        )
+
+        self.assertEqual(
+            csv_row["Fiscal Review"],
+            "1",
+        )
+
+        self.assertIn(
+            "In-Period Allocation Needs Review",
+            csv_row["Fiscal Review Reasons"],
+        )
+
+class FundingSourceTransitionRegressionTests(TestCase):
+    """
+    Protect allocation-review behavior when an approved existing-grant
+    Basic Information change moves a grant into Both funding.
+    """
+
+    def test_entering_both_invalidates_review_snapshots_but_preserves_allocations(
+            self,
+    ):
+        from .change_request_workflow import (
+            BasicInformationValidationResult,
+            _apply_validated_basic_information_values,
+        )
+        from .models import (
+            FiscalBreakdown,
+            SubsequentFiscalBreakdown,
+        )
+
+        grant = Form1.objects.create(
+            grant_id="A93001",
+            program_title="Funding Transition Test",
+            contracting_agency="Regression Agency",
+            contract_number="TRANSITION-001",
+            amendment_no=0,
+            contract_start_date=date(
+                2025,
+                1,
+                1,
+            ),
+            contract_end_date=date(
+                2025,
+                12,
+                31,
+            ),
+            contract_amount="100000.00",
+            funding_sources=(
+                Form1.FundingSource.FEDERAL
+            ),
+            federal_information_status=(
+                Form1.FederalInformationStatus
+                .COMPLETE
+            ),
+            federal_grantor="Federal Agency",
+            federal_aln="93.010",
+            internal_award_code="930",
+            internal_gl_start_date=date(
+                2025,
+                1,
+                1,
+            ),
+            internal_gl_end_date=date(
+                2025,
+                12,
+                31,
+            ),
+        )
+
+        in_period = FiscalBreakdown.objects.create(
+            grant_id=grant,
+            fiscal_year="FY24-25",
+            federal="70.00",
+            nonfederal="30.00",
+            reviewed_total_allowed_expenditure=(
+                "100.00"
+            ),
+        )
+
+        subsequent = (
+            SubsequentFiscalBreakdown.objects.create(
+                grant_id=grant,
+                fiscal_year="FY24-25",
+                federal="7.00",
+                nonfederal="3.00",
+                reviewed_total_subsequent_adjustment=(
+                    "10.00"
+                ),
+            )
+        )
+
+        validation_result = (
+            BasicInformationValidationResult(
+                proposed_values={
+                    "funding_sources": (
+                        Form1.FundingSource.BOTH
+                    ),
+                },
+                changed_fields=(
+                    "funding_sources",
+                ),
+                gl_rematch_required=False,
+            )
+        )
+
+        gl_rematch_result = (
+            _apply_validated_basic_information_values(
+                grant=grant,
+                validation_result=validation_result,
+            )
+        )
+
+        grant.refresh_from_db()
+        in_period.refresh_from_db()
+        subsequent.refresh_from_db()
+
+        self.assertIsNone(
+            gl_rematch_result
+        )
+
+        self.assertEqual(
+            grant.funding_sources,
+            Form1.FundingSource.BOTH,
+        )
+
+        # Preserve historical/manual allocation amounts.
+        self.assertEqual(
+            in_period.federal,
+            Decimal("70.00"),
+        )
+        self.assertEqual(
+            in_period.nonfederal,
+            Decimal("30.00"),
+        )
+        self.assertEqual(
+            subsequent.federal,
+            Decimal("7.00"),
+        )
+        self.assertEqual(
+            subsequent.nonfederal,
+            Decimal("3.00"),
+        )
+
+        # But require the Accountant to review those allocations again.
+        self.assertIsNone(
+            in_period.reviewed_total_allowed_expenditure
+        )
+        self.assertIsNone(
+            subsequent.reviewed_total_subsequent_adjustment
         )

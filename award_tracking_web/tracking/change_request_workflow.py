@@ -20,7 +20,9 @@ from .models import (
     ChangeRequestIntegrityIssue,
     ChangeRequestIntegritySnapshotField,
     CoordinatedChange,
+    FiscalBreakdown,
     Form1,
+    SubsequentFiscalBreakdown,
 )
 
 from .permissions import (
@@ -6746,6 +6748,10 @@ def approve_coordinated_basic_information_change(
                             or ""
                         ).strip()
 
+                        old_funding_sources = (
+                            grant.funding_sources
+                        )
+
                         if old_award_code:
                             affected_award_codes.add(
                                 old_award_code
@@ -6778,6 +6784,15 @@ def approve_coordinated_basic_information_change(
                             update_fields=list(
                                 child_validation
                                 .changed_fields
+                            )
+                        )
+
+                        (
+                            _invalidate_allocation_review_snapshots_if_entering_both(
+                                grant=grant,
+                                previous_funding_sources=(
+                                    old_funding_sources
+                                ),
                             )
                         )
 
@@ -9001,6 +9016,42 @@ def validate_basic_information_change_request(
     return validation_result
 
 
+def _invalidate_allocation_review_snapshots_if_entering_both(
+        *,
+        grant,
+        previous_funding_sources,
+):
+    """
+    Require a fresh Accountant allocation review when an existing
+    grant changes into the Both funding classification.
+
+    Existing Federal/Nonfederal allocation amounts are preserved for
+    audit/reference. Only the review snapshots are invalidated.
+
+    Federal and Non-federal classifications continue to derive their
+    allocations automatically from current expenditure totals.
+    """
+    if (
+        previous_funding_sources
+        == Form1.FundingSource.BOTH
+        or grant.funding_sources
+        != Form1.FundingSource.BOTH
+    ):
+        return
+
+    FiscalBreakdown.objects.filter(
+        grant_id=grant
+    ).update(
+        reviewed_total_allowed_expenditure=None
+    )
+
+    SubsequentFiscalBreakdown.objects.filter(
+        grant_id=grant
+    ).update(
+        reviewed_total_subsequent_adjustment=None
+    )
+
+
 def _apply_validated_basic_information_values(
         *,
         grant,
@@ -9025,6 +9076,7 @@ def _apply_validated_basic_information_values(
         )
 
     old_award_code = grant.internal_award_code
+    old_funding_sources = grant.funding_sources
 
     for field_name in validation_result.changed_fields:
         setattr(
@@ -9037,6 +9089,11 @@ def _apply_validated_basic_information_values(
         update_fields=list(
             validation_result.changed_fields
         )
+    )
+
+    _invalidate_allocation_review_snapshots_if_entering_both(
+        grant=grant,
+        previous_funding_sources=old_funding_sources,
     )
 
     if not validation_result.gl_rematch_required:
