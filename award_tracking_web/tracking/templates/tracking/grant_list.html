@@ -54,6 +54,14 @@
             background-color: #545b62;
         }
 
+        #existing-grant-requests-button {
+            background-color: #6f42c1;
+        }
+
+        #existing-grant-requests-button:hover {
+            background-color: #59359a;
+        }
+
         /* Hover Effects */
         #create-button:hover {
             background-color: #388E3C;  /* Darker green on hover */
@@ -172,6 +180,17 @@
             >
                 New Grant Requests
                 ({{ active_new_grant_request_count }})
+            </a>
+        {% endif %}
+
+        {% if can_view_active_existing_grant_requests %}
+            <a
+                href="{% url 'existing_grant_requests' %}"
+                id="existing-grant-requests-button"
+                class="button-common"
+            >
+                Existing Grant Requests
+                ({{ active_existing_grant_request_count }})
             </a>
         {% endif %}
 

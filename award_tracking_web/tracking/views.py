@@ -165,10 +165,17 @@ def grant_list(request):
         ROLE_APPROVER,
     )
 
+    can_view_active_existing_grant_requests = user_has_any_role(
+        request.user,
+        ROLE_EDITOR,
+        ROLE_APPROVER,
+    )
+
     active_new_grant_request_count = 0
+    active_existing_grant_request_count = 0
 
     if can_view_active_new_grant_requests:
-        active_new_grant_request_count = (
+        new_grant_candidates = (
             ChangeRequest.objects
             .filter(
                 request_type=ChangeRequest.RequestType.NEW_GRANT,
@@ -178,7 +185,59 @@ def grant_list(request):
                 ),
                 coordinated_change__isnull=True,
             )
-            .count()
+            .select_related("submitted_by")
+        )
+
+        active_new_grant_request_count = sum(
+            1
+            for change_request in new_grant_candidates
+            if _change_request_needs_user_action(
+                change_request,
+                request.user,
+            )
+        )
+
+    if can_view_active_existing_grant_requests:
+        standalone_candidates = (
+            ChangeRequest.objects
+            .filter(
+                request_type=ChangeRequest.RequestType.EDIT_GRANT,
+                status__in=(
+                    ChangeRequest.Status.PENDING,
+                    ChangeRequest.Status.RETURNED,
+                ),
+                coordinated_change__isnull=True,
+            )
+            .select_related("submitted_by")
+        )
+
+        coordinated_candidates = (
+            CoordinatedChange.objects
+            .filter(
+                status__in=(
+                    CoordinatedChange.Status.PENDING,
+                    CoordinatedChange.Status.RETURNED,
+                )
+            )
+        )
+
+        active_existing_grant_request_count = (
+            sum(
+                1
+                for change_request in standalone_candidates
+                if _change_request_needs_user_action(
+                    change_request,
+                    request.user,
+                )
+            )
+            + sum(
+                1
+                for coordinated_change in coordinated_candidates
+                if _coordinated_package_needs_user_action(
+                    coordinated_change,
+                    request.user,
+                )
+            )
         )
 
     context = {
@@ -188,6 +247,12 @@ def grant_list(request):
         ),
         "can_view_active_new_grant_requests": (
             can_view_active_new_grant_requests
+        ),
+        "active_existing_grant_request_count": (
+            active_existing_grant_request_count
+        ),
+        "can_view_active_existing_grant_requests": (
+            can_view_active_existing_grant_requests
         ),
         "can_create_grant": user_has_any_role(
             request.user,
@@ -207,19 +272,26 @@ def grant_list(request):
     ROLE_APPROVER,
 )
 def new_grant_requests(request):
-    active_requests = (
-        ChangeRequest.objects
-        .filter(
-            request_type=ChangeRequest.RequestType.NEW_GRANT,
-            status__in=(
-                ChangeRequest.Status.PENDING,
-                ChangeRequest.Status.RETURNED,
-            ),
-            coordinated_change__isnull=True,
+    active_requests = [
+        change_request
+        for change_request in (
+            ChangeRequest.objects
+            .filter(
+                request_type=ChangeRequest.RequestType.NEW_GRANT,
+                status__in=(
+                    ChangeRequest.Status.PENDING,
+                    ChangeRequest.Status.RETURNED,
+                ),
+                coordinated_change__isnull=True,
+            )
+            .select_related("submitted_by")
+            .order_by("grant_id")
         )
-        .select_related("submitted_by")
-        .order_by("grant_id")
-    )
+        if _change_request_needs_user_action(
+            change_request,
+            request.user,
+        )
+    ]
 
     request_rows = []
 
@@ -265,6 +337,408 @@ def new_grant_requests(request):
         "tracking/new_grant_requests.html",
         {
             "request_rows": request_rows,
+        },
+    )
+
+
+def _get_current_revision_submission_metadata(change_request):
+    """
+    Return the submitter and submission time for the request's
+    current formal revision without overwriting Revision 1 history.
+    """
+    revision_no = change_request.current_revision
+
+    try:
+        revision_submitter_id = get_revision_submitter_id(
+            change_request,
+            revision_no=revision_no,
+        )
+    except ChangeRequestApprovalError:
+        return None, None
+
+    if revision_no == 1:
+        if (
+            revision_submitter_id
+            != change_request.submitted_by_id
+        ):
+            return None, None
+
+        return (
+            change_request.submitted_by,
+            change_request.submitted_at,
+        )
+
+    resubmit_actions = list(
+        ChangeAction.objects
+        .filter(
+            change_request=change_request,
+            revision_no=revision_no,
+            action=ChangeAction.Action.RESUBMIT,
+        )
+        .select_related("acted_by")
+        .order_by("acted_at", "id")
+    )
+
+    if len(resubmit_actions) != 1:
+        return None, None
+
+    resubmit_action = resubmit_actions[0]
+
+    if (
+        resubmit_action.acted_by_id
+        != revision_submitter_id
+    ):
+        return None, None
+
+    return (
+        resubmit_action.acted_by,
+        resubmit_action.acted_at,
+    )
+
+
+def _change_request_needs_user_action(
+        change_request,
+        user,
+):
+    """
+    Return True only when the current user has a workflow action
+    available for this active standalone Existing Grant request.
+    """
+
+    if (
+        change_request.status
+        == ChangeRequest.Status.RETURNED
+    ):
+        return user_has_any_role(
+            user,
+            ROLE_EDITOR,
+        )
+
+    if (
+        change_request.status
+        != ChangeRequest.Status.PENDING
+    ):
+        return False
+
+    if not user_has_any_role(
+        user,
+        ROLE_APPROVER,
+    ):
+        return False
+
+    try:
+        revision_submitter_id = get_revision_submitter_id(
+            change_request,
+            revision_no=change_request.current_revision,
+        )
+
+    except ChangeRequestApprovalError:
+        # Keep malformed active workflow visible for review rather
+        # than silently hiding it.
+        return True
+
+    if revision_submitter_id == user.id:
+        return False
+
+    user_has_approved = (
+        ChangeAction.objects
+        .filter(
+            change_request=change_request,
+            revision_no=change_request.current_revision,
+            action=ChangeAction.Action.APPROVE,
+            acted_by=user,
+        )
+        .exists()
+    )
+
+    return not user_has_approved
+
+
+def _coordinated_package_needs_user_action(
+        coordinated_change,
+        user,
+):
+    """
+    Return True only when the current user has a workflow action
+    available for this active coordinated Existing Grant package.
+    """
+
+    if (
+        coordinated_change.status
+        == CoordinatedChange.Status.RETURNED
+    ):
+        return user_has_any_role(
+            user,
+            ROLE_EDITOR,
+        )
+
+    if (
+        coordinated_change.status
+        != CoordinatedChange.Status.PENDING
+    ):
+        return False
+
+    if not user_has_any_role(
+        user,
+        ROLE_APPROVER,
+    ):
+        return False
+
+    children = list(
+        ChangeRequest.objects
+        .filter(
+            coordinated_change=coordinated_change,
+        )
+        .order_by("grant_id", "id")
+    )
+
+    if not children:
+        # Surface malformed active packages instead of hiding them.
+        return True
+
+    revision_submitter_ids = set()
+
+    for child in children:
+        try:
+            revision_submitter_ids.add(
+                get_revision_submitter_id(
+                    child,
+                    revision_no=(
+                        coordinated_change.current_revision
+                    ),
+                )
+            )
+
+        except ChangeRequestApprovalError:
+            return True
+
+    if len(revision_submitter_ids) != 1:
+        return True
+
+    revision_submitter_id = next(
+        iter(revision_submitter_ids)
+    )
+
+    if revision_submitter_id == user.id:
+        return False
+
+    user_approval_flags = [
+        ChangeAction.objects
+        .filter(
+            change_request=child,
+            revision_no=(
+                coordinated_change.current_revision
+            ),
+            action=ChangeAction.Action.APPROVE,
+            acted_by=user,
+        )
+        .exists()
+        for child in children
+    ]
+
+    # Normal coordinated approval is mirrored on every child.
+    # Hide the package only when this user's approval exists on
+    # every child. A partial/inconsistent history stays visible.
+    if all(user_approval_flags):
+        return False
+
+    return True
+
+
+@role_required(
+    ROLE_EDITOR,
+    ROLE_APPROVER,
+)
+def existing_grant_requests(request):
+    active_change_request_statuses = (
+        ChangeRequest.Status.PENDING,
+        ChangeRequest.Status.RETURNED,
+    )
+
+    active_coordinated_statuses = (
+        CoordinatedChange.Status.PENDING,
+        CoordinatedChange.Status.RETURNED,
+    )
+
+    # --------------------------------------------------------
+    # Standalone changes to existing grants.
+    # --------------------------------------------------------
+
+    standalone_requests = [
+        change_request
+        for change_request in (
+            ChangeRequest.objects
+            .filter(
+                request_type=ChangeRequest.RequestType.EDIT_GRANT,
+                status__in=active_change_request_statuses,
+                coordinated_change__isnull=True,
+            )
+            .select_related("submitted_by")
+            .order_by("grant_id", "id")
+        )
+        if _change_request_needs_user_action(
+            change_request,
+            request.user,
+        )
+    ]
+
+    standalone_grants = {
+        grant.grant_id: grant
+        for grant in Form1.objects.filter(
+            grant_id__in=[
+                change_request.grant_id
+                for change_request in standalone_requests
+            ]
+        )
+    }
+
+    standalone_rows = []
+
+    for change_request in standalone_requests:
+        current_submitter, current_submitted_at = (
+            _get_current_revision_submission_metadata(
+                change_request
+            )
+        )
+
+        approval_count = (
+            ChangeAction.objects
+            .filter(
+                change_request=change_request,
+                revision_no=change_request.current_revision,
+                action=ChangeAction.Action.APPROVE,
+            )
+            .count()
+        )
+
+        standalone_rows.append(
+            {
+                "change_request": change_request,
+                "grant": standalone_grants.get(
+                    change_request.grant_id
+                ),
+                "current_submitter": current_submitter,
+                "current_submitted_at": current_submitted_at,
+                "approval_label": f"{approval_count} of 2",
+            }
+        )
+
+    # --------------------------------------------------------
+    # Coordinated packages. One package = one queue item.
+    # --------------------------------------------------------
+
+    coordinated_packages = [
+        coordinated_change
+        for coordinated_change in (
+            CoordinatedChange.objects
+            .filter(
+                status__in=active_coordinated_statuses,
+            )
+            .select_related("submitted_by")
+            .order_by("id")
+        )
+        if _coordinated_package_needs_user_action(
+            coordinated_change,
+            request.user,
+        )
+    ]
+
+    coordinated_rows = []
+
+    for coordinated_change in coordinated_packages:
+        children = list(
+            ChangeRequest.objects
+            .filter(
+                coordinated_change=coordinated_change,
+            )
+            .select_related("submitted_by")
+            .order_by("grant_id", "id")
+        )
+
+        grant_ids = [
+            child.grant_id
+            for child in children
+        ]
+
+        current_submitter = None
+        current_submitted_at = None
+
+        if children:
+            child_submission_metadata = [
+                _get_current_revision_submission_metadata(
+                    child
+                )
+                for child in children
+            ]
+
+            submitter_ids = {
+                submitter.id
+                if submitter is not None
+                else None
+                for submitter, submitted_at
+                in child_submission_metadata
+            }
+
+            if (
+                len(submitter_ids) == 1
+                and None not in submitter_ids
+            ):
+                (
+                    current_submitter,
+                    current_submitted_at,
+                ) = child_submission_metadata[0]
+
+        approval_histories = []
+
+        for child in children:
+            approval_histories.append(
+                tuple(
+                    ChangeAction.objects
+                    .filter(
+                        change_request=child,
+                        revision_no=(
+                            coordinated_change.current_revision
+                        ),
+                        action=ChangeAction.Action.APPROVE,
+                    )
+                    .order_by("acted_at", "id")
+                    .values_list(
+                        "acted_by_id",
+                        flat=True,
+                    )
+                )
+            )
+
+        approval_label = "Review required"
+
+        if approval_histories:
+            first_history = approval_histories[0]
+
+            if all(
+                history == first_history
+                for history in approval_histories
+            ):
+                approval_label = (
+                    f"{len(first_history)} of 2"
+                )
+
+        coordinated_rows.append(
+            {
+                "coordinated_change": coordinated_change,
+                "grant_ids": grant_ids,
+                "grant_count": len(grant_ids),
+                "current_submitter": current_submitter,
+                "current_submitted_at": current_submitted_at,
+                "approval_label": approval_label,
+            }
+        )
+
+    return render(
+        request,
+        "tracking/existing_grant_requests.html",
+        {
+            "standalone_rows": standalone_rows,
+            "coordinated_rows": coordinated_rows,
         },
     )
 

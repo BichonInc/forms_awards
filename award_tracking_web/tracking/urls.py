@@ -20,6 +20,11 @@ urlpatterns = [
         name="new_grant_requests",
     ),
     path(
+        "existing-grant-requests/",
+        views.existing_grant_requests,
+        name="existing_grant_requests",
+    ),
+    path(
         'grants/<str:grant_id>/change-request-history/',
         views.change_request_history,
         name='change_request_history',

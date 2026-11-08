@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Existing Grant Requests</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 1400px;
+            margin: auto;
+        }
+
+        h2 {
+            margin-top: 32px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 16px;
+        }
+
+        th,
+        td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        th {
+            background-color: #f2f2f2;
+        }
+
+        .back-button {
+            display: inline-block;
+            margin-top: 24px;
+            padding: 10px 20px;
+            background-color: #008CBA;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+        }
+
+        .grant-list {
+            margin: 0;
+            padding-left: 18px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>Existing Grant Requests</h1>
+
+        <p>
+            This queue shows active Existing Grant requests that
+            currently require action from you.
+        </p>
+
+        <h2>Standalone Change Requests</h2>
+
+        {% if standalone_rows %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Grant ID</th>
+                        <th>Program Title</th>
+                        <th>Contracting Agency</th>
+                        <th>Contract Number</th>
+                        <th>Revision</th>
+                        <th>Submitted By</th>
+                        <th>Submitted At</th>
+                        <th>Approvals</th>
+                        <th>Status</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+
+                <tbody>
+                    {% for item in standalone_rows %}
+                        <tr>
+                            <td>{{ item.change_request.grant_id }}</td>
+                            <td>
+                                {% if item.grant %}
+                                    {{ item.grant.program_title|default:"&mdash;" }}
+                                {% else %}
+                                    &mdash;
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if item.grant %}
+                                    {{ item.grant.contracting_agency|default:"&mdash;" }}
+                                {% else %}
+                                    &mdash;
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if item.grant %}
+                                    {{ item.grant.contract_number|default:"&mdash;" }}
+                                {% else %}
+                                    &mdash;
+                                {% endif %}
+                            </td>
+                            <td>
+                                {{ item.change_request.current_revision }}
+                            </td>
+                            <td>
+                                {% if item.current_submitter %}
+                                    {{ item.current_submitter.username }}
+                                {% else %}
+                                    &mdash;
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if item.current_submitted_at %}
+                                    {{ item.current_submitted_at|date:"Y-m-d g:i A" }}
+                                {% else %}
+                                    &mdash;
+                                {% endif %}
+                            </td>
+                            <td>{{ item.approval_label }}</td>
+                            <td>
+                                {{ item.change_request.get_status_display }}
+                            </td>
+                            <td>
+                                <a
+                                    href="{% url 'change_request_review' item.change_request.id %}"
+                                >
+                                    Open Request
+                                </a>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <p>
+                No standalone Existing Grant requests currently
+                require action from you.
+            </p>
+        {% endif %}
+
+        <h2>Coordinated Change Requests</h2>
+
+        {% if coordinated_rows %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Package</th>
+                        <th>Grants</th>
+                        <th>Revision</th>
+                        <th>Submitted By</th>
+                        <th>Submitted At</th>
+                        <th>Approvals</th>
+                        <th>Status</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+
+                <tbody>
+                    {% for item in coordinated_rows %}
+                        <tr>
+                            <td>
+                                Package
+                                #{{ item.coordinated_change.id }}
+                            </td>
+                            <td>
+                                <ul class="grant-list">
+                                    {% for grant_id in item.grant_ids %}
+                                        <li>{{ grant_id }}</li>
+                                    {% endfor %}
+                                </ul>
+                            </td>
+                            <td>
+                                {{ item.coordinated_change.current_revision }}
+                            </td>
+                            <td>
+                                {% if item.current_submitter %}
+                                    {{ item.current_submitter.username }}
+                                {% else %}
+                                    &mdash;
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if item.current_submitted_at %}
+                                    {{ item.current_submitted_at|date:"Y-m-d g:i A" }}
+                                {% else %}
+                                    &mdash;
+                                {% endif %}
+                            </td>
+                            <td>{{ item.approval_label }}</td>
+                            <td>
+                                {{ item.coordinated_change.get_status_display }}
+                            </td>
+                            <td>
+                                <a
+                                    href="{% url 'coordinated_change_review' item.coordinated_change.id %}"
+                                >
+                                    Open Package
+                                </a>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <p>
+                No coordinated Existing Grant requests currently
+                require action from you.
+            </p>
+        {% endif %}
+
+        <a
+            href="{% url 'grant_list' %}"
+            class="back-button"
+        >
+            Back to Grant List
+        </a>
+    </div>
+</body>
+</html>
